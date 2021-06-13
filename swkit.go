@@ -34,6 +34,9 @@ func (sw *SwKit) SyncAll() error {
 	for _, li := range sw.Buttons {
 		li.Sync()
 	}
+	for _, li := range sw.Shutters {
+		li.Sync()
+	}
 
 	return nil
 }
@@ -53,6 +56,13 @@ func (sw *SwKit) GetHkAccessories() (acc []*accessory.Accessory) {
 			acc = append(acc, a)
 		}
 
+	}
+
+	for _, shu := range sw.Shutters {
+		hk := shu.GetHk()
+		if hk != nil {
+			acc = append(acc, hk)
+		}
 	}
 
 	return
@@ -97,6 +107,9 @@ func (sw *SwKit) SetupGpio() error {
 		}
 	}
 	for _, li := range sw.Buttons {
+		li.SetupGpio()
+	}
+	for _, li := range sw.Shutters {
 		li.SetupGpio()
 	}
 

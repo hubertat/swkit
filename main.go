@@ -53,7 +53,7 @@ func main() {
 		return
 	}
 
-	go swkit.StartTicker(75 * time.Millisecond)
+	go swkit.StartTicker(750 * time.Millisecond)
 
 	hc.OnTermination(func() {
 		<-t.Stop()
