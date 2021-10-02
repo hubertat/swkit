@@ -14,6 +14,9 @@ type SwKit struct {
 	Shutters []*Shutter
 	Outlets  []*Outlet
 
+	HkPin     string
+	HkSetupId string
+
 	ticker *time.Ticker
 }
 
@@ -121,6 +124,9 @@ func (sw *SwKit) SetupGpio() error {
 	}
 	for _, li := range sw.Shutters {
 		li.SetupGpio()
+	}
+	for _, ou := range sw.Outlets {
+		ou.SetupGpio()
 	}
 
 	return nil

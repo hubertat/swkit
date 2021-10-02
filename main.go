@@ -35,30 +35,35 @@ func main() {
 	} else {
 		log.Fatalf("can't find/open config file (%s), running on defaults\n%v\n", *config, err)
 	}
-	log.Println("starting HomeKit service")
-	info := accessory.Info{
-		Name:         "swkit",
-		Manufacturer: "github.com/hubertat",
-		ID:           1,
-	}
-	bridge := accessory.NewBridge(info)
-	config := hc.Config{
-		Pin:         "12002100",
-		SetupId:     "SWKT",
-		StoragePath: "hk",
-	}
-	t, err := hc.NewIPTransport(config, bridge.Accessory, swkit.GetHkAccessories()...)
-	if err != nil {
-		log.Print(err)
-		return
-	}
+	if len(swkit.HkPin) == 8 && len(swkit.HkSetupId) == 4 {
+		log.Println("starting HomeKit service")
+		info := accessory.Info{
+			Name:         "swkit",
+			Manufacturer: "github.com/hubertat",
+			ID:           1,
+		}
+		bridge := accessory.NewBridge(info)
+		config := hc.Config{
+			Pin:         swkit.HkPin,
+			SetupId:     swkit.HkSetupId,
+			StoragePath: "hk",
+		}
+		t, err := hc.NewIPTransport(config, bridge.Accessory, swkit.GetHkAccessories()...)
+		if err != nil {
+			log.Print(err)
+			return
+		}
 
-	go swkit.StartTicker(750 * time.Millisecond)
+		go swkit.StartTicker(750 * time.Millisecond)
 
-	hc.OnTermination(func() {
-		<-t.Stop()
-	})
+		hc.OnTermination(func() {
+			<-t.Stop()
+		})
 
-	t.Start()
+		t.Start()
+	} else {
+		log.Println("HomeKit not configured, wont start")
+		swkit.StartTicker(750 * time.Millisecond)
+	}
 
 }
