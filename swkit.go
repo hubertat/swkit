@@ -12,6 +12,7 @@ type SwKit struct {
 	Buttons  []*Button
 	Switches []*Switch
 	Shutters []*Shutter
+	Outlets  []*Outlet
 
 	ticker *time.Ticker
 }
@@ -37,6 +38,9 @@ func (sw *SwKit) SyncAll() error {
 	for _, li := range sw.Shutters {
 		li.Sync()
 	}
+	for _, ou := range sw.Outlets {
+		ou.Sync()
+	}
 
 	return nil
 }
@@ -60,6 +64,12 @@ func (sw *SwKit) GetHkAccessories() (acc []*accessory.Accessory) {
 
 	for _, shu := range sw.Shutters {
 		hk := shu.GetHk()
+		if hk != nil {
+			acc = append(acc, hk)
+		}
+	}
+	for _, ou := range sw.Outlets {
+		hk := ou.GetHk()
 		if hk != nil {
 			acc = append(acc, hk)
 		}
