@@ -10,15 +10,35 @@ import (
 
 	"github.com/brutella/hc"
 	"github.com/brutella/hc/accessory"
+	"github.com/hubertat/servicemaker"
 )
 
 var (
-	config = flag.String("config", "config.json", "path of the configuration file")
+	config      = flag.String("config", "config.json", "path of the configuration file")
+	flagInstall = flag.Bool("install", false, "Install service in os")
+	swkService  = servicemaker.ServiceMaker{
+		User:               "swkit",
+		ServicePath:        "/etc/systemd/system/swkit.service",
+		ServiceDescription: "SwKit service: HomeKit enabled switch/input/roller shutter controller using RPi GPIO.",
+		ExecDir:            "/srv/swkit",
+		ExecName:           "swkit",
+	}
 )
 
 func main() {
 	log.Println("swkit started")
 	flag.Parse()
+
+	if *flagInstall {
+		err := swkService.InstallService()
+		if err != nil {
+			panic(err)
+		} else {
+			log.Println("service installed!")
+			return
+		}
+	}
+
 	swkit := &SwKit{}
 
 	configFile, err := os.Open(*config)

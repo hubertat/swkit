@@ -3,6 +3,8 @@ github.com/brutella/dnssd v1.2.0/go.mod h1:FpJqlQ8+XU6w1vbnG1zJiQPTRE5fvQIRdrcBo
 github.com/brutella/hc v1.2.4 h1:dQjLi4bjUbKG4436N7WXH6W7iHQgfnCceE9DxyOuSnA=
 github.com/brutella/hc v1.2.4/go.mod h1:TPPdombm3gA/2fsSON6ct2km7z7Vi8lQNqE+fzuDHQM=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/hubertat/servicemaker v0.1.2 h1:jf5idZ8A3kK+hFHrchH2WOnvLSf61GkMSaWzBOvCtUQ=
+github.com/hubertat/servicemaker v0.1.2/go.mod h1:5nuaLIyaepJEuzaoSvjRYabwjwkWFdLvBwv5cLDhxPQ=
 github.com/logrusorgru/aurora v0.0.0-20181002194514-a7b3b318ed4e h1:9MlwzLdW7QSDrhDjFlsEYmxpFyIoXmYRon3dt0io31k=
 github.com/logrusorgru/aurora v0.0.0-20181002194514-a7b3b318ed4e/go.mod h1:7rIyQOR62GCctdiQpZ/zOJlFyk6y+94wXzv6RNZgaR4=
 github.com/miekg/dns v1.1.1/go.mod h1:W1PPwlIAgtquWBMBEV9nkV9Cazfe8ScdGz/Lj7v3Nrg=
