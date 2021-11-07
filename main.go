@@ -18,6 +18,7 @@ var (
 	flagInstall = flag.Bool("install", false, "Install service in os")
 	swkService  = servicemaker.ServiceMaker{
 		User:               "swkit",
+		UserGroups:         []string{"gpio"},
 		ServicePath:        "/etc/systemd/system/swkit.service",
 		ServiceDescription: "SwKit service: HomeKit enabled switch/input/roller shutter controller using RPi GPIO.",
 		ExecDir:            "/srv/swkit",
