@@ -13,6 +13,10 @@ type Light struct {
 	Invert        bool
 	State         bool
 	ControlByGpio int
+	Output        DigitalOutput
+	ControlBy     DigitalInput
+
+	driver IoDriver
 
 	hk *accessory.Lightbulb
 }
