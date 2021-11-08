@@ -2,45 +2,54 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/brutella/hc/accessory"
-	"github.com/stianeikeland/go-rpio"
+	"github.com/pkg/errors"
 )
 
 type Outlet struct {
-	Name          string
-	Gpio          int
-	Invert        bool
-	State         bool
-	ControlByGpio int
+	Name       string
+	State      bool
+	DriverName string
+	OutPin     uint8
 
-	hk *accessory.Outlet
+	ControlByName string
+
+	output DigitalOutput
+	driver IoDriver
+	hk     *accessory.Outlet
 }
 
-func (ou *Outlet) SetupGpio() {
-	pin := rpio.Pin(ou.Gpio)
-	pin.Output()
+func (ou *Outlet) Init(driver IoDriver) error {
+	if !strings.EqualFold(driver.NameId(), ou.DriverName) {
+		return fmt.Errorf("Init failed, mismatched or incorrect driver")
+	}
+
+	if !driver.IsReady() {
+		return fmt.Errorf("Init failed, driver not ready")
+	}
+
+	var err error
+
+	ou.driver = driver
+	ou.output, err = driver.GetOutput(ou.OutPin)
+	if err != nil {
+		return errors.Wrap(err, "Init failed")
+	}
+
+	return nil
 }
 
 func (ou *Outlet) Sync() {
-	pin := rpio.Pin(ou.Gpio)
-
-	state := ou.State
-	if ou.Invert {
-		state = !state
-	}
-	if state {
-		pin.High()
-	} else {
-		pin.Low()
-	}
+	ou.output.Set(ou.State)
 }
 
 func (ou *Outlet) GetHk() *accessory.Accessory {
 	info := accessory.Info{
 		Name:         ou.Name,
-		ID:           uint64(ou.Gpio),
-		SerialNumber: fmt.Sprintf("outlet:gpio:%02d", ou.Gpio),
+		ID:           uint64(ou.OutPin), // TODO change ID, use driver type
+		SerialNumber: fmt.Sprintf("outlet:%s:%02d", ou.DriverName, ou.OutPin),
 	}
 	ou.hk = accessory.NewOutlet(info)
 	ou.hk.Outlet.On.OnValueRemoteUpdate(ou.SetValue)

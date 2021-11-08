@@ -2,43 +2,57 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/brutella/hc/accessory"
-	"github.com/stianeikeland/go-rpio"
+	"github.com/pkg/errors"
 )
 
 type Button struct {
-	Name           string
-	Gpio           int
-	Invert         bool
-	State          bool
-	HomeKitEnabled bool
+	Name       string
+	State      bool
+	DriverName string
+	InPin      uint8
 
-	clickThis ClickableDevice
-	hk        *accessory.Accessory
+	DisableHomeKit bool
+
+	toggleThis []ClickableDevice
+	input      DigitalInput
+	hk         *accessory.Accessory
 }
 
 type ClickableDevice interface {
 	Toggle()
 }
 
-func (bu *Button) SetupGpio() {
-	pin := rpio.Pin(bu.Gpio)
-	pin.Input()
-	pin.PullUp()
-}
-func (bu *Button) Sync() {
-	oldState := bu.State
-	pin := rpio.Pin(bu.Gpio)
-	if bu.Invert {
-		bu.State = pin.Read() == rpio.High
-	} else {
-		bu.State = pin.Read() == rpio.Low
+func (bu *Button) Init(driver IoDriver, toggleThis ...ClickableDevice) error {
+	if !strings.EqualFold(driver.NameId(), bu.DriverName) {
+		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
 
+	if !driver.IsReady() {
+		return fmt.Errorf("Init failed, driver not ready")
+	}
+
+	var err error
+
+	bu.input, err = driver.GetInput(bu.InPin)
+	if err != nil {
+		return errors.Wrap(err, "Init failed")
+	}
+
+	bu.toggleThis = toggleThis
+
+	return nil
+}
+
+func (bu *Button) Sync() {
+	oldState := bu.State
+	bu.State = bu.input.GetState()
+
 	if bu.State != oldState && bu.State {
-		if bu.clickThis != nil {
-			bu.clickThis.Toggle()
+		for _, clickable := range bu.toggleThis {
+			clickable.Toggle()
 		}
 	}
 }

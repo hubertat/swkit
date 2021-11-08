@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/racerxdl/go-mcp23017"
 	"github.com/stianeikeland/go-rpio"
 )
@@ -8,8 +10,10 @@ import (
 type IoDriver interface {
 	Setup([]uint8, []uint8) error
 	Close() error
-	GetInput(uint8) DigitalInput
-	GetOutput(uint8) DigitalOutput
+	NameId() string
+	IsReady() bool
+	GetInput(uint8) (DigitalInput, error)
+	GetOutput(uint8) (DigitalOutput, error)
 }
 
 type DigitalInput interface {
@@ -85,28 +89,40 @@ func (gpio *GpIO) Setup(inputs []uint8, outputs []uint8) error {
 	return nil
 }
 
+func (gpio *GpIO) NameId() string {
+	return "gpio"
+}
+
+func (gpio *GpIO) IsReady() bool {
+	return gpio.isReady
+}
+
 func (gpio *GpIO) Close() error {
 	gpio.isReady = false
 	return gpio.Close()
 }
 
-func (gpio *GpIO) GetInput(id uint8) (input *GpInput) {
+func (gpio *GpIO) GetInput(id uint8) (input *GpInput, err error) {
 	for _, in := range gpio.Inputs {
 		if in.pin == id {
-			return &in
+			input = &in
+			return
 		}
 	}
 
+	err = fmt.Errorf("Input (id: %s) not found", id)
 	return
 }
 
-func (gpio *GpIO) GetOutput(id uint8) (output *GpOutput) {
+func (gpio *GpIO) GetOutput(id uint8) (output *GpOutput, err error) {
 	for _, out := range gpio.Outputs {
 		if out.pin == id {
-			return &out
+			output = &out
+			return
 		}
 	}
 
+	err = fmt.Errorf("Input (id: %s) not found", id)
 	return
 }
 
