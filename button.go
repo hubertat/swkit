@@ -18,6 +18,7 @@ type Button struct {
 
 	toggleThis []ClickableDevice
 	input      DigitalInput
+	driver     IoDriver
 	hk         *accessory.Accessory
 }
 
@@ -36,6 +37,7 @@ func (bu *Button) Init(driver IoDriver, toggleThis ...ClickableDevice) error {
 
 	var err error
 
+	bu.driver = driver
 	bu.input, err = driver.GetInput(bu.InPin)
 	if err != nil {
 		return errors.Wrap(err, "Init failed")
@@ -48,7 +50,7 @@ func (bu *Button) Init(driver IoDriver, toggleThis ...ClickableDevice) error {
 
 func (bu *Button) Sync() {
 	oldState := bu.State
-	bu.State = bu.input.GetState()
+	bu.State, _ = bu.input.GetState()
 
 	if bu.State != oldState && bu.State {
 		for _, clickable := range bu.toggleThis {

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"strings"
 	"time"
 
 	"github.com/brutella/hc/accessory"
+	"github.com/pkg/errors"
 	"github.com/stianeikeland/go-rpio"
 )
 
@@ -17,12 +19,92 @@ type SwKit struct {
 	HkPin     string
 	HkSetupId string
 
-	ticker *time.Ticker
+	Mcp23017 *McpIO
+
+	drivers map[string]IoDriver
+	ticker  *time.Ticker
 }
 
 type IO interface {
 	Sync()
 	GetHk() *accessory.Accessory
+}
+
+func (sw *SwKit) getInPins(driverName string) (pins []uint8) {
+	for _, io := range sw.Buttons {
+		if strings.EqualFold(io.DriverName, driverName) {
+			pins = append(pins, io.InPin)
+		}
+	}
+	for _, io := range sw.Switches {
+		if strings.EqualFold(io.DriverName, driverName) {
+			pins = append(pins, io.InPin)
+		}
+	}
+
+	return
+}
+
+func (sw *SwKit) getOutPins(driverName string) (pins []uint8) {
+	for _, io := range sw.Lights {
+		if strings.EqualFold(io.DriverName, driverName) {
+			pins = append(pins, io.OutPin)
+		}
+	}
+	for _, io := range sw.Outlets {
+		if strings.EqualFold(io.DriverName, driverName) {
+			pins = append(pins, io.OutPin)
+		}
+	}
+
+	return
+}
+
+func (sw *SwKit) getIoDriverByName(name string) (driver IoDriver, err error) {
+	switch name {
+	case "gpio":
+		driver = &GpIO{}
+	case "mcpio":
+		if sw.Mcp23017 == nil {
+			err = errors.New("cannot initialize Mcp23017 driver, config not present")
+		} else {
+			driver = &McpIO{DevNo: sw.Mcp23017.DevNo, BusNo: sw.Mcp23017.BusNo}
+		}
+	default:
+		err = errors.Errorf("driver (%s) not found", name)
+	}
+
+	return
+}
+
+func (sw *SwKit) InitDrivers() error {
+
+	for _, li := range sw.Lights {
+		sw.drivers[li.DriverName] = nil
+	}
+	for _, li := range sw.Buttons {
+		sw.drivers[li.DriverName] = nil
+	}
+	for _, li := range sw.Switches {
+		sw.drivers[li.DriverName] = nil
+	}
+	for _, li := range sw.Outlets {
+		sw.drivers[li.DriverName] = nil
+	}
+
+	for name, _ := range sw.drivers {
+		driver, err := sw.getIoDriverByName(name)
+		if err != nil {
+			return errors.Wrap(err, "Failed to get IoDriver")
+		}
+		err = driver.Setup(sw.getInPins(name), sw.getOutPins(name))
+		if err != nil {
+			return errors.Wrapf(err, "Failed to Setup %s driver", name)
+		}
+		sw.drivers[name] = driver
+	}
+
+	return nil
 }
 
 func (sw *SwKit) SyncAll() error {
@@ -81,62 +163,8 @@ func (sw *SwKit) GetHkAccessories() (acc []*accessory.Accessory) {
 	return
 }
 
-func (sw *SwKit) findSwitch(gpio int) *Switch {
-	for _, bu := range sw.Switches {
-		if bu.Gpio == gpio {
-			return bu
-		}
-	}
-	return nil
-}
-
-func (sw *SwKit) findButton(gpio int) *Button {
-	for _, bu := range sw.Buttons {
-		if bu.Gpio == gpio {
-			return bu
-		}
-	}
-	return nil
-}
-
-func (sw *SwKit) SetupGpio() error {
-	err := rpio.Open()
-	if err != nil {
-		return err
-	}
-	defer rpio.Close()
-
-	for _, li := range sw.Lights {
-		li.SetupGpio()
-		if li.ControlByGpio > 0 {
-			swButton := sw.findSwitch(li.ControlByGpio)
-			clickButton := sw.findButton(li.ControlByGpio)
-			if swButton != nil {
-				swButton.switchThis = li
-			}
-			if clickButton != nil {
-				clickButton.clickThis = li
-			}
-		}
-	}
-	for _, li := range sw.Buttons {
-		li.SetupGpio()
-	}
-	for _, li := range sw.Shutters {
-		li.SetupGpio()
-	}
-	for _, ou := range sw.Outlets {
-		ou.SetupGpio()
-	}
-
-	return nil
-}
-
 func (sw *SwKit) StartTicker(interval time.Duration) {
-	err := sw.SetupGpio()
-	if err != nil {
-		panic(err)
-	}
+
 	sw.ticker = time.NewTicker(interval)
 
 	for {

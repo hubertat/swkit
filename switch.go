@@ -18,6 +18,7 @@ type Switch struct {
 
 	switchThis []SwitchableDevice
 	input      DigitalInput
+	driver     IoDriver
 	hk         *accessory.Switch
 }
 
@@ -36,6 +37,7 @@ func (swb *Switch) Init(driver IoDriver, switchThis ...SwitchableDevice) error {
 
 	var err error
 
+	swb.driver = driver
 	swb.input, err = driver.GetInput(swb.InPin)
 	if err != nil {
 		return errors.Wrap(err, "Init failed")
@@ -46,7 +48,7 @@ func (swb *Switch) Init(driver IoDriver, switchThis ...SwitchableDevice) error {
 	return nil
 }
 func (swb *Switch) Sync() {
-	swb.State = swb.input.GetState()
+	swb.State, _ = swb.input.GetState()
 
 	if swb.hk != nil {
 		swb.hk.Switch.On.SetValue(swb.State)
@@ -66,7 +68,7 @@ func (swb *Switch) GetHk() *accessory.Accessory {
 
 	info := accessory.Info{
 		Name:         swb.Name,
-		ID:           uint64(swb.InPin), // TODO change this
+		ID:           swb.driver.GetUniqueId(swb.InPin),
 		SerialNumber: fmt.Sprintf("switch:%s:%02d", swb.DriverName, swb.InPin),
 	}
 	swb.hk = accessory.NewSwitch(info)

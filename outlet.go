@@ -48,7 +48,7 @@ func (ou *Outlet) Sync() {
 func (ou *Outlet) GetHk() *accessory.Accessory {
 	info := accessory.Info{
 		Name:         ou.Name,
-		ID:           uint64(ou.OutPin), // TODO change ID, use driver type
+		ID:           ou.driver.GetUniqueId(ou.OutPin),
 		SerialNumber: fmt.Sprintf("outlet:%s:%02d", ou.DriverName, ou.OutPin),
 	}
 	ou.hk = accessory.NewOutlet(info)

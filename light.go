@@ -49,7 +49,7 @@ func (li *Light) Sync() {
 func (li *Light) GetHk() *accessory.Accessory {
 	info := accessory.Info{
 		Name:         li.Name,
-		ID:           uint64(li.OutPin), // TODO change ID, use driver type
+		ID:           li.driver.GetUniqueId(li.OutPin),
 		SerialNumber: fmt.Sprintf("light:%s:%02d", li.DriverName, li.OutPin),
 	}
 	li.hk = accessory.NewLightbulb(info)

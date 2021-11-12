@@ -8,20 +8,21 @@ import (
 )
 
 type IoDriver interface {
-	Setup([]uint8, []uint8) error
+	Setup(inputs []uint8, outputs []uint8) error
 	Close() error
 	NameId() string
+	GetUniqueId(ioPin uint8) uint64
 	IsReady() bool
-	GetInput(uint8) (DigitalInput, error)
-	GetOutput(uint8) (DigitalOutput, error)
+	GetInput(pin uint8) (DigitalInput, error)
+	GetOutput(pin uint8) (DigitalOutput, error)
 }
 
 type DigitalInput interface {
-	GetState() bool
+	GetState() (bool, error)
 }
 
 type DigitalOutput interface {
-	GetState() bool
+	GetState() (bool, error)
 	Set(bool) error
 }
 
@@ -39,20 +40,22 @@ type GpInput struct {
 	invert bool
 }
 
-func (gpi *GpInput) GetState() bool {
-	if gpi.invert {
-		return rpio.Pin(gpi.pin).Read() == rpio.Low
-	} else {
-		return rpio.Pin(gpi.pin).Read() == rpio.High
-	}
-}
-
 type GpOutput struct {
 	pin    uint8
 	invert bool
 }
 
-func (gpo *GpOutput) Set(state bool) {
+func (gpi *GpInput) GetState() (state bool, err error) {
+	if gpi.invert {
+		state = rpio.Pin(gpi.pin).Read() == rpio.Low
+	} else {
+		state = rpio.Pin(gpi.pin).Read() == rpio.High
+	}
+
+	return
+}
+
+func (gpo *GpOutput) Set(state bool) error {
 	if gpo.invert {
 		state = !state
 	}
@@ -61,90 +64,166 @@ func (gpo *GpOutput) Set(state bool) {
 	} else {
 		rpio.Pin(gpo.pin).Low()
 	}
+
+	return nil
 }
 
-func (gpo *GpOutput) GetState() bool {
+func (gpo *GpOutput) GetState() (state bool, err error) {
 	if gpo.invert {
-		return rpio.Pin(gpo.pin).Read() == rpio.Low
+		state = rpio.Pin(gpo.pin).Read() == rpio.Low
 	} else {
-		return rpio.Pin(gpo.pin).Read() == rpio.High
+		state = rpio.Pin(gpo.pin).Read() == rpio.High
 	}
+
+	return
 }
 
-func (gpio *GpIO) Setup(inputs []uint8, outputs []uint8) error {
+func (gp *GpIO) Setup(inputs []uint8, outputs []uint8) error {
 	for _, inPin := range inputs {
 		pin := rpio.Pin(inPin)
 		pin.Input()
 		pin.PullUp()
-		gpio.Inputs = append(gpio.Inputs, GpInput{pin: inPin, invert: gpio.invertInputs})
+		gp.Inputs = append(gp.Inputs, GpInput{pin: inPin, invert: gp.invertInputs})
 	}
 
 	for _, outPin := range outputs {
 		pin := rpio.Pin(outPin)
 		pin.Output()
-		gpio.Outputs = append(gpio.Outputs, GpOutput{pin: outPin, invert: gpio.invertOutputs})
+		gp.Outputs = append(gp.Outputs, GpOutput{pin: outPin, invert: gp.invertOutputs})
 	}
 
-	gpio.isReady = true
+	gp.isReady = true
 	return nil
 }
 
-func (gpio *GpIO) NameId() string {
+func (gp *GpIO) NameId() string {
 	return "gpio"
 }
 
-func (gpio *GpIO) IsReady() bool {
-	return gpio.isReady
+func (gp *GpIO) IsReady() bool {
+	return gp.isReady
 }
 
-func (gpio *GpIO) Close() error {
-	gpio.isReady = false
-	return gpio.Close()
+func (gp *GpIO) Close() error {
+	gp.isReady = false
+	return rpio.Close()
 }
 
-func (gpio *GpIO) GetInput(id uint8) (input *GpInput, err error) {
-	for _, in := range gpio.Inputs {
+func (gp *GpIO) GetInput(id uint8) (input DigitalInput, err error) {
+	for _, in := range gp.Inputs {
 		if in.pin == id {
 			input = &in
 			return
 		}
 	}
 
-	err = fmt.Errorf("Input (id: %s) not found", id)
+	err = fmt.Errorf("input (id: %d) not found", id)
 	return
 }
 
-func (gpio *GpIO) GetOutput(id uint8) (output *GpOutput, err error) {
-	for _, out := range gpio.Outputs {
+func (gp *GpIO) GetOutput(id uint8) (output DigitalOutput, err error) {
+	for _, out := range gp.Outputs {
 		if out.pin == id {
 			output = &out
 			return
 		}
 	}
 
-	err = fmt.Errorf("Input (id: %s) not found", id)
+	err = fmt.Errorf("input (id: %d) not found", id)
 	return
+}
+
+func (gp *GpIO) GetUniqueId(ioPin uint8) uint64 {
+	baseId := uint64(0x01000000)
+	return baseId + uint64(ioPin)
 }
 
 type McpIO struct {
 	device *mcp23017.Device
 
-	Inputs  []McpIn
-	Outputs []McpOut
+	Inputs  []McpInput
+	Outputs []McpOutput
+
+	BusNo         uint8
+	DevNo         uint8
+	invertInputs  bool
+	invertOutputs bool
+	isReady       bool
 }
 
-func NewMcpIO(Bus, DevNum uint8) (mcp *McpIO, err error) {
-	d, err := mcp23017.Open(Bus, DevNum)
+type McpInput struct {
+	pin    uint8
+	invert bool
+
+	device *mcp23017.Device
+}
+
+type McpOutput struct {
+	pin    uint8
+	invert bool
+
+	device *mcp23017.Device
+}
+
+func (min *McpInput) GetState() (state bool, err error) {
+	rawState, err := min.device.DigitalRead(min.pin)
 	if err != nil {
 		return
 	}
 
-	mcp = &McpIO{}
-	mcp.device = d
+	if min.invert {
+		state = !bool(rawState)
+	} else {
+		state = bool(rawState)
+	}
 	return
 }
 
+func (mout *McpOutput) GetState() (state bool, err error) {
+	rawState, err := mout.device.DigitalRead(mout.pin)
+	if err != nil {
+		return
+	}
+
+	if mout.invert {
+		state = !bool(rawState)
+	} else {
+		state = bool(rawState)
+	}
+	return
+}
+
+func (mout *McpOutput) Set(state bool) (err error) {
+	if mout.invert {
+		state = !state
+	}
+
+	err = mout.device.DigitalWrite(mout.pin, mcp23017.PinLevel(state))
+
+	return
+}
+
+func (mcpio *McpIO) GetUniqueId(ioPin uint8) uint64 {
+	baseId := uint64(0x02000000)
+	baseId += uint64(mcpio.BusNo) << 16
+	baseId += uint64(mcpio.DevNo) << 8
+	return baseId + uint64(ioPin)
+}
+
+func (mcpio *McpIO) NameId() string {
+	return "mcpio"
+}
+
+func (mcpio *McpIO) IsReady() bool {
+	return mcpio.isReady
+}
+
 func (mcp *McpIO) Setup(inputs []uint8, outputs []uint8) (err error) {
+	mcp.device, err = mcp23017.Open(mcp.BusNo, mcp.DevNo)
+	if err != nil {
+		return
+	}
+
 	for _, inputPin := range inputs {
 		err = mcp.device.PinMode(inputPin, mcp23017.INPUT)
 		if err != nil {
@@ -154,33 +233,44 @@ func (mcp *McpIO) Setup(inputs []uint8, outputs []uint8) (err error) {
 		if err != nil {
 			return
 		}
-		mcp.Inputs = append(mcp.Inputs, McpIn{Pin: inputPin, Mcp: mcp})
+		mcp.Inputs = append(mcp.Inputs, McpInput{pin: inputPin, invert: mcp.invertInputs, device: mcp.device})
 	}
 
 	for _, outputPin := range outputs {
 		err = mcp.device.PinMode(outputPin, mcp23017.OUTPUT)
-		mcp.Outputs = append(mcp.Outputs, McpOut{Pin: outputPin, Mcp: mcp})
+		if err != nil {
+			return
+		}
+		mcp.Outputs = append(mcp.Outputs, McpOutput{pin: outputPin, invert: mcp.invertInputs, device: mcp.device})
 	}
 
 	return
 }
 
-type McpIn struct {
-	Pin uint8
-	Mcp *McpDevice
-}
-
-func (mi *McpIn) Read() (state bool, err error) {
-	rawState, err := mi.Mcp.device.DigitalRead(mi.Pin)
-	if err != nil {
-		return
+func (mcp *McpIO) GetInput(id uint8) (input DigitalInput, err error) {
+	for _, in := range mcp.Inputs {
+		if in.pin == id {
+			input = &in
+			return
+		}
 	}
 
-	state = bool(rawState)
+	err = fmt.Errorf("input (id: %d) not found", id)
 	return
 }
 
-type McpOut struct {
-	Pin uint8
-	Mcp *McpDevice
+func (mcp *McpIO) GetOutput(id uint8) (output DigitalOutput, err error) {
+	for _, out := range mcp.Outputs {
+		if out.pin == id {
+			output = &out
+			return
+		}
+	}
+
+	err = fmt.Errorf("input (id: %d) not found", id)
+	return
+}
+
+func (mcp *McpIO) Close() error {
+	return mcp.device.Close()
 }
