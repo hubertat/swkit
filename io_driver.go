@@ -56,6 +56,7 @@ func (gpi *GpInput) GetState() (state bool, err error) {
 }
 
 func (gpo *GpOutput) Set(state bool) error {
+	rpio.Open()
 	if gpo.invert {
 		state = !state
 	}
@@ -79,6 +80,10 @@ func (gpo *GpOutput) GetState() (state bool, err error) {
 }
 
 func (gp *GpIO) Setup(inputs []uint8, outputs []uint8) error {
+	err := rpio.Open()
+	if err != nil {
+		return err
+	}
 	for _, inPin := range inputs {
 		pin := rpio.Pin(inPin)
 		pin.Input()
@@ -241,7 +246,7 @@ func (mcp *McpIO) Setup(inputs []uint8, outputs []uint8) (err error) {
 		if err != nil {
 			return
 		}
-		mcp.Outputs = append(mcp.Outputs, McpOutput{pin: outputPin, invert: mcp.invertInputs, device: mcp.device})
+		mcp.Outputs = append(mcp.Outputs, McpOutput{pin: outputPin, invert: mcp.invertOutputs, device: mcp.device})
 	}
 
 	return

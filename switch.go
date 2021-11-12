@@ -26,7 +26,11 @@ type SwitchableDevice interface {
 	SetValue(bool)
 }
 
-func (swb *Switch) Init(driver IoDriver, switchThis ...SwitchableDevice) error {
+func (swb *Switch) GetDriverName() string {
+	return swb.DriverName
+}
+
+func (swb *Switch) Init(driver IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), swb.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
@@ -43,12 +47,10 @@ func (swb *Switch) Init(driver IoDriver, switchThis ...SwitchableDevice) error {
 		return errors.Wrap(err, "Init failed")
 	}
 
-	swb.switchThis = switchThis
-
 	return nil
 }
-func (swb *Switch) Sync() {
-	swb.State, _ = swb.input.GetState()
+func (swb *Switch) Sync() (err error) {
+	swb.State, err = swb.input.GetState()
 
 	if swb.hk != nil {
 		swb.hk.Switch.On.SetValue(swb.State)
@@ -59,6 +61,8 @@ func (swb *Switch) Sync() {
 			controlledDevice.SetValue(swb.State)
 		}
 	}
+
+	return
 }
 
 func (swb *Switch) GetHk() *accessory.Accessory {

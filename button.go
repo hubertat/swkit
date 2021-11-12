@@ -26,7 +26,11 @@ type ClickableDevice interface {
 	Toggle()
 }
 
-func (bu *Button) Init(driver IoDriver, toggleThis ...ClickableDevice) error {
+func (bu *Button) GetDriverName() string {
+	return bu.DriverName
+}
+
+func (bu *Button) Init(driver IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), bu.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
@@ -43,20 +47,20 @@ func (bu *Button) Init(driver IoDriver, toggleThis ...ClickableDevice) error {
 		return errors.Wrap(err, "Init failed")
 	}
 
-	bu.toggleThis = toggleThis
-
 	return nil
 }
 
-func (bu *Button) Sync() {
+func (bu *Button) Sync() (err error) {
 	oldState := bu.State
-	bu.State, _ = bu.input.GetState()
+	bu.State, err = bu.input.GetState()
 
 	if bu.State != oldState && bu.State {
 		for _, clickable := range bu.toggleThis {
 			clickable.Toggle()
 		}
 	}
+
+	return
 }
 
 func (bu *Button) GetHk() *accessory.Accessory {

@@ -21,6 +21,10 @@ type Outlet struct {
 	hk     *accessory.Outlet
 }
 
+func (ou *Outlet) GetDriverName() string {
+	return ou.DriverName
+}
+
 func (ou *Outlet) Init(driver IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), ou.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
@@ -41,8 +45,8 @@ func (ou *Outlet) Init(driver IoDriver) error {
 	return nil
 }
 
-func (ou *Outlet) Sync() {
-	ou.output.Set(ou.State)
+func (ou *Outlet) Sync() error {
+	return ou.output.Set(ou.State)
 }
 
 func (ou *Outlet) GetHk() *accessory.Accessory {
@@ -60,9 +64,13 @@ func (ou *Outlet) GetHk() *accessory.Accessory {
 func (ou *Outlet) SetValue(state bool) {
 	ou.State = state
 	ou.hk.Outlet.On.SetValue(ou.State)
+
+	ou.Sync()
 }
 
 func (ou *Outlet) Toggle() {
 	ou.State = !ou.State
 	ou.hk.Outlet.On.SetValue(ou.State)
+
+	ou.Sync()
 }

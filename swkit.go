@@ -6,7 +6,6 @@ import (
 
 	"github.com/brutella/hc/accessory"
 	"github.com/pkg/errors"
-	"github.com/stianeikeland/go-rpio"
 )
 
 type SwKit struct {
@@ -26,8 +25,10 @@ type SwKit struct {
 }
 
 type IO interface {
-	Sync()
-	GetHk() *accessory.Accessory
+	Sync() error
+	// GetHk() *accessory.Accessory
+	Init(driver IoDriver) error
+	GetDriverName() string
 }
 
 func (sw *SwKit) getInPins(driverName string) (pins []uint8) {
@@ -77,22 +78,32 @@ func (sw *SwKit) getIoDriverByName(name string) (driver IoDriver, err error) {
 	return
 }
 
-func (sw *SwKit) InitDrivers() error {
-
+func (sw *SwKit) getIos() []IO {
+	ios := []IO{}
 	for _, li := range sw.Lights {
-		sw.drivers[li.DriverName] = nil
+		ios = append(ios, li)
 	}
 	for _, li := range sw.Buttons {
-		sw.drivers[li.DriverName] = nil
+		ios = append(ios, li)
 	}
 	for _, li := range sw.Switches {
-		sw.drivers[li.DriverName] = nil
+		ios = append(ios, li)
 	}
 	for _, li := range sw.Outlets {
-		sw.drivers[li.DriverName] = nil
+		ios = append(ios, li)
 	}
 
-	for name, _ := range sw.drivers {
+	return ios
+}
+
+func (sw *SwKit) InitDrivers() error {
+	sw.drivers = make(map[string]IoDriver)
+
+	for _, io := range sw.getIos() {
+		sw.drivers[io.GetDriverName()] = nil
+	}
+
+	for name := range sw.drivers {
 		driver, err := sw.getIoDriverByName(name)
 		if err != nil {
 			return errors.Wrap(err, "Failed to get IoDriver")
@@ -104,30 +115,23 @@ func (sw *SwKit) InitDrivers() error {
 		sw.drivers[name] = driver
 	}
 
+	for _, io := range sw.getIos() {
+		err := io.Init(sw.drivers[io.GetDriverName()])
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
-func (sw *SwKit) SyncAll() error {
-	err := rpio.Open()
-	if err != nil {
-		return err
-	}
-	defer rpio.Close()
+func (sw *SwKit) SyncAll() (errors []error) {
 
-	for _, li := range sw.Lights {
-		li.Sync()
-	}
-	for _, li := range sw.Buttons {
-		li.Sync()
-	}
-	for _, li := range sw.Shutters {
-		li.Sync()
-	}
-	for _, ou := range sw.Outlets {
-		ou.Sync()
+	for _, io := range sw.getIos() {
+		errors = append(errors, io.Sync())
 	}
 
-	return nil
+	return
 }
 
 func (sw *SwKit) GetHkAccessories() (acc []*accessory.Accessory) {

@@ -20,7 +20,7 @@ var (
 		User:               "swkit",
 		UserGroups:         []string{"gpio"},
 		ServicePath:        "/etc/systemd/system/swkit.service",
-		ServiceDescription: "SwKit service: HomeKit enabled switch/input/roller shutter controller using RPi GPIO.",
+		ServiceDescription: "SwKit service: HomeKit enabled switch/input/roller shutter controller. github.com/hubertat/swkit",
 		ExecDir:            "/srv/swkit",
 		ExecName:           "swkit",
 	}
@@ -41,7 +41,6 @@ func main() {
 	}
 
 	swkit := &SwKit{}
-
 	configFile, err := os.Open(*config)
 	if err == nil {
 		cBuff, err := io.ReadAll(configFile)
@@ -56,6 +55,11 @@ func main() {
 	} else {
 		log.Fatalf("can't find/open config file (%s), running on defaults\n%v\n", *config, err)
 	}
+	err = swkit.InitDrivers()
+	if err != nil {
+		panic(err)
+	}
+
 	if len(swkit.HkPin) == 8 && len(swkit.HkSetupId) == 4 {
 		log.Println("starting HomeKit service")
 		info := accessory.Info{

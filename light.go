@@ -22,6 +22,10 @@ type Light struct {
 	hk     *accessory.Lightbulb
 }
 
+func (li *Light) GetDriverName() string {
+	return li.DriverName
+}
+
 func (li *Light) Init(driver IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), li.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
@@ -42,8 +46,8 @@ func (li *Light) Init(driver IoDriver) error {
 	return nil
 }
 
-func (li *Light) Sync() {
-	li.output.Set(li.State)
+func (li *Light) Sync() error {
+	return li.output.Set(li.State)
 }
 
 func (li *Light) GetHk() *accessory.Accessory {
@@ -61,9 +65,13 @@ func (li *Light) GetHk() *accessory.Accessory {
 func (li *Light) SetValue(state bool) {
 	li.State = state
 	li.hk.Lightbulb.On.SetValue(li.State)
+
+	li.Sync()
 }
 
 func (li *Light) Toggle() {
 	li.State = !li.State
 	li.hk.Lightbulb.On.SetValue(li.State)
+
+	li.Sync()
 }
