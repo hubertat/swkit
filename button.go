@@ -44,7 +44,11 @@ func (bu *Button) Init(driver IoDriver) error {
 	bu.driver = driver
 	bu.input, err = driver.GetInput(bu.InPin)
 	if err != nil {
-		return errors.Wrap(err, "Init failed")
+		return errors.Wrap(err, "Init failed on getting input")
+	}
+	bu.State, err = bu.input.GetState()
+	if err != nil {
+		return errors.Wrap(err, "Init failed, on reading state")
 	}
 
 	return nil

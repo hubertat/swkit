@@ -7,6 +7,9 @@ import (
 	"github.com/stianeikeland/go-rpio"
 )
 
+const gpioDriverName = "gpio"
+const mcpioDriverName = "mcpio"
+
 type IoDriver interface {
 	Setup(inputs []uint8, outputs []uint8) error
 	Close() error
@@ -15,6 +18,7 @@ type IoDriver interface {
 	IsReady() bool
 	GetInput(pin uint8) (DigitalInput, error)
 	GetOutput(pin uint8) (DigitalOutput, error)
+	GetAllIo() (inputs []uint8, outputs []uint8)
 }
 
 type DigitalInput interface {
@@ -27,12 +31,13 @@ type DigitalOutput interface {
 }
 
 type GpIO struct {
-	Inputs  []GpInput
-	Outputs []GpOutput
+	inputs  []GpInput
+	outputs []GpOutput
 
-	invertInputs  bool
-	invertOutputs bool
-	isReady       bool
+	InvertInputs  bool
+	InvertOutputs bool
+
+	isReady bool
 }
 
 type GpInput struct {
@@ -88,13 +93,13 @@ func (gp *GpIO) Setup(inputs []uint8, outputs []uint8) error {
 		pin := rpio.Pin(inPin)
 		pin.Input()
 		pin.PullUp()
-		gp.Inputs = append(gp.Inputs, GpInput{pin: inPin, invert: gp.invertInputs})
+		gp.inputs = append(gp.inputs, GpInput{pin: inPin, invert: gp.InvertInputs})
 	}
 
 	for _, outPin := range outputs {
 		pin := rpio.Pin(outPin)
 		pin.Output()
-		gp.Outputs = append(gp.Outputs, GpOutput{pin: outPin, invert: gp.invertOutputs})
+		gp.outputs = append(gp.outputs, GpOutput{pin: outPin, invert: gp.InvertOutputs})
 	}
 
 	gp.isReady = true
@@ -102,7 +107,7 @@ func (gp *GpIO) Setup(inputs []uint8, outputs []uint8) error {
 }
 
 func (gp *GpIO) NameId() string {
-	return "gpio"
+	return gpioDriverName
 }
 
 func (gp *GpIO) IsReady() bool {
@@ -111,11 +116,14 @@ func (gp *GpIO) IsReady() bool {
 
 func (gp *GpIO) Close() error {
 	gp.isReady = false
+	for _, output := range gp.outputs {
+		output.Set(false)
+	}
 	return rpio.Close()
 }
 
 func (gp *GpIO) GetInput(id uint8) (input DigitalInput, err error) {
-	for _, in := range gp.Inputs {
+	for _, in := range gp.inputs {
 		if in.pin == id {
 			input = &in
 			return
@@ -127,7 +135,7 @@ func (gp *GpIO) GetInput(id uint8) (input DigitalInput, err error) {
 }
 
 func (gp *GpIO) GetOutput(id uint8) (output DigitalOutput, err error) {
-	for _, out := range gp.Outputs {
+	for _, out := range gp.outputs {
 		if out.pin == id {
 			output = &out
 			return
@@ -143,17 +151,29 @@ func (gp *GpIO) GetUniqueId(ioPin uint8) uint64 {
 	return baseId + uint64(ioPin)
 }
 
+func (gp *GpIO) GetAllIo() (inputs []uint8, outputs []uint8) {
+	for _, input := range gp.inputs {
+		inputs = append(inputs, input.pin)
+	}
+
+	for _, output := range gp.outputs {
+		outputs = append(outputs, output.pin)
+	}
+
+	return
+}
+
 type McpIO struct {
 	device *mcp23017.Device
 
-	Inputs  []McpInput
-	Outputs []McpOutput
+	inputs  []McpInput
+	outputs []McpOutput
+	isReady bool
 
 	BusNo         uint8
 	DevNo         uint8
-	invertInputs  bool
-	invertOutputs bool
-	isReady       bool
+	InvertInputs  bool
+	InvertOutputs bool
 }
 
 type McpInput struct {
@@ -216,7 +236,7 @@ func (mcpio *McpIO) GetUniqueId(ioPin uint8) uint64 {
 }
 
 func (mcpio *McpIO) NameId() string {
-	return "mcpio"
+	return mcpioDriverName
 }
 
 func (mcpio *McpIO) IsReady() bool {
@@ -238,7 +258,7 @@ func (mcp *McpIO) Setup(inputs []uint8, outputs []uint8) (err error) {
 		if err != nil {
 			return
 		}
-		mcp.Inputs = append(mcp.Inputs, McpInput{pin: inputPin, invert: mcp.invertInputs, device: mcp.device})
+		mcp.inputs = append(mcp.inputs, McpInput{pin: inputPin, invert: mcp.InvertInputs, device: mcp.device})
 	}
 
 	for _, outputPin := range outputs {
@@ -246,14 +266,14 @@ func (mcp *McpIO) Setup(inputs []uint8, outputs []uint8) (err error) {
 		if err != nil {
 			return
 		}
-		mcp.Outputs = append(mcp.Outputs, McpOutput{pin: outputPin, invert: mcp.invertOutputs, device: mcp.device})
+		mcp.outputs = append(mcp.outputs, McpOutput{pin: outputPin, invert: mcp.InvertOutputs, device: mcp.device})
 	}
 
 	return
 }
 
 func (mcp *McpIO) GetInput(id uint8) (input DigitalInput, err error) {
-	for _, in := range mcp.Inputs {
+	for _, in := range mcp.inputs {
 		if in.pin == id {
 			input = &in
 			return
@@ -265,7 +285,7 @@ func (mcp *McpIO) GetInput(id uint8) (input DigitalInput, err error) {
 }
 
 func (mcp *McpIO) GetOutput(id uint8) (output DigitalOutput, err error) {
-	for _, out := range mcp.Outputs {
+	for _, out := range mcp.outputs {
 		if out.pin == id {
 			output = &out
 			return
@@ -277,5 +297,21 @@ func (mcp *McpIO) GetOutput(id uint8) (output DigitalOutput, err error) {
 }
 
 func (mcp *McpIO) Close() error {
+	mcp.isReady = false
+	for _, output := range mcp.outputs {
+		output.Set(false)
+	}
 	return mcp.device.Close()
+}
+
+func (mcp *McpIO) GetAllIo() (inputs []uint8, outputs []uint8) {
+	for _, input := range mcp.inputs {
+		inputs = append(inputs, input.pin)
+	}
+
+	for _, output := range mcp.outputs {
+		outputs = append(outputs, output.pin)
+	}
+
+	return
 }

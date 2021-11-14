@@ -14,8 +14,7 @@ type Light struct {
 	DriverName string
 	OutPin     uint8
 
-	ControlByName string
-	SwitchByName  string
+	ControlBy []ControllingDevice
 
 	output DigitalOutput
 	driver IoDriver
@@ -48,6 +47,10 @@ func (li *Light) Init(driver IoDriver) error {
 
 func (li *Light) Sync() error {
 	return li.output.Set(li.State)
+}
+
+func (li *Light) GetControllers() []ControllingDevice {
+	return li.ControlBy
 }
 
 func (li *Light) GetHk() *accessory.Accessory {

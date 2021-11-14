@@ -13,10 +13,14 @@ import (
 	"github.com/hubertat/servicemaker"
 )
 
+const defaultSyncInterval = "250ms"
+
 var (
-	config      = flag.String("config", "config.json", "path of the configuration file")
-	flagInstall = flag.Bool("install", false, "Install service in os")
-	swkService  = servicemaker.ServiceMaker{
+	config       = flag.String("config", "config.json", "path of the configuration file")
+	flagInstall  = flag.Bool("install", false, "Install service in os")
+	syncInterval = flag.String("sync", defaultSyncInterval, "sync interval (time.Duration)")
+
+	swkService = servicemaker.ServiceMaker{
 		User:               "swkit",
 		UserGroups:         []string{"gpio"},
 		ServicePath:        "/etc/systemd/system/swkit.service",
@@ -40,6 +44,11 @@ func main() {
 		}
 	}
 
+	syncDuration, err := time.ParseDuration(*syncInterval)
+	if err != nil {
+		panic(err)
+	}
+
 	swkit := &SwKit{}
 	configFile, err := os.Open(*config)
 	if err == nil {
@@ -55,10 +64,21 @@ func main() {
 	} else {
 		log.Fatalf("can't find/open config file (%s), running on defaults\n%v\n", *config, err)
 	}
+	log.Println("will init swkit drivers...")
 	err = swkit.InitDrivers()
+	defer swkit.Close()
 	if err != nil {
 		panic(err)
 	}
+	log.Printf("drivers OK!\nwill try to MatchControllers:\n")
+	err = swkit.MatchControllers()
+	if err != nil {
+		log.Printf("Matching Controllers returned error: %v\n we will proceed...", err)
+	} else {
+		log.Println("MatchControllers OK!")
+	}
+
+	swkit.PrintIoStatus(os.Stdout)
 
 	if len(swkit.HkPin) == 8 && len(swkit.HkSetupId) == 4 {
 		log.Println("starting HomeKit service")
@@ -79,7 +99,7 @@ func main() {
 			return
 		}
 
-		go swkit.StartTicker(750 * time.Millisecond)
+		go swkit.StartTicker(syncDuration)
 
 		hc.OnTermination(func() {
 			<-t.Stop()
@@ -88,7 +108,7 @@ func main() {
 		t.Start()
 	} else {
 		log.Println("HomeKit not configured, wont start")
-		swkit.StartTicker(750 * time.Millisecond)
+		swkit.StartTicker(syncDuration)
 	}
 
 }

@@ -14,7 +14,7 @@ type Outlet struct {
 	DriverName string
 	OutPin     uint8
 
-	ControlByName string
+	ControlBy []ControllingDevice
 
 	output DigitalOutput
 	driver IoDriver
@@ -47,6 +47,10 @@ func (ou *Outlet) Init(driver IoDriver) error {
 
 func (ou *Outlet) Sync() error {
 	return ou.output.Set(ou.State)
+}
+
+func (ou *Outlet) GetControllers() []ControllingDevice {
+	return ou.ControlBy
 }
 
 func (ou *Outlet) GetHk() *accessory.Accessory {
