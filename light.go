@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/brutella/hc/accessory"
 	"github.com/pkg/errors"
@@ -19,6 +20,7 @@ type Light struct {
 	output DigitalOutput
 	driver IoDriver
 	hk     *accessory.Lightbulb
+	lock   sync.Mutex
 }
 
 func (li *Light) GetDriverName() string {
@@ -34,6 +36,8 @@ func (li *Light) Init(driver IoDriver) error {
 		return fmt.Errorf("Init failed, driver not ready")
 	}
 
+	li.lock = sync.Mutex{}
+
 	var err error
 
 	li.driver = driver
@@ -46,6 +50,10 @@ func (li *Light) Init(driver IoDriver) error {
 }
 
 func (li *Light) Sync() error {
+	li.lock.Lock()
+	defer li.lock.Unlock()
+
+	li.hk.Lightbulb.On.SetValue(li.State)
 	return li.output.Set(li.State)
 }
 
@@ -67,14 +75,12 @@ func (li *Light) GetHk() *accessory.Accessory {
 
 func (li *Light) SetValue(state bool) {
 	li.State = state
-	li.hk.Lightbulb.On.SetValue(li.State)
 
 	li.Sync()
 }
 
 func (li *Light) Toggle() {
 	li.State = !li.State
-	li.hk.Lightbulb.On.SetValue(li.State)
 
 	li.Sync()
 }
