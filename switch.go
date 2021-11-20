@@ -2,19 +2,23 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/brutella/hc/accessory"
-	"github.com/stianeikeland/go-rpio"
+	"github.com/pkg/errors"
 )
 
 type Switch struct {
-	Name           string
-	Gpio           int
-	Invert         bool
-	State          bool
-	HomeKitEnabled bool
+	Name       string
+	State      bool
+	DriverName string
+	InPin      uint8
 
-	switchThis SwitchableDevice
+	DisableHomeKit bool
+
+	switchThis []SwitchableDevice
+	input      DigitalInput
+	driver     IoDriver
 	hk         *accessory.Switch
 }
 
@@ -22,37 +26,54 @@ type SwitchableDevice interface {
 	SetValue(bool)
 }
 
-func (swb *Switch) SetupGpio() {
-	pin := rpio.Pin(swb.Gpio)
-	pin.Input()
-	pin.PullUp()
+func (swb *Switch) GetDriverName() string {
+	return swb.DriverName
 }
-func (swb *Switch) Sync() {
-	pin := rpio.Pin(swb.Gpio)
-	if swb.Invert {
-		swb.State = pin.Read() == rpio.High
-	} else {
-		swb.State = pin.Read() == rpio.Low
+
+func (swb *Switch) Init(driver IoDriver) error {
+	if !strings.EqualFold(driver.NameId(), swb.DriverName) {
+		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
+
+	if !driver.IsReady() {
+		return fmt.Errorf("Init failed, driver not ready")
+	}
+
+	var err error
+
+	swb.driver = driver
+	swb.input, err = driver.GetInput(swb.InPin)
+	if err != nil {
+		return errors.Wrap(err, "Init failed")
+	}
+
+	return nil
+}
+func (swb *Switch) Sync() (err error) {
+	swb.State, err = swb.input.GetState()
 
 	if swb.hk != nil {
 		swb.hk.Switch.On.SetValue(swb.State)
 	}
 
-	if swb.switchThis != nil {
-		swb.switchThis.SetValue(swb.State)
+	if len(swb.switchThis) > 0 {
+		for _, controlledDevice := range swb.switchThis {
+			controlledDevice.SetValue(swb.State)
+		}
 	}
+
+	return
 }
 
 func (swb *Switch) GetHk() *accessory.Accessory {
-	if !swb.HomeKitEnabled {
+	if swb.DisableHomeKit {
 		return nil
 	}
 
 	info := accessory.Info{
 		Name:         swb.Name,
-		ID:           uint64(swb.Gpio),
-		SerialNumber: fmt.Sprintf("switch:gpio:%02d", swb.Gpio),
+		ID:           swb.driver.GetUniqueId(swb.InPin),
+		SerialNumber: fmt.Sprintf("switch:%s:%02d", swb.DriverName, swb.InPin),
 	}
 	swb.hk = accessory.NewSwitch(info)
 	swb.hk.Switch.On.OnValueRemoteGet(swb.GetValue)

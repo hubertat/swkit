@@ -2,46 +2,70 @@ package main
 
 import (
 	"fmt"
+	"strings"
+	"sync"
 
 	"github.com/brutella/hc/accessory"
-	"github.com/stianeikeland/go-rpio"
+	"github.com/pkg/errors"
 )
 
 type Light struct {
-	Name          string
-	Gpio          int
-	Invert        bool
-	State         bool
-	ControlByGpio int
+	Name       string
+	State      bool
+	DriverName string
+	OutPin     uint8
 
-	hk *accessory.Lightbulb
+	ControlBy []ControllingDevice
+
+	output DigitalOutput
+	driver IoDriver
+	hk     *accessory.Lightbulb
+	lock   sync.Mutex
 }
 
-func (li *Light) SetupGpio() {
-	pin := rpio.Pin(li.Gpio)
-	pin.Output()
-
+func (li *Light) GetDriverName() string {
+	return li.DriverName
 }
 
-func (li *Light) Sync() {
-	pin := rpio.Pin(li.Gpio)
+func (li *Light) Init(driver IoDriver) error {
+	if !strings.EqualFold(driver.NameId(), li.DriverName) {
+		return fmt.Errorf("Init failed, mismatched or incorrect driver")
+	}
 
-	state := li.State
-	if li.Invert {
-		state = !state
+	if !driver.IsReady() {
+		return fmt.Errorf("Init failed, driver not ready")
 	}
-	if state {
-		pin.High()
-	} else {
-		pin.Low()
+
+	li.lock = sync.Mutex{}
+
+	var err error
+
+	li.driver = driver
+	li.output, err = driver.GetOutput(li.OutPin)
+	if err != nil {
+		return errors.Wrap(err, "Init failed")
 	}
+
+	return nil
+}
+
+func (li *Light) Sync() error {
+	li.lock.Lock()
+	defer li.lock.Unlock()
+
+	li.hk.Lightbulb.On.SetValue(li.State)
+	return li.output.Set(li.State)
+}
+
+func (li *Light) GetControllers() []ControllingDevice {
+	return li.ControlBy
 }
 
 func (li *Light) GetHk() *accessory.Accessory {
 	info := accessory.Info{
 		Name:         li.Name,
-		ID:           uint64(li.Gpio),
-		SerialNumber: fmt.Sprintf("light:gpio:%02d", li.Gpio),
+		ID:           li.driver.GetUniqueId(li.OutPin),
+		SerialNumber: fmt.Sprintf("light:%s:%02d", li.DriverName, li.OutPin),
 	}
 	li.hk = accessory.NewLightbulb(info)
 	li.hk.Lightbulb.On.OnValueRemoteUpdate(li.SetValue)
@@ -51,10 +75,12 @@ func (li *Light) GetHk() *accessory.Accessory {
 
 func (li *Light) SetValue(state bool) {
 	li.State = state
-	li.hk.Lightbulb.On.SetValue(li.State)
+
+	li.Sync()
 }
 
 func (li *Light) Toggle() {
 	li.State = !li.State
-	li.hk.Lightbulb.On.SetValue(li.State)
+
+	li.Sync()
 }
