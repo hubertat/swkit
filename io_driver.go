@@ -130,7 +130,7 @@ func (gp *GpIO) GetInput(id uint8) (input DigitalInput, err error) {
 		}
 	}
 
-	err = fmt.Errorf("input (id: %d) not found", id)
+	err = fmt.Errorf("GpIO Input (id: %d) not found", id)
 	return
 }
 
@@ -142,7 +142,7 @@ func (gp *GpIO) GetOutput(id uint8) (output DigitalOutput, err error) {
 		}
 	}
 
-	err = fmt.Errorf("input (id: %d) not found", id)
+	err = fmt.Errorf("GpIO Output (id: %d) not found", id)
 	return
 }
 
