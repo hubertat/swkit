@@ -24,7 +24,7 @@ type RemoteInput struct {
 func (ifr *RemoteInput) GetState() (state bool, err error) {
 	state = ifr.state
 	if time.Since(ifr.lastSync) > requiredRemoteIoStateAge {
-		err = errors.Errorf("InputFromRemote state too old: ", time.Since(ifr.lastSync).String())
+		err = errors.Errorf("InputFromRemote state too old: %s", time.Since(ifr.lastSync).String())
 	}
 	return
 }
@@ -40,7 +40,7 @@ type RemoteOutput struct {
 func (otr *RemoteOutput) GetState() (state bool, err error) {
 	state = otr.state
 	if time.Since(otr.lastSync) > requiredRemoteIoStateAge {
-		err = errors.Errorf("OutputToRemote state too old: ", time.Since(otr.lastSync).String())
+		err = errors.Errorf("OutputToRemote state too old: %s", time.Since(otr.lastSync).String())
 	}
 	return
 }
@@ -74,8 +74,13 @@ func (rio *RemoteIO) getRemoteResponse(path string) (response *http.Response, er
 		err = errors.Wrapf(err, "RemoteIO error parsing url (%s)", path)
 		return
 	}
-
-	response, err = netClient.Get(reqUrl.String())
+	req, err := http.NewRequest("GET", reqUrl.String(), nil)
+	if err != nil {
+		err = errors.Wrap(err, "RemoteIO error preparing request")
+		return
+	}
+	req.Header.Add("remoteio-token", rio.Token)
+	response, err = netClient.Do(req)
 	return
 }
 
@@ -94,11 +99,15 @@ func (rio *RemoteIO) Setup(inputs []uint8, outputs []uint8) error {
 		Inputs  []uint8
 		Outputs []uint8
 	}
-	remoteConfig := RemoteConfig{}
+	remoteConfig := &RemoteConfig{}
 
 	err = json.NewDecoder(response.Body).Decode(remoteConfig)
 	if err != nil {
 		return errors.Wrap(err, "RemoteIO Setup: decoding response failed")
+	}
+
+	if len(remoteConfig.Inputs) == 0 && len(remoteConfig.Outputs) == 0 {
+		return errors.Errorf("RemoteIO Setup: received response with 0 inputs and 0 outpus - not ready")
 	}
 
 	for _, input := range inputs {
