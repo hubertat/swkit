@@ -75,7 +75,7 @@ func (mout *McpOutput) Set(state bool) (err error) {
 }
 
 func (mcpio *McpIO) GetUniqueId(ioPin uint16) uint64 {
-	baseId := uint64(0x02000000)
+	baseId := uint64(0x02) << 56
 	baseId += uint64(mcpio.BusNo) << 16
 	baseId += uint64(mcpio.DevNo) << 8
 	return baseId + uint64(ioPin)

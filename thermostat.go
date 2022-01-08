@@ -127,8 +127,16 @@ func (th *Thermostat) Sync() (err error) {
 		return errors.Errorf("missing temperature sensor for thermostat %s", th.Name)
 	}
 	th.CurrentTemperature, err = th.temperatureSensor.GetValue()
+	if err != nil {
+		err = errors.Wrap(err, "error with getting sensor value")
+		return
+	}
 
-	th.calculateOutputs()
+	err = th.calculateOutputs()
+	if err != nil {
+		err = errors.Wrap(err, "failed when calculateOutputs")
+		return
+	}
 
 	th.syncHkValues()
 
@@ -143,32 +151,48 @@ func (th *Thermostat) Sync() (err error) {
 	return
 }
 
-func (th *Thermostat) calculateOutputs() {
+func (th *Thermostat) calculateOutputs() (err error) {
 	switch th.TargetState {
 	default:
-		th.heatOut.Set(false)
+		err = th.heatOut.Set(false)
+		if err != nil {
+			return
+		}
 		if th.CoolingEnabled {
-			th.coolOut.Set(false)
+			err = th.coolOut.Set(false)
 		}
 	case 1:
-		if th.CoolingEnabled {
-			th.coolOut.Set(false)
+		err = th.heatOut.Set(th.checkHeatingCondition())
+		if err != nil {
+			return
 		}
-		th.heatOut.Set(th.checkHeatingCondition())
+		if th.CoolingEnabled {
+			err = th.coolOut.Set(false)
+		}
 	case 2:
-		th.heatOut.Set(false)
-		th.coolOut.Set(th.checkCoolingCondition())
+		err = th.heatOut.Set(false)
+		if err != nil {
+			return
+		}
+		err = th.coolOut.Set(th.checkCoolingCondition())
 	case 3:
 		if th.checkHeatingCondition() {
-			th.heatOut.Set(true)
-			th.coolOut.Set(false)
+			err = th.heatOut.Set(true)
+			if err != nil {
+				return
+			}
+			err = th.coolOut.Set(false)
 		} else {
 			if th.checkCoolingCondition() {
-				th.heatOut.Set(false)
-				th.coolOut.Set(true)
+				err = th.heatOut.Set(false)
+				if err != nil {
+					return
+				}
+				err = th.coolOut.Set(true)
 			}
 		}
 	}
+	return
 }
 
 func (th *Thermostat) getCurrentHeatingCoolingState() (currentHeatingCoolingState int) {

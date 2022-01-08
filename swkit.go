@@ -24,6 +24,7 @@ type SwKit struct {
 
 	Mcp23017 *McpIO
 	Gpio     *GpIO
+	Grenton  *GrentonIO
 
 	InfluxSensors *InfluxSensors
 	WireSensors   *Wire
@@ -104,6 +105,12 @@ func (sw *SwKit) getIoDriverByName(name string) (driver IoDriver, err error) {
 			err = errors.New("cannot initialize Mcp23017 driver, config not present")
 		} else {
 			driver = sw.Mcp23017
+		}
+	case "grenton":
+		if sw.Grenton == nil {
+			err = errors.Errorf("cannot initialize GrentonIO driver, config not present")
+		} else {
+			driver = sw.Grenton
 		}
 	default:
 		err = errors.Errorf("driver (%s) not found", name)
@@ -321,9 +328,11 @@ func (sw *SwKit) StartTicker(interval time.Duration, sensorsInterval time.Durati
 
 func (sw *SwKit) Close() (errors []error) {
 	for _, driver := range sw.drivers {
-		err := driver.Close()
-		if err != nil {
-			errors = append(errors, err)
+		if driver != nil {
+			err := driver.Close()
+			if err != nil {
+				errors = append(errors, err)
+			}
 		}
 	}
 

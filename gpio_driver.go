@@ -140,7 +140,7 @@ func (gp *GpIO) GetOutput(id uint16) (output DigitalOutput, err error) {
 }
 
 func (gp *GpIO) GetUniqueId(ioPin uint16) uint64 {
-	baseId := uint64(0x01000000)
+	baseId := uint64(0x01) << 56
 	return baseId + uint64(ioPin)
 }
 
