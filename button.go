@@ -12,7 +12,7 @@ type Button struct {
 	Name       string
 	State      bool
 	DriverName string
-	InPin      uint8
+	InPin      uint16
 
 	DisableHomeKit bool
 

@@ -42,7 +42,7 @@ type IO interface {
 
 type ControllingDevice struct {
 	Enable     bool
-	Pin        uint8
+	Pin        uint16
 	DriverName string
 }
 
@@ -53,7 +53,7 @@ type Controllable interface {
 	Toggle()
 }
 
-func (sw *SwKit) getInPins(driverName string) (pins []uint8) {
+func (sw *SwKit) getInPins(driverName string) (pins []uint16) {
 	for _, io := range sw.Buttons {
 		if strings.EqualFold(io.DriverName, driverName) {
 			pins = append(pins, io.InPin)
@@ -68,7 +68,7 @@ func (sw *SwKit) getInPins(driverName string) (pins []uint8) {
 	return
 }
 
-func (sw *SwKit) getOutPins(driverName string) (pins []uint8) {
+func (sw *SwKit) getOutPins(driverName string) (pins []uint16) {
 	for _, io := range sw.Lights {
 		if strings.EqualFold(io.DriverName, driverName) {
 			pins = append(pins, io.OutPin)
@@ -162,7 +162,7 @@ func (sw *SwKit) InitDrivers() error {
 	return nil
 }
 
-func (sw *SwKit) findSwitch(pinNo uint8, driverName string) *Switch {
+func (sw *SwKit) findSwitch(pinNo uint16, driverName string) *Switch {
 	for _, swb := range sw.Switches {
 		if swb.InPin == pinNo && swb.DriverName == driverName {
 			return swb
@@ -172,7 +172,7 @@ func (sw *SwKit) findSwitch(pinNo uint8, driverName string) *Switch {
 	return nil
 }
 
-func (sw *SwKit) findButton(pinNo uint8, driverName string) *Button {
+func (sw *SwKit) findButton(pinNo uint16, driverName string) *Button {
 	for _, but := range sw.Buttons {
 		if but.InPin == pinNo && but.DriverName == driverName {
 			return but

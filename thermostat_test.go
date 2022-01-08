@@ -22,7 +22,7 @@ func TestThremostatInit(t *testing.T) {
 
 	thermo := Thermostat{}
 	thermo.DriverName = "mock_driver"
-	thermo.HeatPin = uint8(5)
+	thermo.HeatPin = uint16(5)
 
 	md := MockIoDriver{}
 
@@ -31,7 +31,7 @@ func TestThremostatInit(t *testing.T) {
 		t.Error("got nil error when Init with not ready driver")
 	}
 
-	md.Setup([]uint8{}, []uint8{5})
+	md.Setup([]uint16{}, []uint16{5})
 
 	err = thermo.Init(&md)
 	if err != nil {
@@ -61,10 +61,10 @@ func TestThremostatInit(t *testing.T) {
 func TestCheckHeatingCondition(t *testing.T) {
 	thermo := Thermostat{}
 	thermo.DriverName = "mock_driver"
-	thermo.HeatPin = uint8(3)
+	thermo.HeatPin = uint16(3)
 
 	md := MockIoDriver{}
-	md.Setup([]uint8{}, []uint8{3})
+	md.Setup([]uint16{}, []uint16{3})
 	thermo.Init(&md)
 
 	heatOut, _ := md.GetOutput(3)
@@ -104,12 +104,12 @@ func TestCheckHeatingCondition(t *testing.T) {
 func TestGetCurrentHeatingCoolingState(t *testing.T) {
 	thermo := Thermostat{}
 	thermo.DriverName = "mock_driver"
-	thermo.HeatPin = uint8(3)
-	thermo.CoolPin = uint8(5)
+	thermo.HeatPin = uint16(3)
+	thermo.CoolPin = uint16(5)
 	thermo.CoolingEnabled = true
 
 	md := MockIoDriver{}
-	md.Setup([]uint8{}, []uint8{3, 5})
+	md.Setup([]uint16{}, []uint16{3, 5})
 	thermo.Init(&md)
 
 	heatOut, _ := md.GetOutput(3)
@@ -143,12 +143,12 @@ func TestGetCurrentHeatingCoolingState(t *testing.T) {
 func TestCalculateOutputs(t *testing.T) {
 	thermo := Thermostat{}
 	thermo.DriverName = "mock_driver"
-	thermo.HeatPin = uint8(3)
-	thermo.CoolPin = uint8(5)
+	thermo.HeatPin = uint16(3)
+	thermo.CoolPin = uint16(5)
 	thermo.CoolingEnabled = true
 
 	md := MockIoDriver{}
-	md.Setup([]uint8{}, []uint8{3, 5})
+	md.Setup([]uint16{}, []uint16{3, 5})
 	thermo.Init(&md)
 
 	heatOut, _ := md.GetOutput(3)

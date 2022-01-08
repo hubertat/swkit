@@ -13,7 +13,7 @@ type Light struct {
 	Name       string
 	State      bool
 	DriverName string
-	OutPin     uint8
+	OutPin     uint16
 
 	ControlBy []ControllingDevice
 

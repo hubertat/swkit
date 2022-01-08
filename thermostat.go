@@ -21,8 +21,8 @@ type Thermostat struct {
 	TargetState        int
 
 	DriverName string
-	HeatPin    uint8
-	CoolPin    uint8
+	HeatPin    uint16
+	CoolPin    uint16
 	SensorId   string
 
 	MinimumTemperature float64

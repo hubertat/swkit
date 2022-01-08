@@ -10,7 +10,7 @@ func assertBools(t testing.TB, got, want bool) {
 	}
 }
 
-func assertUint8Slices(t testing.TB, got, want []uint8) {
+func assertUint16Slices(t testing.TB, got, want []uint16) {
 	t.Helper()
 
 	if len(got) != len(want) {
@@ -78,7 +78,7 @@ func TestMockIoSetup(t *testing.T) {
 	got := md.IsReady()
 	assertBools(t, got, want)
 
-	md.Setup([]uint8{1, 3, 5}, []uint8{2, 4})
+	md.Setup([]uint16{1, 3, 5}, []uint16{2, 4})
 	want = true
 	got = md.IsReady()
 	assertBools(t, got, want)
@@ -86,10 +86,10 @@ func TestMockIoSetup(t *testing.T) {
 
 func TestMockIoGetAllIo(t *testing.T) {
 	md := MockIoDriver{}
-	md.Setup([]uint8{1, 3, 5}, []uint8{2, 4})
+	md.Setup([]uint16{1, 3, 5}, []uint16{2, 4})
 	inputs, outputs := md.GetAllIo()
-	assertUint8Slices(t, inputs, []uint8{1, 3, 5})
-	assertUint8Slices(t, outputs, []uint8{2, 4})
+	assertUint16Slices(t, inputs, []uint16{1, 3, 5})
+	assertUint16Slices(t, outputs, []uint16{2, 4})
 }
 
 func TestMockIoGetUniqueId(t *testing.T) {
@@ -105,7 +105,7 @@ func TestMockIoGetUniqueId(t *testing.T) {
 
 func TestMockGetOutput(t *testing.T) {
 	md := MockIoDriver{}
-	md.Setup([]uint8{}, []uint8{3})
+	md.Setup([]uint16{}, []uint16{3})
 	output, err := md.GetOutput(3)
 	if err != nil {
 		t.Errorf("GetOutput returned err: %v", err)

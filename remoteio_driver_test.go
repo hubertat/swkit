@@ -83,5 +83,3 @@ func TestRemoteIoSetup(t *testing.T) {
 		t.Error("error expected, got nil")
 	}
 }
-
-func TestRemoteIoName

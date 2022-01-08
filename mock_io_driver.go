@@ -4,7 +4,7 @@ import "fmt"
 
 type MockOutput struct {
 	state bool
-	pin   uint8
+	pin   uint16
 }
 
 func (mo *MockOutput) GetState() (bool, error) {
@@ -18,7 +18,7 @@ func (mo *MockOutput) Set(state bool) error {
 
 type MockInput struct {
 	State bool
-	pin   uint8
+	pin   uint16
 }
 
 func (mi *MockInput) GetState() (bool, error) {
@@ -31,7 +31,7 @@ type MockIoDriver struct {
 	ready   bool
 }
 
-func (md *MockIoDriver) Setup(inputs []uint8, outputs []uint8) error {
+func (md *MockIoDriver) Setup(inputs []uint16, outputs []uint16) error {
 	for _, inPin := range inputs {
 		md.inputs = append(md.inputs, &MockInput{pin: inPin})
 	}
@@ -50,7 +50,7 @@ func (md *MockIoDriver) NameId() string {
 	return "mock_driver"
 }
 
-func (md *MockIoDriver) GetUniqueId(ioPin uint8) uint64 {
+func (md *MockIoDriver) GetUniqueId(ioPin uint16) uint64 {
 	baseId := uint64(0xABCDEF00)
 	return baseId + uint64(ioPin)
 }
@@ -59,7 +59,7 @@ func (md *MockIoDriver) IsReady() bool {
 	return md.ready
 }
 
-func (md *MockIoDriver) GetInput(pin uint8) (DigitalInput, error) {
+func (md *MockIoDriver) GetInput(pin uint16) (DigitalInput, error) {
 	for _, input := range md.inputs {
 		if pin == input.pin {
 			return input, nil
@@ -68,7 +68,7 @@ func (md *MockIoDriver) GetInput(pin uint8) (DigitalInput, error) {
 	return nil, fmt.Errorf("mock input %d not found", pin)
 }
 
-func (md *MockIoDriver) GetOutput(pin uint8) (DigitalOutput, error) {
+func (md *MockIoDriver) GetOutput(pin uint16) (DigitalOutput, error) {
 	for _, output := range md.outputs {
 		if pin == output.pin {
 			return output, nil
@@ -77,7 +77,7 @@ func (md *MockIoDriver) GetOutput(pin uint8) (DigitalOutput, error) {
 	return nil, fmt.Errorf("mock output %d not found", pin)
 }
 
-func (md *MockIoDriver) GetAllIo() (inputs []uint8, outputs []uint8) {
+func (md *MockIoDriver) GetAllIo() (inputs []uint16, outputs []uint16) {
 	for _, input := range md.inputs {
 		inputs = append(inputs, input.pin)
 	}

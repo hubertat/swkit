@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/pkg/errors"
 	"github.com/racerxdl/go-mcp23017"
 )
 
@@ -73,7 +74,7 @@ func (mout *McpOutput) Set(state bool) (err error) {
 	return
 }
 
-func (mcpio *McpIO) GetUniqueId(ioPin uint8) uint64 {
+func (mcpio *McpIO) GetUniqueId(ioPin uint16) uint64 {
 	baseId := uint64(0x02000000)
 	baseId += uint64(mcpio.BusNo) << 16
 	baseId += uint64(mcpio.DevNo) << 8
@@ -88,38 +89,46 @@ func (mcpio *McpIO) IsReady() bool {
 	return mcpio.isReady
 }
 
-func (mcp *McpIO) Setup(inputs []uint8, outputs []uint8) (err error) {
+func (mcp *McpIO) Setup(inputs []uint16, outputs []uint16) (err error) {
 	mcp.device, err = mcp23017.Open(mcp.BusNo, mcp.DevNo)
 	if err != nil {
 		return
 	}
 
 	for _, inputPin := range inputs {
-		err = mcp.device.PinMode(inputPin, mcp23017.INPUT)
+		if inputPin > 255 {
+			err = errors.Errorf("input pin out of range (mcpio takes uint8 pin id)")
+			return
+		}
+		err = mcp.device.PinMode(uint8(inputPin), mcp23017.INPUT)
 		if err != nil {
 			return
 		}
-		err = mcp.device.SetPullUp(inputPin, true)
+		err = mcp.device.SetPullUp(uint8(inputPin), true)
 		if err != nil {
 			return
 		}
-		mcp.inputs = append(mcp.inputs, McpInput{pin: inputPin, invert: mcp.InvertInputs, device: mcp.device})
+		mcp.inputs = append(mcp.inputs, McpInput{pin: uint8(inputPin), invert: mcp.InvertInputs, device: mcp.device})
 	}
 
 	for _, outputPin := range outputs {
-		err = mcp.device.PinMode(outputPin, mcp23017.OUTPUT)
+		if outputPin > 255 {
+			err = errors.Errorf("output pin out of range (mcpio takes uint8 pin id)")
+			return
+		}
+		err = mcp.device.PinMode(uint8(outputPin), mcp23017.OUTPUT)
 		if err != nil {
 			return
 		}
-		mcp.outputs = append(mcp.outputs, McpOutput{pin: outputPin, invert: mcp.InvertOutputs, device: mcp.device})
+		mcp.outputs = append(mcp.outputs, McpOutput{pin: uint8(outputPin), invert: mcp.InvertOutputs, device: mcp.device})
 	}
 
 	return
 }
 
-func (mcp *McpIO) GetInput(id uint8) (input DigitalInput, err error) {
+func (mcp *McpIO) GetInput(id uint16) (input DigitalInput, err error) {
 	for _, in := range mcp.inputs {
-		if in.pin == id {
+		if in.pin == uint8(id) {
 			input = &in
 			return
 		}
@@ -129,9 +138,9 @@ func (mcp *McpIO) GetInput(id uint8) (input DigitalInput, err error) {
 	return
 }
 
-func (mcp *McpIO) GetOutput(id uint8) (output DigitalOutput, err error) {
+func (mcp *McpIO) GetOutput(id uint16) (output DigitalOutput, err error) {
 	for _, out := range mcp.outputs {
-		if out.pin == id {
+		if out.pin == uint8(id) {
 			output = &out
 			return
 		}
@@ -149,13 +158,13 @@ func (mcp *McpIO) Close() error {
 	return mcp.device.Close()
 }
 
-func (mcp *McpIO) GetAllIo() (inputs []uint8, outputs []uint8) {
+func (mcp *McpIO) GetAllIo() (inputs []uint16, outputs []uint16) {
 	for _, input := range mcp.inputs {
-		inputs = append(inputs, input.pin)
+		inputs = append(inputs, uint16(input.pin))
 	}
 
 	for _, output := range mcp.outputs {
-		outputs = append(outputs, output.pin)
+		outputs = append(outputs, uint16(output.pin))
 	}
 
 	return

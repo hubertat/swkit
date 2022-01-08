@@ -1,14 +1,14 @@
 package main
 
 type IoDriver interface {
-	Setup(inputs []uint8, outputs []uint8) error
+	Setup(inputs []uint16, outputs []uint16) error
 	Close() error
 	NameId() string
-	GetUniqueId(ioPin uint8) uint64
+	GetUniqueId(ioPin uint16) uint64
 	IsReady() bool
-	GetInput(pin uint8) (DigitalInput, error)
-	GetOutput(pin uint8) (DigitalOutput, error)
-	GetAllIo() (inputs []uint8, outputs []uint8)
+	GetInput(pin uint16) (DigitalInput, error)
+	GetOutput(pin uint16) (DigitalOutput, error)
+	GetAllIo() (inputs []uint16, outputs []uint16)
 }
 
 type DigitalInput interface {
