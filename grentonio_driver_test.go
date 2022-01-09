@@ -11,7 +11,7 @@ import (
 
 func mockGrentonIo() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.EqualFold(r.Header.Get("Content-Type"), "application/json") {
+		if !strings.EqualFold(r.Header.Get("Content-Type"), "application/json") {
 			w.WriteHeader(http.StatusNotImplemented)
 			return
 		}

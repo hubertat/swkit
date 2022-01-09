@@ -17,7 +17,7 @@ import (
 const grentonioDriverName = "grenton"
 const grentonNetClientTimeout = 4 * time.Second
 const grentonSetStateWaitForCheck = 2 * time.Second
-const grentonObjectFreshness = 15 * time.Second
+const grentonObjectFreshness = 20 * time.Second
 
 type GrentonOutput struct {
 	Grenton *GrentonIO
@@ -46,8 +46,16 @@ func (gro *GrentonOutput) GetState() (bool, error) {
 }
 
 func (gro *GrentonOutput) Set(state bool) error {
+	currentState, err := gro.GetState()
+	if err != nil {
+		return errors.Wrap(err, "received error when getting current state")
+	}
 
-	err := gro.Grenton.setState(state, gro)
+	if currentState == state {
+		return nil
+	}
+
+	err = gro.Grenton.setState(state, gro)
 	if err != nil {
 		return errors.Wrap(err, "grenton setState returned error")
 	}
@@ -70,11 +78,14 @@ type GrentonIO struct {
 	GateAddress string
 	CluId       uint32
 
-	setUrl   *url.URL
-	getUrl   *url.URL
-	ready    bool
-	outputs  []*GrentonOutput
-	gateLock *sync.Mutex
+	ObjectFreshnessDuration string
+
+	setUrl          *url.URL
+	getUrl          *url.URL
+	ready           bool
+	outputs         []*GrentonOutput
+	gateLock        *sync.Mutex
+	objectFreshness time.Duration
 }
 
 func (gio *GrentonIO) getCluString() string {
@@ -216,6 +227,14 @@ func (gio *GrentonIO) setState(state bool, output *GrentonOutput) (err error) {
 func (gio *GrentonIO) Setup(inputs []uint16, outputs []uint16) (err error) {
 	gio.ready = false
 	gio.gateLock = &sync.Mutex{}
+
+	gio.objectFreshness = grentonObjectFreshness
+	if len(gio.ObjectFreshnessDuration) > 0 {
+		d, dErr := time.ParseDuration(gio.ObjectFreshnessDuration)
+		if dErr == nil {
+			gio.objectFreshness = d
+		}
+	}
 
 	gateUrl, err := url.Parse(gio.GateAddress)
 	if err != nil {

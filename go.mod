@@ -1,4 +1,4 @@
-module swkit
+module github.com/hubertat/swkit
 
 go 1.16
 

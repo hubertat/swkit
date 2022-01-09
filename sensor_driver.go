@@ -27,7 +27,7 @@ type InfluxSensors struct {
 	Measurement  string
 	Token        string
 
-	GroupByTag string
+	GroupByTag []string
 
 	Temperatures []*InfluxTemperature
 
@@ -100,14 +100,22 @@ func (is *InfluxSensors) FindSensor(id string) (sensor TemperatureSensor, err er
 }
 
 func (is *InfluxSensors) prepareQuery() string {
+	groupByString := ""
+	for ix, groupBy := range is.GroupByTag {
+		if ix > 0 {
+			groupByString += ", "
+		}
+		groupByString += fmt.Sprintf(`"%s"`, groupBy)
+	}
+
 	return fmt.Sprintf(`
 from(bucket: "%s")
-  |> range(start: -10m)
-  |> filter(fn: (r) => r["_measurement"] == "%s")
-  |> filter(fn: (r) => r["_field"] == "temperature")
-  |> group(columns: ["%s"])
-  |> aggregateWindow(every: 20m, fn: mean, createEmpty: false)
-`, is.Bucket, is.Measurement, is.GroupByTag)
+|> range(start: -10m)
+|> filter(fn: (r) => r["_measurement"] == "%s")
+|> filter(fn: (r) => r["_field"] == "temperature")
+|> group(columns: [%s])
+|> aggregateWindow(every: 20m, fn: mean, createEmpty: false)
+`, is.Bucket, is.Measurement, groupByString)
 }
 
 func checkTagsRecordMatch(record *query.FluxRecord, tags map[string]string) (match bool) {
