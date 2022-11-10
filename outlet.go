@@ -1,4 +1,4 @@
-package main
+package swkit
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/brutella/hc/accessory"
+	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
 )
 
@@ -17,8 +18,8 @@ type Outlet struct {
 
 	ControlBy []ControllingDevice
 
-	output DigitalOutput
-	driver IoDriver
+	output drivers.DigitalOutput
+	driver drivers.IoDriver
 	hk     *accessory.Outlet
 	lock   sync.Mutex
 }
@@ -27,7 +28,7 @@ func (ou *Outlet) GetDriverName() string {
 	return ou.DriverName
 }
 
-func (ou *Outlet) Init(driver IoDriver) error {
+func (ou *Outlet) Init(driver drivers.IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), ou.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}

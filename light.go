@@ -1,4 +1,4 @@
-package main
+package swkit
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/brutella/hc/accessory"
+	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
 )
 
@@ -17,8 +18,8 @@ type Light struct {
 
 	ControlBy []ControllingDevice
 
-	output DigitalOutput
-	driver IoDriver
+	output drivers.DigitalOutput
+	driver drivers.IoDriver
 	hk     *accessory.Lightbulb
 	lock   sync.Mutex
 }
@@ -27,7 +28,7 @@ func (li *Light) GetDriverName() string {
 	return li.DriverName
 }
 
-func (li *Light) Init(driver IoDriver) error {
+func (li *Light) Init(driver drivers.IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), li.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}

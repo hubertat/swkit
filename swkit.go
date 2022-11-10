@@ -1,4 +1,4 @@
-package main
+package swkit
 
 import (
 	"fmt"
@@ -9,6 +9,8 @@ import (
 
 	"github.com/brutella/hc/accessory"
 	"github.com/pkg/errors"
+
+	drivers "github.com/hubertat/swkit/drivers"
 )
 
 type SwKit struct {
@@ -22,14 +24,14 @@ type SwKit struct {
 	HkPin     string
 	HkSetupId string
 
-	Mcp23017 *McpIO
-	Gpio     *GpIO
-	Grenton  *GrentonIO
+	Mcp23017 *drivers.McpIO
+	Gpio     *drivers.GpIO
+	Grenton  *drivers.GrentonIO
 
-	InfluxSensors *InfluxSensors
-	WireSensors   *Wire
+	InfluxSensors *drivers.InfluxSensors
+	WireSensors   *drivers.Wire
 
-	drivers       map[string]IoDriver
+	drivers       map[string]drivers.IoDriver
 	ticker        *time.Ticker
 	sensorsTicker *time.Ticker
 }
@@ -37,7 +39,7 @@ type SwKit struct {
 type IO interface {
 	Sync() error
 	GetHk() *accessory.Accessory
-	Init(driver IoDriver) error
+	Init(driver drivers.IoDriver) error
 	GetDriverName() string
 }
 
@@ -92,11 +94,11 @@ func (sw *SwKit) getOutPins(driverName string) (pins []uint16) {
 	return
 }
 
-func (sw *SwKit) getIoDriverByName(name string) (driver IoDriver, err error) {
+func (sw *SwKit) getIoDriverByName(name string) (driver drivers.IoDriver, err error) {
 	switch name {
 	case "gpio":
 		if sw.Gpio == nil {
-			driver = &GpIO{}
+			driver = &drivers.GpIO{}
 		} else {
 			driver = sw.Gpio
 		}
@@ -141,7 +143,7 @@ func (sw *SwKit) getIos() []IO {
 }
 
 func (sw *SwKit) InitDrivers() error {
-	sw.drivers = make(map[string]IoDriver)
+	sw.drivers = make(map[string]drivers.IoDriver)
 
 	for _, io := range sw.getIos() {
 		sw.drivers[io.GetDriverName()] = nil
@@ -252,7 +254,7 @@ func (sw *SwKit) GetHkAccessories() (acc []*accessory.Accessory) {
 	return
 }
 
-func (sw *SwKit) getSensorDrivers() (drivers []SensorDriver) {
+func (sw *SwKit) getSensorDrivers() (drivers []drivers.SensorDriver) {
 	if sw.InfluxSensors != nil {
 		drivers = append(drivers, sw.InfluxSensors)
 	}
@@ -263,7 +265,7 @@ func (sw *SwKit) getSensorDrivers() (drivers []SensorDriver) {
 	return
 }
 
-func (sw *SwKit) findTemperatureSensor(id string) (temp TemperatureSensor, err error) {
+func (sw *SwKit) findTemperatureSensor(id string) (temp drivers.TemperatureSensor, err error) {
 	var foundErr error
 	drivers := sw.getSensorDrivers()
 	if len(drivers) == 0 {

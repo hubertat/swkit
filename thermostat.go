@@ -1,9 +1,11 @@
-package main
+package swkit
 
 import (
 	"fmt"
 	"strings"
 	"sync"
+
+	drivers "github.com/hubertat/swkit/drivers"
 
 	"github.com/brutella/hc/accessory"
 	"github.com/pkg/errors"
@@ -32,19 +34,19 @@ type Thermostat struct {
 	CoolingThreshold   float64
 	CoolingEnabled     bool
 
-	heatOut           DigitalOutput
-	coolOut           DigitalOutput
-	driver            IoDriver
+	heatOut           drivers.DigitalOutput
+	coolOut           drivers.DigitalOutput
+	driver            drivers.IoDriver
 	hk                *accessory.Thermostat
 	lock              sync.Mutex
-	temperatureSensor TemperatureSensor
+	temperatureSensor drivers.TemperatureSensor
 }
 
 func (th *Thermostat) GetDriverName() string {
 	return th.DriverName
 }
 
-func (th *Thermostat) Init(driver IoDriver) error {
+func (th *Thermostat) Init(driver drivers.IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), th.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}

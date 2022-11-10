@@ -1,10 +1,11 @@
-package main
+package swkit
 
 import (
 	"fmt"
 	"strings"
 
 	"github.com/brutella/hc/accessory"
+	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
 )
 
@@ -17,8 +18,8 @@ type Button struct {
 	DisableHomeKit bool
 
 	toggleThis []ClickableDevice
-	input      DigitalInput
-	driver     IoDriver
+	input      drivers.DigitalInput
+	driver     drivers.IoDriver
 	hk         *accessory.Accessory
 }
 
@@ -30,7 +31,7 @@ func (bu *Button) GetDriverName() string {
 	return bu.DriverName
 }
 
-func (bu *Button) Init(driver IoDriver) error {
+func (bu *Button) Init(driver drivers.IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), bu.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}

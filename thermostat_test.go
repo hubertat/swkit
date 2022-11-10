@@ -1,6 +1,18 @@
-package main
+package swkit
 
-import "testing"
+import (
+	"testing"
+
+	drivers "github.com/hubertat/swkit/drivers"
+)
+
+func assertBools(t testing.TB, got, want bool) {
+	t.Helper()
+
+	if got != want {
+		t.Errorf("got %v want %v", got, want)
+	}
+}
 
 func assertFloats(t testing.TB, got, want float64) {
 	t.Helper()
@@ -24,7 +36,7 @@ func TestThremostatInit(t *testing.T) {
 	thermo.DriverName = "mock_driver"
 	thermo.HeatPin = uint16(5)
 
-	md := MockIoDriver{}
+	md := drivers.MockIoDriver{}
 
 	err := thermo.Init(&md)
 	if err == nil {
@@ -63,7 +75,7 @@ func TestCheckHeatingCondition(t *testing.T) {
 	thermo.DriverName = "mock_driver"
 	thermo.HeatPin = uint16(3)
 
-	md := MockIoDriver{}
+	md := drivers.MockIoDriver{}
 	md.Setup([]uint16{}, []uint16{3})
 	thermo.Init(&md)
 
@@ -108,7 +120,7 @@ func TestGetCurrentHeatingCoolingState(t *testing.T) {
 	thermo.CoolPin = uint16(5)
 	thermo.CoolingEnabled = true
 
-	md := MockIoDriver{}
+	md := drivers.MockIoDriver{}
 	md.Setup([]uint16{}, []uint16{3, 5})
 	thermo.Init(&md)
 
@@ -147,7 +159,7 @@ func TestCalculateOutputs(t *testing.T) {
 	thermo.CoolPin = uint16(5)
 	thermo.CoolingEnabled = true
 
-	md := MockIoDriver{}
+	md := drivers.MockIoDriver{}
 	md.Setup([]uint16{}, []uint16{3, 5})
 	thermo.Init(&md)
 

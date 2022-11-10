@@ -11,6 +11,8 @@ import (
 	"github.com/brutella/hc"
 	"github.com/brutella/hc/accessory"
 	"github.com/hubertat/servicemaker"
+
+	"github.com/hubertat/swkit"
 )
 
 const defaultSyncInterval = "250ms"
@@ -55,7 +57,7 @@ func main() {
 		panic(err)
 	}
 
-	swkit := &SwKit{}
+	sk := &swkit.SwKit{}
 	configFile, err := os.Open(*config)
 	if err == nil {
 		cBuff, err := io.ReadAll(configFile)
@@ -71,13 +73,13 @@ func main() {
 		log.Fatalf("can't find/open config file (%s), running on defaults\n%v\n", *config, err)
 	}
 	log.Println("will init swkit drivers...")
-	err = swkit.InitDrivers()
-	defer swkit.Close()
+	err = sk.InitDrivers()
+	defer sk.Close()
 	if err != nil {
 		panic(err)
 	}
 	log.Printf("drivers OK!\nwill try to MatchControllers:\n")
-	err = swkit.MatchControllers()
+	err = sk.MatchControllers()
 	if err != nil {
 		log.Printf("Matching Controllers returned error: %v\n we will proceed...", err)
 	} else {
@@ -85,7 +87,7 @@ func main() {
 	}
 
 	log.Println("initialize sensor drivers:")
-	for _, sDriver := range swkit.getSensorDrivers() {
+	for _, sDriver := range sk.getSensorDrivers() {
 		log.Printf("\t%s", sDriver.Name())
 		err = sDriver.Init()
 		if err != nil {
@@ -94,16 +96,16 @@ func main() {
 	}
 
 	log.Println("trying to match thermostats:")
-	err = swkit.MatchSensors()
+	err = sk.MatchSensors()
 	if err != nil {
 		log.Println(err)
 	} else {
 		log.Printf("\tOK\n")
 	}
 
-	swkit.PrintIoStatus(os.Stdout)
+	sk.PrintIoStatus(os.Stdout)
 
-	if len(swkit.HkPin) == 8 && len(swkit.HkSetupId) == 4 {
+	if len(sk.HkPin) == 8 && len(sk.HkSetupId) == 4 {
 		log.Println("starting HomeKit service")
 		info := accessory.Info{
 			Name:         "swkit",
@@ -112,17 +114,17 @@ func main() {
 		}
 		bridge := accessory.NewBridge(info)
 		config := hc.Config{
-			Pin:         swkit.HkPin,
-			SetupId:     swkit.HkSetupId,
+			Pin:         sk.HkPin,
+			SetupId:     sk.HkSetupId,
 			StoragePath: "hk",
 		}
-		t, err := hc.NewIPTransport(config, bridge.Accessory, swkit.GetHkAccessories()...)
+		t, err := hc.NewIPTransport(config, bridge.Accessory, sk.GetHkAccessories()...)
 		if err != nil {
 			log.Print(err)
 			return
 		}
 
-		go swkit.StartTicker(syncDuration, sensorsSyncDuration)
+		go sk.StartTicker(syncDuration, sensorsSyncDuration)
 
 		hc.OnTermination(func() {
 			<-t.Stop()
@@ -131,7 +133,7 @@ func main() {
 		t.Start()
 	} else {
 		log.Println("HomeKit not configured, wont start")
-		swkit.StartTicker(syncDuration, sensorsSyncDuration)
+		sk.StartTicker(syncDuration, sensorsSyncDuration)
 	}
 
 }

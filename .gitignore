@@ -2,3 +2,5 @@ swkit
 swkit-*
 swkit_*
 **/.DS_Store
+rel
+rel/*

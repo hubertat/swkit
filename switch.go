@@ -1,8 +1,10 @@
-package main
+package swkit
 
 import (
 	"fmt"
 	"strings"
+
+	drivers "github.com/hubertat/swkit/drivers"
 
 	"github.com/brutella/hc/accessory"
 	"github.com/pkg/errors"
@@ -17,8 +19,8 @@ type Switch struct {
 	DisableHomeKit bool
 
 	switchThis []SwitchableDevice
-	input      DigitalInput
-	driver     IoDriver
+	input      drivers.DigitalInput
+	driver     drivers.IoDriver
 	hk         *accessory.Switch
 }
 
@@ -30,7 +32,7 @@ func (swb *Switch) GetDriverName() string {
 	return swb.DriverName
 }
 
-func (swb *Switch) Init(driver IoDriver) error {
+func (swb *Switch) Init(driver drivers.IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), swb.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
