@@ -1,10 +1,15 @@
 package drivers
 
-import "fmt"
+import (
+	"fmt"
+	"io"
+)
 
 type MockOutput struct {
-	state bool
-	pin   uint16
+	state            bool
+	pin              uint16
+	writeTo          io.Writer
+	writeStateChange bool
 }
 
 func (mo *MockOutput) GetState() (bool, error) {
@@ -12,6 +17,9 @@ func (mo *MockOutput) GetState() (bool, error) {
 }
 
 func (mo *MockOutput) Set(state bool) error {
+	if mo.writeStateChange && state != mo.state {
+		fmt.Fprintf(mo.writeTo, "[pin %d] state changed to %v\n", mo.pin, mo.state)
+	}
 	mo.state = state
 	return nil
 }
@@ -85,4 +93,11 @@ func (md *MockIoDriver) GetAllIo() (inputs []uint16, outputs []uint16) {
 		outputs = append(outputs, output.pin)
 	}
 	return
+}
+
+func (md *MockIoDriver) MonitorStateChanges(writer io.Writer) {
+	for _, out := range md.outputs {
+		out.writeTo = writer
+		out.writeStateChange = true
+	}
 }

@@ -2,7 +2,7 @@
 swkit - HomeKit enabled switch/input/roller shutter switch, monitor
 
 ## features
-* HomeKit enabled
+* HomeKit enabled (github.com)
 * switch/button input
 * light output
 * input - light output relation

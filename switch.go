@@ -6,7 +6,7 @@ import (
 
 	drivers "github.com/hubertat/swkit/drivers"
 
-	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hap/accessory"
 	"github.com/pkg/errors"
 )
 
@@ -67,21 +67,19 @@ func (swb *Switch) Sync() (err error) {
 	return
 }
 
-func (swb *Switch) GetHk() *accessory.Accessory {
+func (swb *Switch) GetHk() *accessory.A {
 	if swb.DisableHomeKit {
 		return nil
 	}
 
 	info := accessory.Info{
 		Name:         swb.Name,
-		ID:           swb.driver.GetUniqueId(swb.InPin),
 		SerialNumber: fmt.Sprintf("switch:%s:%02d", swb.DriverName, swb.InPin),
 	}
 	swb.hk = accessory.NewSwitch(info)
-	swb.hk.Switch.On.OnValueRemoteGet(swb.GetValue)
 	swb.hk.Switch.On.OnValueRemoteUpdate(swb.Set)
 
-	return swb.hk.Accessory
+	return swb.hk.A
 }
 
 func (swb *Switch) Set(value bool) {

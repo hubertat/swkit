@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"io"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/brutella/hc"
-	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hap"
+	"github.com/brutella/hap/accessory"
 	"github.com/hubertat/servicemaker"
 
 	"github.com/hubertat/swkit"
@@ -17,6 +20,7 @@ import (
 
 const defaultSyncInterval = "250ms"
 const defaultSensorsSyncInterval = "2m"
+const defaultHomeKitDirectory = "./homekit"
 
 var (
 	config              = flag.String("config", "config.json", "path of the configuration file")
@@ -65,12 +69,12 @@ func main() {
 			log.Fatalf("failed reading config file: %v\n", err)
 		}
 
-		err = json.Unmarshal(cBuff, swkit)
+		err = json.Unmarshal(cBuff, sk)
 		if err != nil {
 			log.Fatalf("failed unmarshalling json config: %v", err)
 		}
 	} else {
-		log.Fatalf("can't find/open config file (%s), running on defaults\n%v\n", *config, err)
+		log.Fatalf("can't find/open config file (%s), will terminate. Reason: \n%v\n", *config, err)
 	}
 	log.Println("will init swkit drivers...")
 	err = sk.InitDrivers()
@@ -87,7 +91,7 @@ func main() {
 	}
 
 	log.Println("initialize sensor drivers:")
-	for _, sDriver := range sk.getSensorDrivers() {
+	for _, sDriver := range sk.GetSensorDrivers() {
 		log.Printf("\t%s", sDriver.Name())
 		err = sDriver.Init()
 		if err != nil {
@@ -105,32 +109,45 @@ func main() {
 
 	sk.PrintIoStatus(os.Stdout)
 
-	if len(sk.HkPin) == 8 && len(sk.HkSetupId) == 4 {
+	if len(sk.HkPin) == 8 {
 		log.Println("starting HomeKit service")
 		info := accessory.Info{
 			Name:         "swkit",
 			Manufacturer: "github.com/hubertat",
-			ID:           1,
 		}
 		bridge := accessory.NewBridge(info)
-		config := hc.Config{
-			Pin:         sk.HkPin,
-			SetupId:     sk.HkSetupId,
-			StoragePath: "hk",
+
+		var store hap.Store
+		if len(sk.HkDirectory) > 1 {
+			store = hap.NewFsStore(sk.HkDirectory)
+		} else {
+			store = hap.NewFsStore(defaultHomeKitDirectory)
 		}
-		t, err := hc.NewIPTransport(config, bridge.Accessory, sk.GetHkAccessories()...)
+
+		hkServer, err := hap.NewServer(store, bridge.A, sk.GetHkAccessories()...)
 		if err != nil {
 			log.Print(err)
 			return
 		}
+		hkServer.Pin = sk.HkPin
 
 		go sk.StartTicker(syncDuration, sensorsSyncDuration)
 
-		hc.OnTermination(func() {
-			<-t.Stop()
-		})
-		log.Println("hk start")
-		t.Start()
+		c := make(chan os.Signal)
+		signal.Notify(c, os.Interrupt)
+		signal.Notify(c, syscall.SIGTERM)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			<-c
+			// Stop delivering signals.
+			signal.Stop(c)
+			// Cancel the context to stop the server.
+			cancel()
+		}()
+
+		log.Println("HomeKit server starting")
+		log.Fatalln(hkServer.ListenAndServe(ctx))
 	} else {
 		log.Println("HomeKit not configured, wont start")
 		sk.StartTicker(syncDuration, sensorsSyncDuration)

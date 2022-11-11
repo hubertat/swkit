@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hap/accessory"
 	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
 )
@@ -20,7 +20,7 @@ type Button struct {
 	toggleThis []ClickableDevice
 	input      drivers.DigitalInput
 	driver     drivers.IoDriver
-	hk         *accessory.Accessory
+	hk         *accessory.A
 }
 
 type ClickableDevice interface {
@@ -68,7 +68,7 @@ func (bu *Button) Sync() (err error) {
 	return
 }
 
-func (bu *Button) GetHk() *accessory.Accessory {
+func (bu *Button) GetHk() *accessory.A {
 	return bu.hk
 }
 

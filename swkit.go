@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hap/accessory"
 	"github.com/pkg/errors"
 
 	drivers "github.com/hubertat/swkit/drivers"
@@ -21,12 +21,13 @@ type SwKit struct {
 	Outlets     []*Outlet
 	Thermostats []*Thermostat
 
-	HkPin     string
-	HkSetupId string
+	HkPin       string
+	HkDirectory string
 
-	Mcp23017 *drivers.McpIO
-	Gpio     *drivers.GpIO
-	Grenton  *drivers.GrentonIO
+	Mcp23017   *drivers.McpIO
+	Gpio       *drivers.GpIO
+	Grenton    *drivers.GrentonIO
+	FakeDriver *drivers.MockIoDriver
 
 	InfluxSensors *drivers.InfluxSensors
 	WireSensors   *drivers.Wire
@@ -38,7 +39,7 @@ type SwKit struct {
 
 type IO interface {
 	Sync() error
-	GetHk() *accessory.Accessory
+	GetHk() *accessory.A
 	Init(driver drivers.IoDriver) error
 	GetDriverName() string
 }
@@ -113,6 +114,12 @@ func (sw *SwKit) getIoDriverByName(name string) (driver drivers.IoDriver, err er
 			err = errors.Errorf("cannot initialize GrentonIO driver, config not present")
 		} else {
 			driver = sw.Grenton
+		}
+	case "mock_driver":
+		if sw.FakeDriver == nil {
+			err = errors.Errorf("cannot initialize mock (fake) driver, wasn't configured")
+		} else {
+			driver = sw.FakeDriver
 		}
 	default:
 		err = errors.Errorf("driver (%s) not found", name)
@@ -241,8 +248,8 @@ func (sw *SwKit) SyncAll() (errors []error) {
 	return
 }
 
-func (sw *SwKit) GetHkAccessories() (acc []*accessory.Accessory) {
-	acc = []*accessory.Accessory{}
+func (sw *SwKit) GetHkAccessories() (acc []*accessory.A) {
+	acc = []*accessory.A{}
 
 	for _, io := range sw.getIos() {
 		accessory := io.GetHk()
@@ -254,7 +261,7 @@ func (sw *SwKit) GetHkAccessories() (acc []*accessory.Accessory) {
 	return
 }
 
-func (sw *SwKit) getSensorDrivers() (drivers []drivers.SensorDriver) {
+func (sw *SwKit) GetSensorDrivers() (drivers []drivers.SensorDriver) {
 	if sw.InfluxSensors != nil {
 		drivers = append(drivers, sw.InfluxSensors)
 	}
@@ -267,7 +274,7 @@ func (sw *SwKit) getSensorDrivers() (drivers []drivers.SensorDriver) {
 
 func (sw *SwKit) findTemperatureSensor(id string) (temp drivers.TemperatureSensor, err error) {
 	var foundErr error
-	drivers := sw.getSensorDrivers()
+	drivers := sw.GetSensorDrivers()
 	if len(drivers) == 0 {
 		err = errors.Errorf("temperature sensor (id = %s) can't be found, there are no sensor drivers present or ready", id)
 		return
@@ -362,7 +369,7 @@ func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 	fmt.Fprintln(writer, "-----------------------------")
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, "=== active sensor drivers ===")
-	for _, sDriver := range sw.getSensorDrivers() {
+	for _, sDriver := range sw.GetSensorDrivers() {
 		fmt.Fprintln(writer, "________")
 		fmt.Fprintf(writer, "| sensor driver: %s\n", sDriver.Name())
 		fmt.Fprintf(writer, "|\tready?: %v\n", sDriver.IsReady())

@@ -7,7 +7,7 @@ import (
 
 	drivers "github.com/hubertat/swkit/drivers"
 
-	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hap/accessory"
 	"github.com/pkg/errors"
 )
 
@@ -86,19 +86,18 @@ func (th *Thermostat) Init(driver drivers.IoDriver) error {
 	return nil
 }
 
-func (th *Thermostat) GetHk() *accessory.Accessory {
+func (th *Thermostat) GetHk() *accessory.A {
 	info := accessory.Info{
 		Name:         th.Name,
-		ID:           th.driver.GetUniqueId(th.HeatPin),
 		SerialNumber: fmt.Sprintf("thermostat:%s:%02d", th.DriverName, th.HeatPin),
 	}
 
-	th.hk = accessory.NewThermostat(info, th.CurrentTemperature, th.MinimumTemperature, th.MaximumTemperature, th.StepTemperature)
+	th.hk = accessory.NewThermostat(info)
 
 	th.hk.Thermostat.TargetHeatingCoolingState.OnValueRemoteUpdate(th.updateTargetState)
 	th.hk.Thermostat.TargetTemperature.OnValueRemoteUpdate(th.updateTargetTemperature)
 
-	return th.hk.Accessory
+	return th.hk.A
 }
 
 func (th *Thermostat) checkHeatingCondition() bool {

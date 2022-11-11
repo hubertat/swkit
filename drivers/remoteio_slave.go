@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hap/accessory"
 )
 
 type RemoteIoSlave struct {
@@ -25,7 +25,7 @@ func (ofr *OutFromRemoteIo) Sync() error {
 	return nil
 }
 
-func (ofr *OutFromRemoteIo) GetHk() *accessory.Accessory {
+func (ofr *OutFromRemoteIo) GetHk() *accessory.A {
 	return nil
 }
 
@@ -57,7 +57,7 @@ func (ifr *InFromRemoteIo) Sync() error {
 	return nil
 }
 
-func (ifr *InFromRemoteIo) GetHk() *accessory.Accessory {
+func (ifr *InFromRemoteIo) GetHk() *accessory.A {
 	return nil
 }
 

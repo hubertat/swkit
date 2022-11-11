@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hap/accessory"
 	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
 )
@@ -60,16 +60,15 @@ func (ou *Outlet) GetControllers() []ControllingDevice {
 	return ou.ControlBy
 }
 
-func (ou *Outlet) GetHk() *accessory.Accessory {
+func (ou *Outlet) GetHk() *accessory.A {
 	info := accessory.Info{
 		Name:         ou.Name,
-		ID:           ou.driver.GetUniqueId(ou.OutPin),
 		SerialNumber: fmt.Sprintf("outlet:%s:%02d", ou.DriverName, ou.OutPin),
 	}
 	ou.hk = accessory.NewOutlet(info)
 	ou.hk.Outlet.On.OnValueRemoteUpdate(ou.SetValue)
 
-	return ou.hk.Accessory
+	return ou.hk.A
 }
 
 func (ou *Outlet) SetValue(state bool) {

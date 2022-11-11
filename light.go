@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hap/accessory"
 	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
 )
@@ -62,16 +62,15 @@ func (li *Light) GetControllers() []ControllingDevice {
 	return li.ControlBy
 }
 
-func (li *Light) GetHk() *accessory.Accessory {
+func (li *Light) GetHk() *accessory.A {
 	info := accessory.Info{
 		Name:         li.Name,
-		ID:           li.driver.GetUniqueId(li.OutPin),
 		SerialNumber: fmt.Sprintf("light:%s:%02d", li.DriverName, li.OutPin),
 	}
 	li.hk = accessory.NewLightbulb(info)
 	li.hk.Lightbulb.On.OnValueRemoteUpdate(li.SetValue)
 
-	return li.hk.Accessory
+	return li.hk.A
 }
 
 func (li *Light) SetValue(state bool) {

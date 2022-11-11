@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hap/accessory"
 	"github.com/stianeikeland/go-rpio"
 )
 
@@ -29,19 +29,16 @@ type Shutter struct {
 	targetState          int
 }
 
-func (shu *Shutter) GetHk() *accessory.Accessory {
+func (shu *Shutter) GetHk() *accessory.A {
 	info := accessory.Info{
 		Name:         shu.Name,
-		ID:           uint64(shu.GpioOn),
 		SerialNumber: fmt.Sprintf("light:gpio:%02d/%02d", shu.GpioOn, shu.GpioDirection),
 	}
 	shu.hk = NewWindowShutter(info)
 
 	shu.hk.WindowCovering.TargetPosition.OnValueRemoteUpdate(shu.StartMovement)
-	shu.hk.WindowCovering.CurrentPosition.OnValueRemoteGet(shu.GetState)
-	shu.hk.WindowCovering.PositionState.OnValueRemoteGet(shu.GetPositionState)
 
-	return shu.hk.Accessory
+	return shu.hk.A
 }
 
 func (shu *Shutter) GetState() int {
