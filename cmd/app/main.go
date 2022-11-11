@@ -7,12 +7,8 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
-	"github.com/brutella/hap"
-	"github.com/brutella/hap/accessory"
 	"github.com/hubertat/servicemaker"
 
 	"github.com/hubertat/swkit"
@@ -20,7 +16,6 @@ import (
 
 const defaultSyncInterval = "250ms"
 const defaultSensorsSyncInterval = "2m"
-const defaultHomeKitDirectory = "./homekit"
 
 var (
 	config              = flag.String("config", "config.json", "path of the configuration file")
@@ -110,46 +105,12 @@ func main() {
 	sk.PrintIoStatus(os.Stdout)
 
 	if len(sk.HkPin) == 8 {
-		log.Println("starting HomeKit service")
-		info := accessory.Info{
-			Name:         "swkit",
-			Manufacturer: "github.com/hubertat",
-		}
-		bridge := accessory.NewBridge(info)
-
-		var store hap.Store
-		if len(sk.HkDirectory) > 1 {
-			store = hap.NewFsStore(sk.HkDirectory)
-		} else {
-			store = hap.NewFsStore(defaultHomeKitDirectory)
-		}
-
-		hkServer, err := hap.NewServer(store, bridge.A, sk.GetHkAccessories()...)
-		if err != nil {
-			log.Print(err)
-			return
-		}
-		hkServer.Pin = sk.HkPin
+		log.Println("Starting with HomeKit server")
 
 		go sk.StartTicker(syncDuration, sensorsSyncDuration)
-
-		c := make(chan os.Signal)
-		signal.Notify(c, os.Interrupt)
-		signal.Notify(c, syscall.SIGTERM)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		go func() {
-			<-c
-			// Stop delivering signals.
-			signal.Stop(c)
-			// Cancel the context to stop the server.
-			cancel()
-		}()
-
-		log.Println("HomeKit server starting")
-		log.Fatalln(hkServer.ListenAndServe(ctx))
+		log.Fatal(sk.StartHomeKit(context.Background()))
 	} else {
-		log.Println("HomeKit not configured, wont start")
+		log.Println("HomeKit not configured, disabled")
 		sk.StartTicker(syncDuration, sensorsSyncDuration)
 	}
 

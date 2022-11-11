@@ -1,17 +1,26 @@
 package swkit
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/brutella/hap"
 	"github.com/brutella/hap/accessory"
 	"github.com/pkg/errors"
 
 	drivers "github.com/hubertat/swkit/drivers"
 )
+
+const defaultHomeKitDirectory = "./homekit"
+const homeKitBridgeName = "swkit"
+const homeKitBridgeAuthor = "github.com/hubertat"
 
 type SwKit struct {
 	Lights      []*Light
@@ -378,4 +387,39 @@ func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 	}
 	fmt.Fprintln(writer, "-----------------------------")
 	fmt.Fprintln(writer)
+}
+
+func (sw *SwKit) StartHomeKit(ctx context.Context) error {
+	bridge := accessory.NewBridge(accessory.Info{
+		Name:         homeKitBridgeName,
+		Manufacturer: homeKitBridgeAuthor,
+	})
+
+	var store hap.Store
+	if len(sw.HkDirectory) > 1 {
+		store = hap.NewFsStore(sw.HkDirectory)
+	} else {
+		store = hap.NewFsStore(defaultHomeKitDirectory)
+	}
+
+	hkServer, err := hap.NewServer(store, bridge.A, sw.GetHkAccessories()...)
+	if err != nil {
+		return errors.Wrap(err, "failed to create HomeKit server")
+	}
+	hkServer.Pin = sw.HkPin
+
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt)
+	signal.Notify(c, syscall.SIGTERM)
+
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		<-c
+		// Stop delivering signals.
+		signal.Stop(c)
+		// Cancel the context to stop the server.
+		cancel()
+	}()
+
+	return hkServer.ListenAndServe(ctx)
 }

@@ -4,12 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
-
-	"github.com/brutella/hap"
-	"github.com/brutella/hap/accessory"
 
 	"github.com/hubertat/swkit"
 	"github.com/hubertat/swkit/drivers"
@@ -69,44 +64,11 @@ func main() {
 
 	sk.PrintIoStatus(os.Stdout)
 
-	if len(sk.HkPin) == 8 {
-		log.Println("starting HomeKit service")
-		info := accessory.Info{
-			Name:         "swkit (fake)",
-			Manufacturer: "github.com/hubertat",
-		}
-		bridge := accessory.NewBridge(info)
+	log.Println("starting mock with HomeKit service")
 
-		store := hap.NewFsStore("./mock_homekit")
-		hkServer, err := hap.NewServer(store, bridge.A, sk.GetHkAccessories()...)
-		if err != nil {
-			log.Print(err)
-			return
-		}
+	go sk.StartTicker(syncDuration, sensorsSyncDuration)
 
-		log.Println("setting pin for HomeKit: ", sk.HkPin)
-		hkServer.Pin = sk.HkPin
-
-		go sk.StartTicker(syncDuration, sensorsSyncDuration)
-
-		c := make(chan os.Signal)
-		signal.Notify(c, os.Interrupt)
-		signal.Notify(c, syscall.SIGTERM)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		go func() {
-			<-c
-			// Stop delivering signals.
-			signal.Stop(c)
-			// Cancel the context to stop the server.
-			cancel()
-		}()
-
-		log.Println("HomeKit server starting")
-		log.Fatalln(hkServer.ListenAndServe(ctx))
-	} else {
-		log.Println("HomeKit not configured, wont start")
-		sk.StartTicker(syncDuration, sensorsSyncDuration)
-	}
+	sk.HkDirectory = "./mock_homekit"
+	log.Fatal(sk.StartHomeKit(context.Background()))
 
 }
