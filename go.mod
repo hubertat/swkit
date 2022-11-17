@@ -8,7 +8,7 @@ require (
 	github.com/influxdata/influxdb-client-go/v2 v2.5.1
 	github.com/pkg/errors v0.9.1
 	github.com/racerxdl/go-mcp23017 v0.0.0-20200119181255-c8f9b9777b0e
-	github.com/stianeikeland/go-rpio v4.2.0+incompatible
+	github.com/stianeikeland/go-rpio/v4 v4.6.0
 )
 
 require (

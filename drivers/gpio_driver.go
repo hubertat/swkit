@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/pkg/errors"
-	"github.com/stianeikeland/go-rpio"
+	"github.com/stianeikeland/go-rpio/v4"
 )
 
 const gpioDriverName = "gpio"
@@ -40,7 +40,10 @@ func (gpi *GpInput) GetState() (state bool, err error) {
 }
 
 func (gpo *GpOutput) Set(state bool) error {
-	rpio.Open()
+	err := rpio.Open()
+	if err != nil {
+		return errors.Wrapf(err, "failed to set (gpio) state: %v, for pin: %v;")
+	}
 	if gpo.invert {
 		state = !state
 	}
@@ -66,7 +69,7 @@ func (gpo *GpOutput) GetState() (state bool, err error) {
 func (gp *GpIO) Setup(inputs []uint16, outputs []uint16) error {
 	err := rpio.Open()
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "failed to Setup gpio driver for pins: %v, %v; ", inputs, outputs)
 	}
 	for _, inPin := range inputs {
 		if inPin > 255 {

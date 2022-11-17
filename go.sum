@@ -53,8 +53,8 @@ github.com/quan-to/slog v0.0.0-20190414172229-8bce0937f2c1 h1:MnA+ZupAvLktxak+UU
 github.com/quan-to/slog v0.0.0-20190414172229-8bce0937f2c1/go.mod h1:xc9X6JvWjqAAIox9u4uuolisjwl/GbfkktH6f+nOgqU=
 github.com/racerxdl/go-mcp23017 v0.0.0-20200119181255-c8f9b9777b0e h1:uyn3ceKUdtZvyyHH+XqqmVh8CHn3ycGW+SFoDD1fXnM=
 github.com/racerxdl/go-mcp23017 v0.0.0-20200119181255-c8f9b9777b0e/go.mod h1:WTTjes6ESVjAnr8i2z3DKCfD362qnrnjRwqjeDPqvK8=
-github.com/stianeikeland/go-rpio v4.2.0+incompatible h1:CUOlIxdJdT+H1obJPsmg8byu7jMSECLfAN9zynm5QGo=
-github.com/stianeikeland/go-rpio v4.2.0+incompatible/go.mod h1:Sh81rdJwD96E2wja2Gd7rrKM+XZ9LrwvN2w4IXrqLR8=
+github.com/stianeikeland/go-rpio/v4 v4.6.0 h1:eAJgtw3jTtvn/CqwbC82ntcS+dtzUTgo5qlZKe677EY=
+github.com/stianeikeland/go-rpio/v4 v4.6.0/go.mod h1:A3GvHxC1Om5zaId+HqB3HKqx4K/AqeckxB7qRjxMK7o=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=

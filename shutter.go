@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/brutella/hap/accessory"
-	"github.com/stianeikeland/go-rpio"
+	"github.com/stianeikeland/go-rpio/v4"
 )
 
 type Shutter struct {
