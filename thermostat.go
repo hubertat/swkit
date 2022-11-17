@@ -1,11 +1,13 @@
-package main
+package swkit
 
 import (
 	"fmt"
 	"strings"
 	"sync"
 
-	"github.com/brutella/hc/accessory"
+	drivers "github.com/hubertat/swkit/drivers"
+
+	"github.com/brutella/hap/accessory"
 	"github.com/pkg/errors"
 )
 
@@ -32,19 +34,19 @@ type Thermostat struct {
 	CoolingThreshold   float64
 	CoolingEnabled     bool
 
-	heatOut           DigitalOutput
-	coolOut           DigitalOutput
-	driver            IoDriver
+	heatOut           drivers.DigitalOutput
+	coolOut           drivers.DigitalOutput
+	driver            drivers.IoDriver
 	hk                *accessory.Thermostat
 	lock              sync.Mutex
-	temperatureSensor TemperatureSensor
+	temperatureSensor drivers.TemperatureSensor
 }
 
 func (th *Thermostat) GetDriverName() string {
 	return th.DriverName
 }
 
-func (th *Thermostat) Init(driver IoDriver) error {
+func (th *Thermostat) Init(driver drivers.IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), th.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
@@ -84,19 +86,18 @@ func (th *Thermostat) Init(driver IoDriver) error {
 	return nil
 }
 
-func (th *Thermostat) GetHk() *accessory.Accessory {
+func (th *Thermostat) GetHk() *accessory.A {
 	info := accessory.Info{
 		Name:         th.Name,
-		ID:           th.driver.GetUniqueId(th.HeatPin),
 		SerialNumber: fmt.Sprintf("thermostat:%s:%02d", th.DriverName, th.HeatPin),
 	}
 
-	th.hk = accessory.NewThermostat(info, th.CurrentTemperature, th.MinimumTemperature, th.MaximumTemperature, th.StepTemperature)
+	th.hk = accessory.NewThermostat(info)
 
 	th.hk.Thermostat.TargetHeatingCoolingState.OnValueRemoteUpdate(th.updateTargetState)
 	th.hk.Thermostat.TargetTemperature.OnValueRemoteUpdate(th.updateTargetTemperature)
 
-	return th.hk.Accessory
+	return th.hk.A
 }
 
 func (th *Thermostat) checkHeatingCondition() bool {

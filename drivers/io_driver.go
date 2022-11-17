@@ -1,4 +1,4 @@
-package main
+package drivers
 
 type IoDriver interface {
 	Setup(inputs []uint16, outputs []uint16) error

@@ -1,15 +1,26 @@
-package main
+package swkit
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
-	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hap"
+	"github.com/brutella/hap/accessory"
 	"github.com/pkg/errors"
+
+	drivers "github.com/hubertat/swkit/drivers"
 )
+
+const defaultHomeKitDirectory = "./homekit"
+const homeKitBridgeName = "swkit"
+const homeKitBridgeAuthor = "github.com/hubertat"
 
 type SwKit struct {
 	Lights      []*Light
@@ -19,25 +30,26 @@ type SwKit struct {
 	Outlets     []*Outlet
 	Thermostats []*Thermostat
 
-	HkPin     string
-	HkSetupId string
+	HkPin       string
+	HkDirectory string
 
-	Mcp23017 *McpIO
-	Gpio     *GpIO
-	Grenton  *GrentonIO
+	Mcp23017   *drivers.McpIO
+	Gpio       *drivers.GpIO
+	Grenton    *drivers.GrentonIO
+	FakeDriver *drivers.MockIoDriver
 
-	InfluxSensors *InfluxSensors
-	WireSensors   *Wire
+	InfluxSensors *drivers.InfluxSensors
+	WireSensors   *drivers.Wire
 
-	drivers       map[string]IoDriver
+	drivers       map[string]drivers.IoDriver
 	ticker        *time.Ticker
 	sensorsTicker *time.Ticker
 }
 
 type IO interface {
 	Sync() error
-	GetHk() *accessory.Accessory
-	Init(driver IoDriver) error
+	GetHk() *accessory.A
+	Init(driver drivers.IoDriver) error
 	GetDriverName() string
 }
 
@@ -92,11 +104,11 @@ func (sw *SwKit) getOutPins(driverName string) (pins []uint16) {
 	return
 }
 
-func (sw *SwKit) getIoDriverByName(name string) (driver IoDriver, err error) {
+func (sw *SwKit) getIoDriverByName(name string) (driver drivers.IoDriver, err error) {
 	switch name {
 	case "gpio":
 		if sw.Gpio == nil {
-			driver = &GpIO{}
+			driver = &drivers.GpIO{}
 		} else {
 			driver = sw.Gpio
 		}
@@ -111,6 +123,12 @@ func (sw *SwKit) getIoDriverByName(name string) (driver IoDriver, err error) {
 			err = errors.Errorf("cannot initialize GrentonIO driver, config not present")
 		} else {
 			driver = sw.Grenton
+		}
+	case "mock_driver":
+		if sw.FakeDriver == nil {
+			err = errors.Errorf("cannot initialize mock (fake) driver, wasn't configured")
+		} else {
+			driver = sw.FakeDriver
 		}
 	default:
 		err = errors.Errorf("driver (%s) not found", name)
@@ -141,7 +159,7 @@ func (sw *SwKit) getIos() []IO {
 }
 
 func (sw *SwKit) InitDrivers() error {
-	sw.drivers = make(map[string]IoDriver)
+	sw.drivers = make(map[string]drivers.IoDriver)
 
 	for _, io := range sw.getIos() {
 		sw.drivers[io.GetDriverName()] = nil
@@ -239,8 +257,8 @@ func (sw *SwKit) SyncAll() (errors []error) {
 	return
 }
 
-func (sw *SwKit) GetHkAccessories() (acc []*accessory.Accessory) {
-	acc = []*accessory.Accessory{}
+func (sw *SwKit) GetHkAccessories() (acc []*accessory.A) {
+	acc = []*accessory.A{}
 
 	for _, io := range sw.getIos() {
 		accessory := io.GetHk()
@@ -252,7 +270,7 @@ func (sw *SwKit) GetHkAccessories() (acc []*accessory.Accessory) {
 	return
 }
 
-func (sw *SwKit) getSensorDrivers() (drivers []SensorDriver) {
+func (sw *SwKit) GetSensorDrivers() (drivers []drivers.SensorDriver) {
 	if sw.InfluxSensors != nil {
 		drivers = append(drivers, sw.InfluxSensors)
 	}
@@ -263,9 +281,9 @@ func (sw *SwKit) getSensorDrivers() (drivers []SensorDriver) {
 	return
 }
 
-func (sw *SwKit) findTemperatureSensor(id string) (temp TemperatureSensor, err error) {
+func (sw *SwKit) findTemperatureSensor(id string) (temp drivers.TemperatureSensor, err error) {
 	var foundErr error
-	drivers := sw.getSensorDrivers()
+	drivers := sw.GetSensorDrivers()
 	if len(drivers) == 0 {
 		err = errors.Errorf("temperature sensor (id = %s) can't be found, there are no sensor drivers present or ready", id)
 		return
@@ -360,7 +378,7 @@ func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 	fmt.Fprintln(writer, "-----------------------------")
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, "=== active sensor drivers ===")
-	for _, sDriver := range sw.getSensorDrivers() {
+	for _, sDriver := range sw.GetSensorDrivers() {
 		fmt.Fprintln(writer, "________")
 		fmt.Fprintf(writer, "| sensor driver: %s\n", sDriver.Name())
 		fmt.Fprintf(writer, "|\tready?: %v\n", sDriver.IsReady())
@@ -369,4 +387,39 @@ func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 	}
 	fmt.Fprintln(writer, "-----------------------------")
 	fmt.Fprintln(writer)
+}
+
+func (sw *SwKit) StartHomeKit(ctx context.Context) error {
+	bridge := accessory.NewBridge(accessory.Info{
+		Name:         homeKitBridgeName,
+		Manufacturer: homeKitBridgeAuthor,
+	})
+
+	var store hap.Store
+	if len(sw.HkDirectory) > 1 {
+		store = hap.NewFsStore(sw.HkDirectory)
+	} else {
+		store = hap.NewFsStore(defaultHomeKitDirectory)
+	}
+
+	hkServer, err := hap.NewServer(store, bridge.A, sw.GetHkAccessories()...)
+	if err != nil {
+		return errors.Wrap(err, "failed to create HomeKit server")
+	}
+	hkServer.Pin = sw.HkPin
+
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt)
+	signal.Notify(c, syscall.SIGTERM)
+
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		<-c
+		// Stop delivering signals.
+		signal.Stop(c)
+		// Cancel the context to stop the server.
+		cancel()
+	}()
+
+	return hkServer.ListenAndServe(ctx)
 }
