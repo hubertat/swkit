@@ -40,10 +40,7 @@ func (gpi *GpInput) GetState() (state bool, err error) {
 }
 
 func (gpo *GpOutput) Set(state bool) error {
-	err := rpio.Open()
-	if err != nil {
-		return errors.Wrapf(err, "failed to set (gpio) state: %v, for pin: %v;")
-	}
+
 	if gpo.invert {
 		state = !state
 	}
