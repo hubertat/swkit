@@ -23,12 +23,13 @@ const homeKitBridgeName = "swkit"
 const homeKitBridgeAuthor = "github.com/hubertat"
 
 type SwKit struct {
-	Lights      []*Light
-	Buttons     []*Button
-	Switches    []*Switch
-	Shutters    []*Shutter
-	Outlets     []*Outlet
-	Thermostats []*Thermostat
+	Lights        []*Light
+	Buttons       []*Button
+	Switches      []*Switch
+	Shutters      []*Shutter
+	Outlets       []*Outlet
+	Thermostats   []*Thermostat
+	MotionSensors []*MotionSensor
 
 	HkPin       string
 	HkDirectory string
@@ -73,6 +74,11 @@ func (sw *SwKit) getInPins(driverName string) (pins []uint16) {
 		}
 	}
 	for _, io := range sw.Switches {
+		if strings.EqualFold(io.DriverName, driverName) {
+			pins = append(pins, io.InPin)
+		}
+	}
+	for _, io := range sw.MotionSensors {
 		if strings.EqualFold(io.DriverName, driverName) {
 			pins = append(pins, io.InPin)
 		}
@@ -153,6 +159,9 @@ func (sw *SwKit) getIos() []IO {
 	}
 	for _, thermo := range sw.Thermostats {
 		ios = append(ios, thermo)
+	}
+	for _, mosens := range sw.MotionSensors {
+		ios = append(ios, mosens)
 	}
 
 	return ios

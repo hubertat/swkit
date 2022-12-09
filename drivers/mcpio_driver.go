@@ -123,6 +123,8 @@ func (mcp *McpIO) Setup(inputs []uint16, outputs []uint16) (err error) {
 		mcp.outputs = append(mcp.outputs, McpOutput{pin: uint8(outputPin), invert: mcp.InvertOutputs, device: mcp.device})
 	}
 
+	mcp.isReady = err == nil
+
 	return
 }
 
