@@ -68,13 +68,8 @@ func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
 }
 
 func (ms *MotionSensor) Sync() (err error) {
-	previousState := ms.State
 	ms.State, err = ms.input.GetState()
 	ms.hkService.MotionDetected.SetValue(ms.State)
-
-	if ms.State != previousState {
-		fmt.Printf("DEBUG motion sensor changed state to: %v\n", ms.State)
-	}
 
 	return
 }
@@ -85,6 +80,5 @@ func (ms *MotionSensor) GetHk() *accessory.A {
 }
 
 func (ms *MotionSensor) GetValue() bool {
-	fmt.Printf("DEBUG motion sensor getting value(%v)to -> HK\n", ms.State)
 	return ms.State
 }
