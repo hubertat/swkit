@@ -402,19 +402,28 @@ func (sw *SwKit) MatchSensors() error {
 	return nil
 }
 
-func (sw *SwKit) SyncSensors() (err error) {
-	if sw.InfluxSensors != nil {
-		err = sw.InfluxSensors.Sync()
-	}
-
-	return
-}
-
-func (sw *SwKit) StartTicker(interval time.Duration, sensorsInterval time.Duration) {
+func (sw *SwKit) StartTicker(interval time.Duration) {
 
 	sw.ticker = time.NewTicker(interval)
-	sw.sensorsTicker = time.NewTicker(sensorsInterval)
-	sw.SyncSensors()
+
+	for {
+		select {
+		case <-sw.ticker.C:
+			{
+				for _, io := range sw.getIos() {
+					err := io.Sync()
+					if err != nil {
+						log.Printf("Received error(s) from syncing io:\n%v", err)
+					}
+				}
+			}
+		}
+	}
+}
+
+func (sw *SwKit) StartSensorTicker(interval time.Duration) {
+
+	sw.sensorsTicker = time.NewTicker(interval)
 
 	for {
 		select {
@@ -429,15 +438,6 @@ func (sw *SwKit) StartTicker(interval time.Duration, sensorsInterval time.Durati
 				err := s.Sync()
 				if err != nil {
 					log.Printf("received error when syncing sensor: %v", err)
-				}
-			}
-		case <-sw.ticker.C:
-			{
-				for _, io := range sw.getIos() {
-					err := io.Sync()
-					if err != nil {
-						log.Printf("Received error(s) from syncing io:\n%v", err)
-					}
 				}
 			}
 		}

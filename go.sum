@@ -1,5 +1,7 @@
 github.com/brutella/dnssd v1.2.3 h1:4fBLjZjPH7SbcHhEcIJhZcC9nOhIDZ0m3rn9bjl1/i0=
 github.com/brutella/dnssd v1.2.3/go.mod h1:JoW2sJUrmVIef25G6lrLj7HS6Xdwh6q8WUIvMkkBYXs=
+github.com/brutella/dnssd v1.2.4 h1:hmSHQnUS5qujI8PX1QKHDhmwzZVvd63YINFfF9jcGfE=
+github.com/brutella/dnssd v1.2.4/go.mod h1:JoW2sJUrmVIef25G6lrLj7HS6Xdwh6q8WUIvMkkBYXs=
 github.com/brutella/hap v0.0.20 h1:ngF4wf/Hlj17gOUpPS2fCWYAbDhrmssARWkHoEjVkj4=
 github.com/brutella/hap v0.0.20/go.mod h1:QNA3sm16zE5uUyC8+E/gNkMvQWjqQLuxQKkU5PMi8N4=
 github.com/cyberdelia/templates v0.0.0-20141128023046-ca7fffd4298c/go.mod h1:GyV+0YP4qX0UQ7r2MoYZ+AvYDp12OF5yg4q8rGnyNh4=

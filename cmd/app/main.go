@@ -14,8 +14,8 @@ import (
 	"github.com/hubertat/swkit"
 )
 
-const defaultSyncInterval = "250ms"
-const defaultSensorsSyncInterval = "6s"
+const defaultSyncInterval = "330ms"
+const defaultSensorsSyncInterval = "10s"
 
 var (
 	Version string
@@ -111,11 +111,13 @@ func main() {
 	if len(sk.HkPin) == 8 {
 		log.Println("Starting with HomeKit server")
 
-		go sk.StartTicker(syncDuration, sensorsSyncDuration)
+		go sk.StartTicker(syncDuration)
+		go sk.StartSensorTicker(sensorsSyncDuration)
 		log.Fatal(sk.StartHomeKit(context.Background(), Version))
 	} else {
 		log.Println("HomeKit not configured, disabled")
-		sk.StartTicker(syncDuration, sensorsSyncDuration)
+		go sk.StartSensorTicker(sensorsSyncDuration)
+		sk.StartTicker(syncDuration)
 	}
 
 }
