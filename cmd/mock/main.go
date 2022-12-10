@@ -10,6 +10,11 @@ import (
 	"github.com/hubertat/swkit/drivers"
 )
 
+var (
+	Version string
+	Build   string
+)
+
 func main() {
 	var err error
 
@@ -35,21 +40,23 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	log.Println("will init swkit IOs...")
+	err = sk.InitIos()
+	if err != nil {
+		panic(err)
+	}
+	log.Println("will init swkit sensors...")
+	err = sk.InitSensors()
+	if err != nil {
+		panic(err)
+	}
+
 	log.Printf("drivers OK!\nwill try to MatchControllers:\n")
 	err = sk.MatchControllers()
 	if err != nil {
 		log.Printf("Matching Controllers returned error: %v\n we will proceed...", err)
 	} else {
 		log.Println("MatchControllers OK!")
-	}
-
-	log.Println("initialize sensor drivers:")
-	for _, sDriver := range sk.GetSensorDrivers() {
-		log.Printf("\t%s", sDriver.Name())
-		err = sDriver.Init()
-		if err != nil {
-			log.Println(err)
-		}
 	}
 
 	log.Println("trying to match thermostats:")
@@ -69,6 +76,6 @@ func main() {
 	go sk.StartTicker(syncDuration, sensorsSyncDuration)
 
 	sk.HkDirectory = "./mock_homekit"
-	log.Fatal(sk.StartHomeKit(context.Background()))
+	log.Fatal(sk.StartHomeKit(context.Background(), "mock: "+Version))
 
 }

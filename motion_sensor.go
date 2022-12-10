@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/brutella/hap/accessory"
+	"github.com/brutella/hap/characteristic"
 	"github.com/brutella/hap/service"
 	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
@@ -22,6 +23,7 @@ type MotionSensor struct {
 	driver      drivers.IoDriver
 	hkAccessory *accessory.A
 	hkService   *service.MotionSensor
+	hkFault     *characteristic.StatusFault
 }
 
 func (ms *MotionSensor) GetDriverName() string {
@@ -61,6 +63,10 @@ func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
 
 	ms.hkAccessory = accessory.New(info, accessory.TypeSensor)
 	ms.hkService = service.NewMotionSensor()
+	ms.hkFault = characteristic.NewStatusFault()
+	ms.hkFault.SetValue(characteristic.StatusFaultGeneralFault)
+
+	ms.hkService.AddC(ms.hkFault.C)
 	ms.hkAccessory.AddS(ms.hkService.S)
 	ms.hkService.MotionDetected.SetValue(initState)
 
@@ -70,6 +76,12 @@ func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
 func (ms *MotionSensor) Sync() (err error) {
 	ms.State, err = ms.input.GetState()
 	ms.hkService.MotionDetected.SetValue(ms.State)
+
+	if err != nil {
+		ms.hkFault.SetValue(characteristic.StatusFaultGeneralFault)
+	} else {
+		ms.hkFault.SetValue(characteristic.StatusFaultNoFault)
+	}
 
 	return
 }

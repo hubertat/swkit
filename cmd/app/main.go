@@ -15,9 +15,12 @@ import (
 )
 
 const defaultSyncInterval = "250ms"
-const defaultSensorsSyncInterval = "2m"
+const defaultSensorsSyncInterval = "6s"
 
 var (
+	Version string
+	Build   string
+
 	config              = flag.String("config", "config.json", "path of the configuration file")
 	flagInstall         = flag.Bool("install", false, "Install service in os")
 	syncInterval        = flag.String("sync", defaultSyncInterval, "sync interval (time.Duration)")
@@ -34,7 +37,7 @@ var (
 )
 
 func main() {
-	log.Println("swkit started")
+	log.Printf("swkit %s started\n", Version)
 	flag.Parse()
 
 	if *flagInstall {
@@ -77,21 +80,22 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	log.Println("will init swkit IOs...")
+	err = sk.InitIos()
+	if err != nil {
+		panic(err)
+	}
+	log.Println("will init swkit sensors...")
+	err = sk.InitSensors()
+	if err != nil {
+		panic(err)
+	}
 	log.Printf("drivers OK!\nwill try to MatchControllers:\n")
 	err = sk.MatchControllers()
 	if err != nil {
 		log.Printf("Matching Controllers returned error: %v\n we will proceed...", err)
 	} else {
 		log.Println("MatchControllers OK!")
-	}
-
-	log.Println("initialize sensor drivers:")
-	for _, sDriver := range sk.GetSensorDrivers() {
-		log.Printf("\t%s", sDriver.Name())
-		err = sDriver.Init()
-		if err != nil {
-			log.Println(err)
-		}
 	}
 
 	log.Println("trying to match thermostats:")
@@ -108,7 +112,7 @@ func main() {
 		log.Println("Starting with HomeKit server")
 
 		go sk.StartTicker(syncDuration, sensorsSyncDuration)
-		log.Fatal(sk.StartHomeKit(context.Background()))
+		log.Fatal(sk.StartHomeKit(context.Background(), Version))
 	} else {
 		log.Println("HomeKit not configured, disabled")
 		sk.StartTicker(syncDuration, sensorsSyncDuration)

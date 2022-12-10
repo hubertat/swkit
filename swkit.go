@@ -23,13 +23,14 @@ const homeKitBridgeName = "swkit"
 const homeKitBridgeAuthor = "github.com/hubertat"
 
 type SwKit struct {
-	Lights        []*Light
-	Buttons       []*Button
-	Switches      []*Switch
-	Shutters      []*Shutter
-	Outlets       []*Outlet
-	Thermostats   []*Thermostat
-	MotionSensors []*MotionSensor
+	Lights             []*Light
+	Buttons            []*Button
+	Switches           []*Switch
+	Shutters           []*Shutter
+	Outlets            []*Outlet
+	Thermostats        []*Thermostat
+	MotionSensors      []*MotionSensor
+	TemperatureSensors []*TemperatureSensor
 
 	HkPin       string
 	HkDirectory string
@@ -42,16 +43,27 @@ type SwKit struct {
 	InfluxSensors *drivers.InfluxSensors
 	WireSensors   *drivers.Wire
 
-	drivers       map[string]drivers.IoDriver
+	ioDrivers     map[string]drivers.IoDriver
+	sensorDrivers map[string]drivers.SensorDriver
 	ticker        *time.Ticker
 	sensorsTicker *time.Ticker
 }
 
 type IO interface {
-	Sync() error
-	GetHk() *accessory.A
 	Init(driver drivers.IoDriver) error
 	GetDriverName() string
+	Sync() error
+}
+
+type Sensor interface {
+	Init(driver drivers.SensorDriver) error
+	GetDriverName() string
+	Sync() error
+}
+
+type HkThing interface {
+	GetHk() *accessory.A
+	Sync() error
 }
 
 type ControllingDevice struct {
@@ -104,6 +116,16 @@ func (sw *SwKit) getOutPins(driverName string) (pins []uint16) {
 			if th.CoolingEnabled {
 				pins = append(pins, th.CoolPin)
 			}
+		}
+	}
+
+	return
+}
+
+func (sw *SwKit) getTemperatureSensors(driverName string) (tss []drivers.TemperatureSensor) {
+	for _, ts := range sw.TemperatureSensors {
+		if strings.EqualFold(driverName, ts.DriverName) {
+			tss = append(tss, ts)
 		}
 	}
 
@@ -167,29 +189,93 @@ func (sw *SwKit) getIos() []IO {
 	return ios
 }
 
+func (sw *SwKit) getSensors() (sensors []Sensor) {
+	for _, s := range sw.TemperatureSensors {
+		sensors = append(sensors, s)
+	}
+	return
+}
+
+func (sw *SwKit) getHkThings() (things []HkThing) {
+	for _, th := range sw.Lights {
+		things = append(things, th)
+	}
+	for _, th := range sw.Buttons {
+		things = append(things, th)
+	}
+	for _, th := range sw.Switches {
+		things = append(things, th)
+	}
+	for _, th := range sw.Outlets {
+		things = append(things, th)
+	}
+	for _, th := range sw.Thermostats {
+		things = append(things, th)
+	}
+	for _, th := range sw.TemperatureSensors {
+		things = append(things, th)
+	}
+	for _, th := range sw.MotionSensors {
+		things = append(things, th)
+	}
+
+	return
+}
+
 func (sw *SwKit) InitDrivers() error {
-	sw.drivers = make(map[string]drivers.IoDriver)
-
+	sw.ioDrivers = make(map[string]drivers.IoDriver)
 	for _, io := range sw.getIos() {
-		sw.drivers[io.GetDriverName()] = nil
+		sw.ioDrivers[io.GetDriverName()] = nil
 	}
 
-	for name := range sw.drivers {
-		driver, err := sw.getIoDriverByName(name)
-		if err != nil {
-			return errors.Wrap(err, "Failed to get IoDriver")
-		}
-		err = driver.Setup(sw.getInPins(name), sw.getOutPins(name))
-		if err != nil {
-			return errors.Wrapf(err, "Failed to Setup %s driver", name)
-		}
-		sw.drivers[name] = driver
+	sw.sensorDrivers = make(map[string]drivers.SensorDriver)
+	for _, s := range sw.getSensors() {
+		sw.sensorDrivers[s.GetDriverName()] = nil
 	}
 
-	for _, io := range sw.getIos() {
-		err := io.Init(sw.drivers[io.GetDriverName()])
+	for ioDriverName := range sw.ioDrivers {
+		ioDriver, err := sw.getIoDriverByName(ioDriverName)
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "failed initilaizing drivers: failed to get %s io driver by name", ioDriverName)
+		}
+		err = ioDriver.Setup(sw.getInPins(ioDriverName), sw.getOutPins(ioDriverName))
+		if err != nil {
+			return errors.Wrapf(err, "got error with setup for %s driver", ioDriverName)
+		}
+		sw.ioDrivers[ioDriverName] = ioDriver
+	}
+
+	for sensorDriverName := range sw.sensorDrivers {
+		sensorDriver, err := sw.getSensorDriverByName(sensorDriverName)
+		if err != nil {
+			return errors.Wrapf(err, "failed initializing drivers: failed to get %s sensor driver by name", sensorDriverName)
+		}
+		err = sensorDriver.Setup(sw.getTemperatureSensors(sensorDriverName))
+		if err != nil {
+			return errors.Wrapf(err, "got error with setup %s sensor driver", sensorDriverName)
+		}
+		sw.sensorDrivers[sensorDriverName] = sensorDriver
+	}
+
+	return nil
+}
+
+func (sw *SwKit) InitIos() error {
+	for _, io := range sw.getIos() {
+		err := io.Init(sw.ioDrivers[io.GetDriverName()])
+		if err != nil {
+			return errors.Wrapf(err, "failed to init io")
+		}
+	}
+
+	return nil
+}
+
+func (sw *SwKit) InitSensors() error {
+	for _, s := range sw.getSensors() {
+		err := s.Init(sw.sensorDrivers[s.GetDriverName()])
+		if err != nil {
+			return errors.Wrap(err, "faied to init sensor")
 		}
 	}
 
@@ -233,7 +319,7 @@ func (sw *SwKit) MatchControllers() error {
 			if len(controller.DriverName) > 0 {
 				driverName = controller.DriverName
 			}
-			_, driverReady := sw.drivers[driverName]
+			_, driverReady := sw.ioDrivers[driverName]
 			if !driverReady {
 				return errors.Errorf("matching controlled failed, driver (%s) not present or not ready", driverName)
 			}
@@ -257,20 +343,11 @@ func (sw *SwKit) MatchControllers() error {
 	return nil
 }
 
-func (sw *SwKit) SyncAll() (errors []error) {
-
-	for _, io := range sw.getIos() {
-		errors = append(errors, io.Sync())
-	}
-
-	return
-}
-
 func (sw *SwKit) GetHkAccessories() (acc []*accessory.A) {
 	acc = []*accessory.A{}
 
-	for _, io := range sw.getIos() {
-		accessory := io.GetHk()
+	for _, th := range sw.getHkThings() {
+		accessory := th.GetHk()
 		if accessory != nil {
 			acc = append(acc, accessory)
 		}
@@ -279,33 +356,38 @@ func (sw *SwKit) GetHkAccessories() (acc []*accessory.A) {
 	return
 }
 
-func (sw *SwKit) GetSensorDrivers() (drivers []drivers.SensorDriver) {
-	if sw.InfluxSensors != nil {
-		drivers = append(drivers, sw.InfluxSensors)
-	}
-	if sw.WireSensors != nil {
-		drivers = append(drivers, sw.WireSensors)
+func (sw *SwKit) getSensorDriverByName(name string) (driver drivers.SensorDriver, err error) {
+	switch name {
+	case "wire":
+		if sw.WireSensors == nil {
+			// err = errors.Errorf("cannot initialize wire sensor driver, it is not configured")
+			sw.WireSensors = &drivers.Wire{}
+			driver = sw.WireSensors
+		} else {
+			driver = sw.WireSensors
+		}
+	case "influx_sensors":
+		if sw.InfluxSensors == nil {
+			err = errors.Errorf("cannot get influx sensor driver, it is not configured")
+		} else {
+			driver = sw.InfluxSensors
+		}
+	default:
+		err = errors.Errorf("sensor driver (%s) not found", name)
 	}
 
 	return
 }
 
 func (sw *SwKit) findTemperatureSensor(id string) (temp drivers.TemperatureSensor, err error) {
-	var foundErr error
-	drivers := sw.GetSensorDrivers()
-	if len(drivers) == 0 {
-		err = errors.Errorf("temperature sensor (id = %s) can't be found, there are no sensor drivers present or ready", id)
-		return
-	}
-	for _, driver := range drivers {
-		if driver.IsReady() {
-			temp, foundErr = driver.FindSensor(id)
-			if foundErr == nil {
-				return
-			}
+
+	for _, driver := range sw.sensorDrivers {
+		temp, err = driver.FindTemperatureSensor(id)
+		if err == nil {
+			return
 		}
 	}
-	err = errors.Errorf("temperature sensor id = %s not found", id)
+	err = errors.Wrapf(err, "temperature sensor id = %s not found", id)
 	return
 }
 
@@ -337,15 +419,24 @@ func (sw *SwKit) StartTicker(interval time.Duration, sensorsInterval time.Durati
 	for {
 		select {
 		case <-sw.sensorsTicker.C:
-			err := sw.SyncSensors()
-			if err != nil {
-				log.Printf("Received error from syncing sensors:\n%v", err)
+			for sDName, sD := range sw.sensorDrivers {
+				err := sD.Sync()
+				if err != nil {
+					log.Printf("receieved error when syncing %s sensor driver: %v", sDName, err)
+				}
+			}
+			for _, s := range sw.getSensors() {
+				err := s.Sync()
+				if err != nil {
+					log.Printf("received error when syncing sensor: %v", err)
+				}
 			}
 		case <-sw.ticker.C:
 			{
-				for _, err := range sw.SyncAll() {
+				for _, io := range sw.getIos() {
+					err := io.Sync()
 					if err != nil {
-						log.Printf("Received error(s) from syncing sensors:\n%v", err)
+						log.Printf("Received error(s) from syncing io:\n%v", err)
 					}
 				}
 			}
@@ -353,12 +444,21 @@ func (sw *SwKit) StartTicker(interval time.Duration, sensorsInterval time.Durati
 	}
 }
 
-func (sw *SwKit) Close() (errors []error) {
-	for _, driver := range sw.drivers {
+func (sw *SwKit) Close() (err error) {
+	for _, driver := range sw.ioDrivers {
 		if driver != nil {
-			err := driver.Close()
-			if err != nil {
-				errors = append(errors, err)
+			closeErr := driver.Close()
+			if closeErr != nil {
+				err = errors.Wrap(err, closeErr.Error())
+			}
+		}
+	}
+
+	for _, sDriver := range sw.sensorDrivers {
+		if sDriver != nil {
+			closeErr := sDriver.Close()
+			if closeErr != nil {
+				err = errors.Wrap(err, closeErr.Error())
 			}
 		}
 	}
@@ -369,7 +469,7 @@ func (sw *SwKit) Close() (errors []error) {
 func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, "=== active io drivers ===")
-	for driverName, driver := range sw.drivers {
+	for driverName, driver := range sw.ioDrivers {
 		fmt.Fprintln(writer, "________")
 		fmt.Fprintf(writer, "| driver: %s\n", driverName)
 		inputs, outputs := driver.GetAllIo()
@@ -387,10 +487,11 @@ func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 	fmt.Fprintln(writer, "-----------------------------")
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, "=== active sensor drivers ===")
-	for _, sDriver := range sw.GetSensorDrivers() {
+	for sDriverName, sDriver := range sw.sensorDrivers {
 		fmt.Fprintln(writer, "________")
-		fmt.Fprintf(writer, "| sensor driver: %s\n", sDriver.Name())
+		fmt.Fprintf(writer, "| sensor driver: %s\n", sDriverName)
 		fmt.Fprintf(writer, "|\tready?: %v\n", sDriver.IsReady())
+		fmt.Fprintf(writer, "|\tsensor count: ?\n")
 		fmt.Fprintln(writer)
 		fmt.Fprintln(writer, "--------")
 	}
@@ -398,10 +499,11 @@ func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 	fmt.Fprintln(writer)
 }
 
-func (sw *SwKit) StartHomeKit(ctx context.Context) error {
+func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error {
 	bridge := accessory.NewBridge(accessory.Info{
 		Name:         homeKitBridgeName,
 		Manufacturer: homeKitBridgeAuthor,
+		Firmware:     firmwareVersion,
 	})
 
 	var store hap.Store

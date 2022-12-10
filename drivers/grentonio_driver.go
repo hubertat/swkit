@@ -16,7 +16,7 @@ import (
 
 const grentonioDriverName = "grenton"
 const grentonNetClientTimeout = 4 * time.Second
-const grentonSetStateWaitForCheck = 2 * time.Second
+const grentonSetStateWaitForCheck = 600 * time.Millisecond
 const grentonObjectFreshness = 20 * time.Second
 
 type GrentonOutput struct {
