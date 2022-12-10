@@ -343,12 +343,15 @@ func (sw *SwKit) MatchControllers() error {
 	return nil
 }
 
-func (sw *SwKit) GetHkAccessories() (acc []*accessory.A) {
+func (sw *SwKit) GetHkAccessories(firmwareVersion string) (acc []*accessory.A) {
 	acc = []*accessory.A{}
 
 	for _, th := range sw.getHkThings() {
 		accessory := th.GetHk()
 		if accessory != nil {
+			if accessory.Info != nil && accessory.Info.FirmwareRevision != nil {
+				accessory.Info.FirmwareRevision.SetValue(firmwareVersion)
+			}
 			acc = append(acc, accessory)
 		}
 	}
@@ -512,8 +515,7 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 	} else {
 		store = hap.NewFsStore(defaultHomeKitDirectory)
 	}
-
-	hkServer, err := hap.NewServer(store, bridge.A, sw.GetHkAccessories()...)
+	hkServer, err := hap.NewServer(store, bridge.A, sw.GetHkAccessories(firmwareVersion)...)
 	if err != nil {
 		return errors.Wrap(err, "failed to create HomeKit server")
 	}
