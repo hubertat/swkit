@@ -141,26 +141,21 @@ func (th *Thermostat) Sync() (err error) {
 		return
 	}
 
-	err = th.calculateOutputs()
+	err = th.calculateAndSetOutputs()
 	if err != nil {
-		err = errors.Wrap(err, "failed when calculateOutputs")
+		err = errors.Wrap(err, "failed to set heating/cooling outputs")
 		return
 	}
 
-	th.syncHkValues()
-
-	// heatOutState, _ := th.heatOut.GetState()
-
-	// fmt.Printf("\tD\tthermo: currTemp set to: %f\ttargetT: %f\ttargetState: %d\t heatOut: %v\n",
-	// 	th.CurrentTemperature,
-	// 	th.TargetTemperature,
-	// 	th.TargetState,
-	// 	heatOutState)
+	th.hk.Thermostat.CurrentTemperature.SetValue(th.CurrentTemperature)
+	th.hk.Thermostat.TargetTemperature.SetValue(th.TargetTemperature)
+	th.hk.Thermostat.CurrentHeatingCoolingState.SetValue(th.getCurrentHeatingCoolingState())
+	th.hk.Thermostat.TargetHeatingCoolingState.SetValue(th.TargetState)
 
 	return
 }
 
-func (th *Thermostat) calculateOutputs() (err error) {
+func (th *Thermostat) calculateAndSetOutputs() (err error) {
 	switch th.TargetState {
 	default:
 		err = th.heatOut.Set(false)
@@ -218,13 +213,6 @@ func (th *Thermostat) getCurrentHeatingCoolingState() (currentHeatingCoolingStat
 	return
 }
 
-func (th *Thermostat) syncHkValues() {
-	th.hk.Thermostat.CurrentTemperature.SetValue(th.CurrentTemperature)
-	th.hk.Thermostat.TargetTemperature.SetValue(th.TargetTemperature)
-	th.hk.Thermostat.CurrentHeatingCoolingState.SetValue(th.getCurrentHeatingCoolingState())
-	th.hk.Thermostat.TargetHeatingCoolingState.SetValue(th.TargetState)
-}
-
 func (th *Thermostat) updateTargetState(state int) {
 	switch state {
 	default:
@@ -243,7 +231,6 @@ func (th *Thermostat) updateTargetState(state int) {
 		}
 	}
 
-	// fmt.Printf("\tD\tthermo: TargetHeatingCoolingState.OnValueRemoteUpdate called (with: %d), set to: %d", state, th.TargetState)
 	th.Sync()
 }
 
