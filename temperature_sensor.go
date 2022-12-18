@@ -14,10 +14,11 @@ import (
 const oldDataDuration = 10 * time.Minute
 
 type TemperatureSensor struct {
-	Id         string
-	Name       string
-	DriverName string
-	Tags       map[string]string
+	Id             string
+	Name           string
+	DriverName     string
+	Tags           map[string]string
+	DisableHomekit bool
 
 	driver        drivers.SensorDriver
 	value         float64
@@ -51,6 +52,10 @@ func (ts *TemperatureSensor) Init(driver drivers.SensorDriver) error {
 
 	ts.driver = driver
 
+	if ts.DisableHomekit {
+		return nil
+	}
+
 	info := accessory.Info{
 		Name:         ts.Name,
 		SerialNumber: fmt.Sprintf("temp_sensor:%s:%s", ts.DriverName, ts.Id),
@@ -66,12 +71,18 @@ func (ts *TemperatureSensor) Init(driver drivers.SensorDriver) error {
 func (ts *TemperatureSensor) Sync() error {
 	val, err := ts.GetValue()
 	if err == nil {
-		ts.hkStatusFault.SetValue(characteristic.StatusFaultNoFault)
-		ts.hkA.TempSensor.CurrentTemperature.SetValue(val)
+		if ts.hkStatusFault != nil {
+			ts.hkStatusFault.SetValue(characteristic.StatusFaultNoFault)
+		}
+		if ts.hkA != nil {
+			ts.hkA.TempSensor.CurrentTemperature.SetValue(val)
+		}
 		return nil
 	}
 
-	ts.hkStatusFault.SetValue(characteristic.StatusFaultGeneralFault)
+	if ts.hkStatusFault != nil {
+		ts.hkStatusFault.SetValue(characteristic.StatusFaultGeneralFault)
+	}
 	return errors.Wrapf(err, "failed to sync %s temperature sensor %s", ts.Name, ts.Id)
 }
 
