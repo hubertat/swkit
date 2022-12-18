@@ -288,12 +288,6 @@ func (gio *GrentonIO) NameId() string {
 	return grentonioDriverName
 }
 
-func (gio *GrentonIO) GetUniqueId(ioPin uint16) uint64 {
-	baseId := uint64(0x05) << 56
-	baseId += uint64(gio.CluId) << 16
-	return baseId + uint64(ioPin)
-}
-
 func (gio *GrentonIO) IsReady() bool {
 	return gio.ready
 }

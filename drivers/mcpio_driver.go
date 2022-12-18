@@ -74,13 +74,6 @@ func (mout *McpOutput) Set(state bool) (err error) {
 	return
 }
 
-func (mcpio *McpIO) GetUniqueId(ioPin uint16) uint64 {
-	baseId := uint64(0x02) << 56
-	baseId += uint64(mcpio.BusNo) << 16
-	baseId += uint64(mcpio.DevNo) << 8
-	return baseId + uint64(ioPin)
-}
-
 func (mcpio *McpIO) NameId() string {
 	return mcpioDriverName
 }

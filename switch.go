@@ -2,6 +2,7 @@ package swkit
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 
 	drivers "github.com/hubertat/swkit/drivers"
@@ -30,6 +31,12 @@ type SwitchableDevice interface {
 
 func (swb *Switch) GetDriverName() string {
 	return swb.DriverName
+}
+
+func (swb *Switch) GetUniqueId() uint64 {
+	hash := fnv.New64()
+	hash.Write([]byte("Switch_" + swb.Name))
+	return hash.Sum64()
 }
 
 func (swb *Switch) Init(driver drivers.IoDriver) error {

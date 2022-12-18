@@ -2,6 +2,7 @@ package swkit
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 
 	"github.com/brutella/hap/accessory"
@@ -28,6 +29,12 @@ type MotionSensor struct {
 
 func (ms *MotionSensor) GetDriverName() string {
 	return ms.DriverName
+}
+
+func (ms *MotionSensor) GetUniqueId() uint64 {
+	hash := fnv.New64()
+	hash.Write([]byte("MotionSensor_" + ms.Name))
+	return hash.Sum64()
 }
 
 func (ms *MotionSensor) Init(driver drivers.IoDriver) error {

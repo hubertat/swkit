@@ -28,6 +28,10 @@ func (ou *Outlet) GetDriverName() string {
 	return ou.DriverName
 }
 
+func (ou *Outlet) GetUniqueId() uint64 {
+	return ou.driver.GetUniqueId(ou.OutPin)
+}
+
 func (ou *Outlet) Init(driver drivers.IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), ou.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")

@@ -151,7 +151,7 @@ func (rio *RemoteIO) NameId() string {
 }
 
 func (rio *RemoteIO) GetUniqueId(ioPin uint8) (uid uint64) {
-	baseId := uint64(0x03000000)
+	baseId := uint64(3) << 56
 
 	baseId += uint64(1) << 16 // TODO get last part of url string/ip
 	baseId += uint64(2) << 8  // TODO get port of url (Host)

@@ -126,3 +126,8 @@ func (w1 *Wire) FindTemperatureSensor(id string) (TemperatureSensor, error) {
 	}
 	return nil, errors.Errorf("sensor %s was not found in driver %s", id, w1.Name())
 }
+
+func (w1 *Wire) GetUniqueId(unitId uint16) uint64 {
+	baseId := uint64(6) << 56
+	return baseId + uint64(unitId)
+}

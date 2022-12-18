@@ -2,6 +2,7 @@ package swkit
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 
 	"github.com/brutella/hap/accessory"
@@ -29,6 +30,12 @@ type ClickableDevice interface {
 
 func (bu *Button) GetDriverName() string {
 	return bu.DriverName
+}
+
+func (bu *Button) GetUniqueId() uint64 {
+	hash := fnv.New64()
+	hash.Write([]byte("Button_" + bu.Name))
+	return hash.Sum64()
 }
 
 func (bu *Button) Init(driver drivers.IoDriver) error {

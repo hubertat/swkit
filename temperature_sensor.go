@@ -2,6 +2,7 @@ package swkit
 
 import (
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/brutella/hap/accessory"
@@ -18,6 +19,7 @@ type TemperatureSensor struct {
 	DriverName string
 	Tags       map[string]string
 
+	driver        drivers.SensorDriver
 	value         float64
 	lastSync      time.Time
 	hkA           *accessory.Thermometer
@@ -26,6 +28,12 @@ type TemperatureSensor struct {
 
 func (ts *TemperatureSensor) GetDriverName() string {
 	return ts.DriverName
+}
+
+func (ts *TemperatureSensor) GetUniqueId() uint64 {
+	hash := fnv.New64()
+	hash.Write([]byte("TemperatureSensor_" + ts.Name))
+	return hash.Sum64()
 }
 
 func (ts *TemperatureSensor) GetId() string {
@@ -37,6 +45,12 @@ func (ts *TemperatureSensor) GetTags() map[string]string {
 }
 
 func (ts *TemperatureSensor) Init(driver drivers.SensorDriver) error {
+	if len(ts.Name) < 2 {
+		return errors.Errorf("name of temperature sensor (%s) is too short", ts.Name)
+	}
+
+	ts.driver = driver
+
 	info := accessory.Info{
 		Name:         ts.Name,
 		SerialNumber: fmt.Sprintf("temp_sensor:%s:%s", ts.DriverName, ts.Id),

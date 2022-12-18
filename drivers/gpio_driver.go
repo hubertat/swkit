@@ -139,11 +139,6 @@ func (gp *GpIO) GetOutput(id uint16) (output DigitalOutput, err error) {
 	return
 }
 
-func (gp *GpIO) GetUniqueId(ioPin uint16) uint64 {
-	baseId := uint64(0x01) << 56
-	return baseId + uint64(ioPin)
-}
-
 func (gp *GpIO) GetAllIo() (inputs []uint16, outputs []uint16) {
 	for _, input := range gp.inputs {
 		inputs = append(inputs, uint16(input.pin))

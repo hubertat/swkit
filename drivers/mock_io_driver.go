@@ -58,9 +58,9 @@ func (md *MockIoDriver) NameId() string {
 	return "mock_driver"
 }
 
-func (md *MockIoDriver) GetUniqueId(ioPin uint16) uint64 {
+func (md *MockIoDriver) GetUniqueId(unitId uint16) uint64 {
 	baseId := uint64(0xABCDEF00)
-	return baseId + uint64(ioPin)
+	return baseId + uint64(unitId)
 }
 
 func (md *MockIoDriver) IsReady() bool {

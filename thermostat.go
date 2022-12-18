@@ -2,6 +2,7 @@ package swkit
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync"
 
@@ -44,6 +45,12 @@ type Thermostat struct {
 
 func (th *Thermostat) GetDriverName() string {
 	return th.DriverName
+}
+
+func (th *Thermostat) GetUniqueId() uint64 {
+	hash := fnv.New64()
+	hash.Write([]byte("Thermostat_" + th.Name))
+	return hash.Sum64()
 }
 
 func (th *Thermostat) Init(driver drivers.IoDriver) error {

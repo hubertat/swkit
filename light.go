@@ -2,6 +2,7 @@ package swkit
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync"
 
@@ -28,6 +29,12 @@ func (li *Light) GetDriverName() string {
 	return li.DriverName
 }
 
+func (li *Light) GetUniqueId() uint64 {
+	hash := fnv.New64()
+	hash.Write([]byte("Light_" + li.Name))
+	return hash.Sum64()
+}
+
 func (li *Light) Init(driver drivers.IoDriver) error {
 	if !strings.EqualFold(driver.NameId(), li.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
@@ -47,6 +54,13 @@ func (li *Light) Init(driver drivers.IoDriver) error {
 		return errors.Wrap(err, "Init failed")
 	}
 
+	info := accessory.Info{
+		Name:         li.Name,
+		SerialNumber: fmt.Sprintf("light:%s:%02d", li.DriverName, li.OutPin),
+	}
+	li.hk = accessory.NewLightbulb(info)
+	li.hk.Lightbulb.On.OnValueRemoteUpdate(li.SetValue)
+
 	return nil
 }
 
@@ -63,12 +77,6 @@ func (li *Light) GetControllers() []ControllingDevice {
 }
 
 func (li *Light) GetHk() *accessory.A {
-	info := accessory.Info{
-		Name:         li.Name,
-		SerialNumber: fmt.Sprintf("light:%s:%02d", li.DriverName, li.OutPin),
-	}
-	li.hk = accessory.NewLightbulb(info)
-	li.hk.Lightbulb.On.OnValueRemoteUpdate(li.SetValue)
 
 	return li.hk.A
 }

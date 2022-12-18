@@ -63,6 +63,7 @@ type Sensor interface {
 
 type HkThing interface {
 	GetHk() *accessory.A
+	GetUniqueId() uint64
 	Sync() error
 }
 
@@ -352,6 +353,7 @@ func (sw *SwKit) GetHkAccessories(firmwareVersion string) (acc []*accessory.A) {
 			if accessory.Info != nil && accessory.Info.FirmwareRevision != nil {
 				accessory.Info.FirmwareRevision.SetValue(firmwareVersion)
 			}
+			accessory.Id = th.GetUniqueId()
 			acc = append(acc, accessory)
 		}
 	}
