@@ -83,10 +83,6 @@ func (th *Thermostat) Init(driver drivers.IoDriver) error {
 		}
 	}
 
-	return nil
-}
-
-func (th *Thermostat) GetHk() *accessory.A {
 	info := accessory.Info{
 		Name:         th.Name,
 		SerialNumber: fmt.Sprintf("thermostat:%s:%02d", th.DriverName, th.HeatPin),
@@ -96,6 +92,11 @@ func (th *Thermostat) GetHk() *accessory.A {
 
 	th.hk.Thermostat.TargetHeatingCoolingState.OnValueRemoteUpdate(th.updateTargetState)
 	th.hk.Thermostat.TargetTemperature.OnValueRemoteUpdate(th.updateTargetTemperature)
+
+	return nil
+}
+
+func (th *Thermostat) GetHk() *accessory.A {
 
 	return th.hk.A
 }

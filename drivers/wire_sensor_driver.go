@@ -17,6 +17,10 @@ const wireSensorPrefix string = "28-"
 const wireSensorDriverName string = "wire"
 
 type Wire struct {
+	CheckBounds        bool
+	BoundMinimumMillis int
+	BoundMaximumMillis int
+
 	sensors []TemperatureSensor
 	ready   bool
 }
@@ -83,6 +87,13 @@ func (w1 *Wire) Name() string {
 	return wireSensorDriverName
 }
 
+func (w1 *Wire) checkBounds(readount int) bool {
+	if readount < w1.BoundMinimumMillis || readount > w1.BoundMaximumMillis {
+		return false
+	}
+	return true
+}
+
 func (w1 *Wire) Sync() error {
 
 	pathSlice, _ := w1.getSensorPathSlice()
@@ -97,6 +108,9 @@ func (w1 *Wire) Sync() error {
 		milliCelsiuses, err := strconv.ParseInt(string(temperatureString), 10, 32)
 		if err != nil {
 			return errors.Wrapf(err, "failed converting temperature string (bytes): %s to milli •C int value, for sensor id: %s", temperatureString, sensor.GetId())
+		}
+		if w1.CheckBounds && !w1.checkBounds(int(milliCelsiuses)) {
+			return errors.Errorf("wire sensor out of bound check enabled and failed, value: %d m°C for sensor %s", milliCelsiuses, sensor.GetId())
 		}
 		sensor.SetValue(float64(milliCelsiuses) / 1000)
 	}

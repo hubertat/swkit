@@ -363,9 +363,7 @@ func (sw *SwKit) getSensorDriverByName(name string) (driver drivers.SensorDriver
 	switch name {
 	case "wire":
 		if sw.WireSensors == nil {
-			// err = errors.Errorf("cannot initialize wire sensor driver, it is not configured")
-			sw.WireSensors = &drivers.Wire{}
-			driver = sw.WireSensors
+			err = errors.Errorf("cannot initialize wire sensor driver, it is not configured")
 		} else {
 			driver = sw.WireSensors
 		}
