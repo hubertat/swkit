@@ -81,7 +81,9 @@ func (ou *Outlet) GetControllers() []ControllingDevice {
 }
 
 func (ou *Outlet) GetHk() *accessory.A {
-
+	if ou.hk == nil {
+		return nil
+	}
 	return ou.hk.A
 }
 

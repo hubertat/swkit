@@ -109,7 +109,9 @@ func (th *Thermostat) Init(driver drivers.IoDriver) error {
 }
 
 func (th *Thermostat) GetHk() *accessory.A {
-
+	if th.hk == nil {
+		return nil
+	}
 	return th.hk.A
 }
 

@@ -85,7 +85,9 @@ func (li *Light) GetControllers() []ControllingDevice {
 }
 
 func (li *Light) GetHk() *accessory.A {
-
+	if li.hk == nil {
+		return nil
+	}
 	return li.hk.A
 }
 

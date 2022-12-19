@@ -85,7 +85,9 @@ func (swb *Switch) Sync() (err error) {
 }
 
 func (swb *Switch) GetHk() *accessory.A {
-
+	if swb.hk == nil {
+		return nil
+	}
 	return swb.hk.A
 }
 

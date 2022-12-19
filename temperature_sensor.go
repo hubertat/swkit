@@ -96,6 +96,9 @@ func (ts *TemperatureSensor) updateHomekitFaultStatus(err error) {
 }
 
 func (ts *TemperatureSensor) GetHk() *accessory.A {
+	if ts.hkA == nil {
+		return nil
+	}
 	return ts.hkA.A
 }
 

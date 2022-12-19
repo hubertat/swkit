@@ -13,12 +13,11 @@ import (
 )
 
 type MotionSensor struct {
-	Name       string
-	State      bool
-	DriverName string
-	InPin      uint16
-
-	DisableHomeKit bool
+	Name           string
+	State          bool
+	DriverName     string
+	InPin          uint16
+	DisableHomekit bool
 
 	input       drivers.DigitalInput
 	driver      drivers.IoDriver
@@ -59,7 +58,7 @@ func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
 		return errors.Wrap(err, "Init failed, on reading state")
 	}
 
-	if ms.DisableHomeKit {
+	if ms.DisableHomekit {
 		return nil
 	}
 
@@ -80,14 +79,25 @@ func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
 	return nil
 }
 
-func (ms *MotionSensor) Sync() (err error) {
-	ms.State, err = ms.input.GetState()
-	ms.hkService.MotionDetected.SetValue(ms.State)
+func (ms *MotionSensor) updateHomekitFaultStatus(err error) {
+	if ms.hkFault == nil {
+		return
+	}
 
 	if err != nil {
 		ms.hkFault.SetValue(characteristic.StatusFaultGeneralFault)
 	} else {
 		ms.hkFault.SetValue(characteristic.StatusFaultNoFault)
+	}
+}
+
+func (ms *MotionSensor) Sync() (err error) {
+	ms.State, err = ms.input.GetState()
+
+	ms.updateHomekitFaultStatus(err)
+
+	if ms.hkService != nil {
+		ms.hkService.MotionDetected.SetValue(ms.State)
 	}
 
 	return
