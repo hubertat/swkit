@@ -169,7 +169,7 @@ func TestCalculateOutputs(t *testing.T) {
 	thermo.TargetState = 0
 	heatState, _ := heatOut.GetState()
 	coolState, _ := coolOut.GetState()
-	thermo.calculateOutputs()
+	thermo.calculateAndSetOutputs()
 	assertBools(t, heatState, false)
 	assertBools(t, coolState, false)
 
@@ -177,7 +177,7 @@ func TestCalculateOutputs(t *testing.T) {
 
 	thermo.CurrentTemperature = 19.0
 	thermo.TargetTemperature = 21.5
-	thermo.calculateOutputs()
+	thermo.calculateAndSetOutputs()
 
 	heatState, _ = heatOut.GetState()
 	coolState, _ = coolOut.GetState()
@@ -186,7 +186,7 @@ func TestCalculateOutputs(t *testing.T) {
 
 	thermo.CurrentTemperature = 23.0
 	thermo.TargetTemperature = 21.5
-	thermo.calculateOutputs()
+	thermo.calculateAndSetOutputs()
 
 	heatState, _ = heatOut.GetState()
 	coolState, _ = coolOut.GetState()

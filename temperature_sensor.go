@@ -70,20 +70,29 @@ func (ts *TemperatureSensor) Init(driver drivers.SensorDriver) error {
 
 func (ts *TemperatureSensor) Sync() error {
 	val, err := ts.GetValue()
-	if err == nil {
-		if ts.hkStatusFault != nil {
-			ts.hkStatusFault.SetValue(characteristic.StatusFaultNoFault)
-		}
-		if ts.hkA != nil {
-			ts.hkA.TempSensor.CurrentTemperature.SetValue(val)
-		}
-		return nil
+	if err != nil {
+		err = errors.Wrapf(err, "failed to sync %s temperature sensor %s", ts.Name, ts.Id)
 	}
 
-	if ts.hkStatusFault != nil {
-		ts.hkStatusFault.SetValue(characteristic.StatusFaultGeneralFault)
+	ts.updateHomekitFaultStatus(err)
+
+	if err == nil && ts.hkA != nil {
+		ts.hkA.TempSensor.CurrentTemperature.SetValue(val)
 	}
-	return errors.Wrapf(err, "failed to sync %s temperature sensor %s", ts.Name, ts.Id)
+
+	return err
+}
+
+func (ts *TemperatureSensor) updateHomekitFaultStatus(err error) {
+	if ts.hkStatusFault == nil {
+		return
+	}
+
+	if err != nil {
+		ts.hkStatusFault.SetValue(characteristic.StatusFaultGeneralFault)
+	} else {
+		ts.hkStatusFault.SetValue(characteristic.StatusFaultNoFault)
+	}
 }
 
 func (ts *TemperatureSensor) GetHk() *accessory.A {

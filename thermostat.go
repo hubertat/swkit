@@ -22,6 +22,7 @@ type Thermostat struct {
 	CurrentTemperature float64
 	TargetTemperature  float64
 	TargetState        int
+	DisableHomekit     bool
 
 	DriverName string
 	HeatPin    uint16
@@ -90,6 +91,10 @@ func (th *Thermostat) Init(driver drivers.IoDriver) error {
 		}
 	}
 
+	if th.DisableHomekit {
+		return nil
+	}
+
 	info := accessory.Info{
 		Name:         th.Name,
 		SerialNumber: fmt.Sprintf("thermostat:%s:%02d", th.DriverName, th.HeatPin),
@@ -144,6 +149,10 @@ func (th *Thermostat) Sync() (err error) {
 	err = th.calculateAndSetOutputs()
 	if err != nil {
 		err = errors.Wrap(err, "failed to set heating/cooling outputs")
+		return
+	}
+
+	if th.hk == nil {
 		return
 	}
 

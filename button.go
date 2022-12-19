@@ -11,12 +11,11 @@ import (
 )
 
 type Button struct {
-	Name       string
-	State      bool
-	DriverName string
-	InPin      uint16
-
-	DisableHomeKit bool
+	Name           string
+	State          bool
+	DriverName     string
+	InPin          uint16
+	DisableHomekit bool
 
 	toggleThis []ClickableDevice
 	input      drivers.DigitalInput

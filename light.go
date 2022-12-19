@@ -12,10 +12,11 @@ import (
 )
 
 type Light struct {
-	Name       string
-	State      bool
-	DriverName string
-	OutPin     uint16
+	Name           string
+	State          bool
+	DriverName     string
+	OutPin         uint16
+	DisableHomekit bool
 
 	ControlBy []ControllingDevice
 
@@ -54,6 +55,10 @@ func (li *Light) Init(driver drivers.IoDriver) error {
 		return errors.Wrap(err, "Init failed")
 	}
 
+	if li.DisableHomekit {
+		return nil
+	}
+
 	info := accessory.Info{
 		Name:         li.Name,
 		SerialNumber: fmt.Sprintf("light:%s:%02d", li.DriverName, li.OutPin),
@@ -68,7 +73,10 @@ func (li *Light) Sync() error {
 	li.lock.Lock()
 	defer li.lock.Unlock()
 
-	li.hk.Lightbulb.On.SetValue(li.State)
+	if li.hk != nil {
+		li.hk.Lightbulb.On.SetValue(li.State)
+	}
+
 	return li.output.Set(li.State)
 }
 

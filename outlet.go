@@ -2,6 +2,7 @@ package swkit
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync"
 
@@ -11,10 +12,11 @@ import (
 )
 
 type Outlet struct {
-	Name       string
-	State      bool
-	DriverName string
-	OutPin     uint16
+	Name           string
+	State          bool
+	DriverName     string
+	OutPin         uint16
+	DisableHomekit bool
 
 	ControlBy []ControllingDevice
 
@@ -29,7 +31,9 @@ func (ou *Outlet) GetDriverName() string {
 }
 
 func (ou *Outlet) GetUniqueId() uint64 {
-	return ou.driver.GetUniqueId(ou.OutPin)
+	hash := fnv.New64()
+	hash.Write([]byte("Outlet_" + ou.Name))
+	return hash.Sum64()
 }
 
 func (ou *Outlet) Init(driver drivers.IoDriver) error {
@@ -49,6 +53,15 @@ func (ou *Outlet) Init(driver drivers.IoDriver) error {
 		return errors.Wrap(err, "Init failed")
 	}
 
+	if ou.DisableHomekit {
+		return nil
+	}
+	info := accessory.Info{
+		Name:         ou.Name,
+		SerialNumber: fmt.Sprintf("outlet:%s:%02d", ou.DriverName, ou.OutPin),
+	}
+	ou.hk = accessory.NewOutlet(info)
+	ou.hk.Outlet.On.OnValueRemoteUpdate(ou.SetValue)
 	return nil
 }
 
@@ -56,7 +69,10 @@ func (ou *Outlet) Sync() error {
 	ou.lock.Lock()
 	defer ou.lock.Unlock()
 
-	ou.hk.Outlet.On.SetValue(ou.State)
+	if ou.hk != nil {
+		ou.hk.Outlet.On.SetValue(ou.State)
+	}
+
 	return ou.output.Set(ou.State)
 }
 
@@ -65,12 +81,6 @@ func (ou *Outlet) GetControllers() []ControllingDevice {
 }
 
 func (ou *Outlet) GetHk() *accessory.A {
-	info := accessory.Info{
-		Name:         ou.Name,
-		SerialNumber: fmt.Sprintf("outlet:%s:%02d", ou.DriverName, ou.OutPin),
-	}
-	ou.hk = accessory.NewOutlet(info)
-	ou.hk.Outlet.On.OnValueRemoteUpdate(ou.SetValue)
 
 	return ou.hk.A
 }

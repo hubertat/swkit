@@ -12,12 +12,11 @@ import (
 )
 
 type Switch struct {
-	Name       string
-	State      bool
-	DriverName string
-	InPin      uint16
-
-	DisableHomeKit bool
+	Name           string
+	State          bool
+	DriverName     string
+	InPin          uint16
+	DisableHomekit bool
 
 	switchThis []SwitchableDevice
 	input      drivers.DigitalInput
@@ -56,6 +55,17 @@ func (swb *Switch) Init(driver drivers.IoDriver) error {
 		return errors.Wrap(err, "Init failed")
 	}
 
+	if swb.DisableHomekit {
+		return nil
+	}
+
+	info := accessory.Info{
+		Name:         swb.Name,
+		SerialNumber: fmt.Sprintf("switch:%s:%02d", swb.DriverName, swb.InPin),
+	}
+	swb.hk = accessory.NewSwitch(info)
+	swb.hk.Switch.On.OnValueRemoteUpdate(swb.Set)
+
 	return nil
 }
 func (swb *Switch) Sync() (err error) {
@@ -75,16 +85,6 @@ func (swb *Switch) Sync() (err error) {
 }
 
 func (swb *Switch) GetHk() *accessory.A {
-	if swb.DisableHomeKit {
-		return nil
-	}
-
-	info := accessory.Info{
-		Name:         swb.Name,
-		SerialNumber: fmt.Sprintf("switch:%s:%02d", swb.DriverName, swb.InPin),
-	}
-	swb.hk = accessory.NewSwitch(info)
-	swb.hk.Switch.On.OnValueRemoteUpdate(swb.Set)
 
 	return swb.hk.A
 }
