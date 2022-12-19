@@ -9,6 +9,7 @@ import (
 	drivers "github.com/hubertat/swkit/drivers"
 
 	"github.com/brutella/hap/accessory"
+	"github.com/brutella/hap/characteristic"
 	"github.com/pkg/errors"
 )
 
@@ -40,6 +41,7 @@ type Thermostat struct {
 	coolOut           drivers.DigitalOutput
 	driver            drivers.IoDriver
 	hk                *accessory.Thermostat
+	hkFaultStatus     *characteristic.StatusFault
 	lock              sync.Mutex
 	temperatureSensor drivers.TemperatureSensor
 }
@@ -101,6 +103,8 @@ func (th *Thermostat) Init(driver drivers.IoDriver) error {
 	}
 
 	th.hk = accessory.NewThermostat(info)
+	th.hkFaultStatus = characteristic.NewStatusFault()
+	th.hk.Thermostat.AddC(th.hkFaultStatus.C)
 
 	th.hk.Thermostat.TargetHeatingCoolingState.OnValueRemoteUpdate(th.updateTargetState)
 	th.hk.Thermostat.TargetTemperature.OnValueRemoteUpdate(th.updateTargetTemperature)
@@ -138,19 +142,37 @@ func (th *Thermostat) checkCoolingCondition() bool {
 	return th.CurrentTemperature > (th.CurrentTemperature + threshold)
 }
 
+func (th *Thermostat) updateHomekitFaultStatus(err error) {
+	if th.hkFaultStatus == nil {
+		return
+	}
+
+	if err != nil {
+		th.hkFaultStatus.SetValue(characteristic.StatusFaultGeneralFault)
+	} else {
+		th.hkFaultStatus.SetValue(characteristic.StatusFaultNoFault)
+	}
+}
+
 func (th *Thermostat) Sync() (err error) {
+	th.lock.Lock()
+	defer th.lock.Unlock()
 	if th.temperatureSensor == nil {
-		return errors.Errorf("missing temperature sensor for thermostat %s", th.Name)
+		err = errors.Errorf("missing temperature sensor for thermostat %s", th.Name)
+		th.updateHomekitFaultStatus(err)
+		return
 	}
 	th.CurrentTemperature, err = th.temperatureSensor.GetValue()
 	if err != nil {
 		err = errors.Wrap(err, "error with getting sensor value")
+		th.updateHomekitFaultStatus(err)
 		return
 	}
 
 	err = th.calculateAndSetOutputs()
 	if err != nil {
 		err = errors.Wrap(err, "failed to set heating/cooling outputs")
+		th.updateHomekitFaultStatus(err)
 		return
 	}
 
@@ -163,6 +185,7 @@ func (th *Thermostat) Sync() (err error) {
 	th.hk.Thermostat.CurrentHeatingCoolingState.SetValue(th.getCurrentHeatingCoolingState())
 	th.hk.Thermostat.TargetHeatingCoolingState.SetValue(th.TargetState)
 
+	th.updateHomekitFaultStatus(err)
 	return
 }
 
@@ -211,16 +234,17 @@ func (th *Thermostat) calculateAndSetOutputs() (err error) {
 }
 
 func (th *Thermostat) getCurrentHeatingCoolingState() (currentHeatingCoolingState int) {
-	heatingOn, _ := th.heatOut.GetState()
-	if heatingOn {
+	heatingOn, err := th.heatOut.GetState()
+	if heatingOn && err == nil {
 		currentHeatingCoolingState = 1
 	}
 	if th.CoolingEnabled {
-		coolingOn, _ := th.coolOut.GetState()
-		if coolingOn {
+		coolingOn, err := th.coolOut.GetState()
+		if coolingOn && err == nil {
 			currentHeatingCoolingState = 2
 		}
 	}
+	th.updateHomekitFaultStatus(err)
 	return
 }
 
@@ -246,5 +270,10 @@ func (th *Thermostat) updateTargetState(state int) {
 }
 
 func (th *Thermostat) updateTargetTemperature(target float64) {
+	if target < thermostatMinimumTemperature && target > thermostatMaximumTemperature {
+		return
+	}
+
 	th.TargetTemperature = target
+	th.Sync()
 }
