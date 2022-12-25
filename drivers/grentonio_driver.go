@@ -15,7 +15,7 @@ import (
 )
 
 const grentonioDriverName = "grenton"
-const grentonNetClientTimeout = 3 * time.Second
+const grentonNetClientTimeout = 4500 * time.Millisecond
 const grentonSetStateWaitForCheck = 900 * time.Millisecond
 const grentonObjectFreshness = 20 * time.Second
 
@@ -60,15 +60,15 @@ func (gro *GrentonOutput) Set(state bool) error {
 		return errors.Wrap(err, "grenton setState returned error")
 	}
 
-	go func() {
-		time.Sleep(grentonSetStateWaitForCheck)
+	// go func() {
+	// 	time.Sleep(grentonSetStateWaitForCheck)
 
-		err := gro.Grenton.updateState()
-		if err != nil {
-			err = errors.Wrap(err, "grenton returned error during refresh after setting new state")
-		}
+	// 	err := gro.Grenton.updateState()
+	// 	if err != nil {
+	// 		err = errors.Wrap(err, "grenton returned error during refresh after setting new state")
+	// 	}
 
-	}()
+	// }()
 	// if gro.state != state {
 	// 	return errors.Errorf("state mismatch after setting new state (want: %v, got: %v)", state, gro.state)
 	// }

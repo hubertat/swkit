@@ -13,6 +13,7 @@ import (
 
 	"github.com/brutella/hap"
 	"github.com/brutella/hap/accessory"
+	hklog "github.com/brutella/hap/log"
 	"github.com/pkg/errors"
 
 	drivers "github.com/hubertat/swkit/drivers"
@@ -34,6 +35,8 @@ type SwKit struct {
 
 	HkPin       string
 	HkDirectory string
+	HkAddress   string
+	HkDebug     bool
 
 	Mcp23017   *drivers.McpIO
 	Gpio       *drivers.GpIO
@@ -424,25 +427,30 @@ func (sw *SwKit) StartTicker(interval time.Duration) {
 	}
 }
 
+func (sw *SwKit) syncSensorDriversAndSensors() {
+	for sDName, sD := range sw.sensorDrivers {
+		err := sD.Sync()
+		if err != nil {
+			log.Printf("receieved error when syncing %s sensor driver: %v", sDName, err)
+		}
+	}
+	for _, s := range sw.getSensors() {
+		err := s.Sync()
+		if err != nil {
+			log.Printf("received error when syncing sensor: %v", err)
+		}
+	}
+}
+
 func (sw *SwKit) StartSensorTicker(interval time.Duration) {
+	sw.syncSensorDriversAndSensors()
 
 	sw.sensorsTicker = time.NewTicker(interval)
 
 	for {
 		select {
 		case <-sw.sensorsTicker.C:
-			for sDName, sD := range sw.sensorDrivers {
-				err := sD.Sync()
-				if err != nil {
-					log.Printf("receieved error when syncing %s sensor driver: %v", sDName, err)
-				}
-			}
-			for _, s := range sw.getSensors() {
-				err := s.Sync()
-				if err != nil {
-					log.Printf("received error when syncing sensor: %v", err)
-				}
-			}
+			sw.syncSensorDriversAndSensors()
 		}
 	}
 }
@@ -520,6 +528,13 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 		return errors.Wrap(err, "failed to create HomeKit server")
 	}
 	hkServer.Pin = sw.HkPin
+	if len(sw.HkAddress) > 0 {
+		hkServer.Addr = sw.HkAddress
+	}
+
+	if sw.HkDebug {
+		hklog.Debug.Enable()
+	}
 
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt)

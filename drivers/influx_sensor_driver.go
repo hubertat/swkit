@@ -3,6 +3,7 @@ package drivers
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
@@ -21,6 +22,8 @@ type InfluxSensors struct {
 	Token        string
 
 	GroupByTag []string
+
+	Debug bool
 
 	sensors []TemperatureSensor
 	ready   bool
@@ -63,6 +66,9 @@ func (is *InfluxSensors) runQuery(query string) (*api.QueryTableResult, error) {
 }
 
 func (is *InfluxSensors) Sync() error {
+	if is.Debug {
+		log.Println("running influx query: ", is.prepareQuery())
+	}
 	tableResult, err := is.runQuery(is.prepareQuery())
 	if err != nil {
 		return errors.Wrap(err, "failed to get table results")
@@ -74,6 +80,9 @@ func (is *InfluxSensors) Sync() error {
 		}
 		for _, t := range is.sensors {
 			if checkTagsRecordMatch(tableResult.Record(), t.GetTags()) {
+				if is.Debug {
+					log.Println("matched t.sensor: ", t.GetId())
+				}
 				value := tableResult.Record().Value()
 				switch valT := value.(type) {
 				case float64:
@@ -102,22 +111,14 @@ func (is *InfluxSensors) FindTemperatureSensor(id string) (sensor TemperatureSen
 }
 
 func (is *InfluxSensors) prepareQuery() string {
-	groupByString := ""
-	for ix, groupBy := range is.GroupByTag {
-		if ix > 0 {
-			groupByString += ", "
-		}
-		groupByString += fmt.Sprintf(`"%s"`, groupBy)
-	}
-
 	return fmt.Sprintf(`
 from(bucket: "%s")
 |> range(start: -10m)
 |> filter(fn: (r) => r["_measurement"] == "%s")
 |> filter(fn: (r) => r["_field"] == "temperature")
-|> group(columns: [%s])
-|> aggregateWindow(every: 20m, fn: mean, createEmpty: false)
-`, is.Bucket, is.Measurement, groupByString)
+|> group(columns: ["%s"])
+|> aggregateWindow(every: 25m, fn: mean, createEmpty: false)
+`, is.Bucket, is.Measurement, strings.Join(is.GroupByTag, ","))
 }
 
 func checkTagsRecordMatch(record *query.FluxRecord, tags map[string]string) (match bool) {
