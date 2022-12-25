@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	dnslog "github.com/brutella/dnssd/log"
 	"github.com/brutella/hap"
 	"github.com/brutella/hap/accessory"
 	hklog "github.com/brutella/hap/log"
@@ -534,6 +535,7 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 
 	if sw.HkDebug {
 		hklog.Debug.Enable()
+		dnslog.Debug.Enable()
 	}
 
 	c := make(chan os.Signal)
