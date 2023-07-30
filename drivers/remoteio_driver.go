@@ -29,6 +29,10 @@ func (ifr *RemoteInput) GetState() (state bool, err error) {
 	return
 }
 
+func (ifr *RemoteInput) SubscribeToPushEvent(listener EventListener) error {
+	return errors.New("SubscribeToPushEvent not implemented")
+}
+
 type RemoteOutput struct {
 	pinNo uint8
 

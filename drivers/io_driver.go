@@ -12,9 +12,22 @@ type IoDriver interface {
 
 type DigitalInput interface {
 	GetState() (bool, error)
+	SubscribeToPushEvent(EventListener) error
 }
 
 type DigitalOutput interface {
 	GetState() (bool, error)
 	Set(bool) error
+}
+
+type PushEvent int
+
+const (
+	PushEventSinglePress PushEvent = 0
+	PushEventDoublePress PushEvent = 1
+	PushEventLongPress   PushEvent = 2
+)
+
+type EventListener interface {
+	FireEvent(PushEvent)
 }

@@ -39,6 +39,10 @@ func (gpi *GpInput) GetState() (state bool, err error) {
 	return
 }
 
+func (gpi *GpInput) SubscribeToPushEvent(listener EventListener) error {
+	return errors.New("SubscribeToPushEvent not implemented")
+}
+
 func (gpo *GpOutput) Set(state bool) error {
 
 	if gpo.invert {

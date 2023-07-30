@@ -1,9 +1,9 @@
 package drivers
 
 import (
+	"errors"
 	"fmt"
 
-	"github.com/pkg/errors"
 	"github.com/racerxdl/go-mcp23017"
 )
 
@@ -50,6 +50,10 @@ func (min *McpInput) GetState() (state bool, err error) {
 	return
 }
 
+func (min *McpInput) SubscribeToPushEvent(listener EventListener) error {
+	return errors.New("SubscribeToPushEvent not implemented")
+}
+
 func (mout *McpOutput) GetState() (state bool, err error) {
 	rawState, err := mout.device.DigitalRead(mout.pin)
 	if err != nil {
@@ -90,7 +94,7 @@ func (mcp *McpIO) Setup(inputs []uint16, outputs []uint16) (err error) {
 
 	for _, inputPin := range inputs {
 		if inputPin > 255 {
-			err = errors.Errorf("input pin out of range (mcpio takes uint8 pin id)")
+			err = fmt.Errorf("input pin out of range (mcpio takes uint8 pin id)")
 			return
 		}
 		err = mcp.device.PinMode(uint8(inputPin), mcp23017.INPUT)
@@ -106,7 +110,7 @@ func (mcp *McpIO) Setup(inputs []uint16, outputs []uint16) (err error) {
 
 	for _, outputPin := range outputs {
 		if outputPin > 255 {
-			err = errors.Errorf("output pin out of range (mcpio takes uint8 pin id)")
+			err = fmt.Errorf("output pin out of range (mcpio takes uint8 pin id)")
 			return
 		}
 		err = mcp.device.PinMode(uint8(outputPin), mcp23017.OUTPUT)

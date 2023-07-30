@@ -3,6 +3,8 @@ package drivers
 import (
 	"fmt"
 	"io"
+
+	"errors"
 )
 
 type MockOutput struct {
@@ -31,6 +33,10 @@ type MockInput struct {
 
 func (mi *MockInput) GetState() (bool, error) {
 	return mi.State, nil
+}
+
+func (mi *MockInput) SubscribeToPushEvent(listener EventListener) error {
+	return errors.New("SubscribeToPushEvent not implemented")
 }
 
 type MockIoDriver struct {

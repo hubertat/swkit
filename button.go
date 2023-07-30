@@ -1,26 +1,30 @@
 package swkit
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strings"
 
 	"github.com/brutella/hap/accessory"
+	"github.com/brutella/hap/service"
 	drivers "github.com/hubertat/swkit/drivers"
-	"github.com/pkg/errors"
 )
 
 type Button struct {
-	Name           string
-	State          bool
-	DriverName     string
-	InPin          uint16
+	Name       string
+	State      bool
+	DriverName string
+	InPin      uint16
+
 	DisableHomekit bool
 
 	toggleThis []ClickableDevice
 	input      drivers.DigitalInput
 	driver     drivers.IoDriver
-	hk         *accessory.A
+
+	hk *accessory.A
+	ss *service.StatelessProgrammableSwitch
 }
 
 type ClickableDevice interface {
@@ -51,25 +55,27 @@ func (bu *Button) Init(driver drivers.IoDriver) error {
 	bu.driver = driver
 	bu.input, err = driver.GetInput(bu.InPin)
 	if err != nil {
-		return errors.Wrap(err, "Init failed on getting input")
+		return errors.Join(errors.New("Init failed on getting input"), err)
 	}
-	bu.State, err = bu.input.GetState()
+
+	err = bu.input.SubscribeToPushEvent(bu)
 	if err != nil {
-		return errors.Wrap(err, "Init failed, on reading state")
+		return errors.Join(errors.New("Failed to subsribe to push event"), err)
+	}
+
+	if !bu.DisableHomekit {
+		bu.hk = accessory.New(accessory.Info{
+			Name: bu.Name,
+		}, accessory.TypeProgrammableSwitch)
+
+		bu.ss = service.NewStatelessProgrammableSwitch()
+		bu.hk.AddS(bu.ss.S)
 	}
 
 	return nil
 }
 
 func (bu *Button) Sync() (err error) {
-	oldState := bu.State
-	bu.State, err = bu.input.GetState()
-
-	if bu.State != oldState && bu.State {
-		for _, clickable := range bu.toggleThis {
-			clickable.Toggle()
-		}
-	}
 
 	return
 }
@@ -79,11 +85,15 @@ func (bu *Button) GetHk() *accessory.A {
 }
 
 func (bu *Button) Set(value bool) {
-	fmt.Printf("DEBUG buttin setting value(%v) from HK\n", value)
-	bu.State = value
+
 }
 
 func (bu *Button) GetValue() bool {
-	fmt.Printf("DEBUG button getting value(%v)to -> HK\n", bu.State)
-	return bu.State
+
+	state, _ := bu.input.GetState()
+	return state
+}
+
+func (bu *Button) FireEvent(event drivers.PushEvent) {
+	bu.ss.ProgrammableSwitchEvent.SetValue(int(event))
 }

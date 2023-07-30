@@ -39,10 +39,11 @@ type SwKit struct {
 	HkAddress   string
 	HkDebug     bool
 
-	Mcp23017   *drivers.McpIO
-	Gpio       *drivers.GpIO
-	Grenton    *drivers.GrentonIO
-	FakeDriver *drivers.MockIoDriver
+	Mcp23017      *drivers.McpIO
+	Gpio          *drivers.GpIO
+	Grenton       *drivers.GrentonIO
+	FakeDriver    *drivers.MockIoDriver
+	RemoteIoSlave *drivers.RemoteIoSlave
 
 	InfluxSensors *drivers.InfluxSensors
 	WireSensors   *drivers.Wire
@@ -163,6 +164,12 @@ func (sw *SwKit) getIoDriverByName(name string) (driver drivers.IoDriver, err er
 		} else {
 			driver = sw.FakeDriver
 		}
+	case "remoteio_slave":
+		if sw.RemoteIoSlave == nil {
+			err = errors.New("cannot initialize RemoteIOSlave driver, not configured")
+		} else {
+			driver = sw.RemoteIoSlave
+		}
 	default:
 		err = errors.Errorf("driver (%s) not found", name)
 	}
@@ -189,6 +196,9 @@ func (sw *SwKit) getIos() []IO {
 	}
 	for _, mosens := range sw.MotionSensors {
 		ios = append(ios, mosens)
+	}
+	for _, but := range sw.Buttons {
+		ios = append(ios, but)
 	}
 
 	return ios
