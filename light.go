@@ -69,15 +69,19 @@ func (li *Light) Init(driver drivers.IoDriver) error {
 	return nil
 }
 
-func (li *Light) Sync() error {
+func (li *Light) Sync() (err error) {
 	li.lock.Lock()
 	defer li.lock.Unlock()
 
+	li.State, err = li.output.GetState()
+	if err != nil {
+		return
+	}
 	if li.hk != nil {
 		li.hk.Lightbulb.On.SetValue(li.State)
 	}
 
-	return li.output.Set(li.State)
+	return nil
 }
 
 func (li *Light) GetControllers() []ControllingDevice {
@@ -93,12 +97,10 @@ func (li *Light) GetHk() *accessory.A {
 
 func (li *Light) SetValue(state bool) {
 	li.State = state
+	li.output.Set(li.State)
 
-	li.Sync()
 }
 
 func (li *Light) Toggle() {
-	li.State = !li.State
-
-	li.Sync()
+	li.SetValue(!li.State)
 }

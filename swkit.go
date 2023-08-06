@@ -44,6 +44,7 @@ type SwKit struct {
 	Grenton       *drivers.GrentonIO
 	FakeDriver    *drivers.MockIoDriver
 	RemoteIoSlave *drivers.RemoteIoSlave
+	Shelly        *drivers.ShellyIO
 
 	InfluxSensors *drivers.InfluxSensors
 	WireSensors   *drivers.Wire
@@ -169,6 +170,12 @@ func (sw *SwKit) getIoDriverByName(name string) (driver drivers.IoDriver, err er
 			err = errors.New("cannot initialize RemoteIOSlave driver, not configured")
 		} else {
 			driver = sw.RemoteIoSlave
+		}
+	case "shelly":
+		if sw.Shelly == nil {
+			err = errors.New("cannot initialize Shelly driver, not configured")
+		} else {
+			driver = sw.Shelly
 		}
 	default:
 		err = errors.Errorf("driver (%s) not found", name)
