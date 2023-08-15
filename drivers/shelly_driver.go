@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/netip"
+
 	"net/url"
 	"time"
 
@@ -17,7 +19,8 @@ const shellyDriverName = "shelly"
 const httpDetectReadTimeout = 400 * time.Millisecond
 
 type ShellyIO struct {
-	IpCidr string
+	OriginAddr string
+	IpCidr     string
 
 	IpStart string
 	IpEnd   string
@@ -89,8 +92,8 @@ func checkForShellyGen2(addr string) bool {
 	return shellyInfo.Gen == 2
 }
 
-func tryShellyDevice(addr netip.Addr) (device *shelly.ShellyDevice, err error) {
-
+func tryShellyDevice(addr netip.Addr, origin *url.URL) (device *shelly.ShellyDevice, err error) {
+	log.Println("trying addr ", addr.String())
 	uri, err := url.Parse(addr.String())
 	if err != nil {
 		err = errors.Join(errors.New("failed to parse url from ip addr: "+addr.String()), err)
@@ -104,17 +107,22 @@ func tryShellyDevice(addr netip.Addr) (device *shelly.ShellyDevice, err error) {
 		return
 	}
 
-	return shelly.DiscoverShelly(uri)
+	return shelly.DiscoverShelly(uri, origin)
 }
 
 func (she *ShellyIO) Setup(inputs []uint16, outputs []uint16) error {
+
+	origin, err := url.Parse(she.OriginAddr)
+	if err != nil {
+		return errors.Join(errors.New("failed to parse origin address"), err)
+	}
 
 	she.Devices = make(map[string]*shelly.ShellyDevice)
 
 	ipStart, ipEnd, ipRangeErr := she.getStartEndIp()
 	if ipRangeErr == nil {
 		for addr := ipStart; addr.Less(ipEnd); addr = addr.Next() {
-			dev, err := tryShellyDevice(addr)
+			dev, err := tryShellyDevice(addr, origin)
 			if err != nil {
 				return errors.Join(errors.New("failed to discover shelly device at ip address "+addr.String()), err)
 			}
@@ -129,7 +137,7 @@ func (she *ShellyIO) Setup(inputs []uint16, outputs []uint16) error {
 		}
 
 		for addr := prefix.Masked().Addr().Next(); prefix.Contains(addr.Next()); addr = addr.Next() {
-			dev, err := tryShellyDevice(addr)
+			dev, err := tryShellyDevice(addr, origin)
 			if err != nil {
 				return errors.Join(errors.New("failed to discover shelly device at ip address "+addr.String()), err)
 			}
@@ -139,27 +147,26 @@ func (she *ShellyIO) Setup(inputs []uint16, outputs []uint16) error {
 		}
 	}
 
-	for _, dev := range she.Devices {
-		// log.Printf("DEBUG device:\n%+v\n\n", dev)
-		// err := dev.Subscribe()
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
-		for _, sw := range dev.Switches {
-			she.Outputs = append(she.Outputs, ShellyOutput{
-				Pin: uint16(len(she.Outputs)),
-				sw:  &sw,
-				dev: dev,
-			})
-		}
+	log.Println("found devices: ", she.Devices)
 
-		for _, in := range dev.Inputs {
-			she.Inputs = append(she.Inputs, ShellyInput{
-				Pin: uint16(len(she.Inputs)),
-				in:  &in.Status,
-			})
+	for _, out := range she.Outputs {
+		dev, exist := she.Devices[out.Id]
+		if !exist {
+			return fmt.Errorf("device with id %s not found", out.Id)
 		}
+		if out.SwitchNo >= len(dev.Switches) {
+			return fmt.Errorf("device %s does not have output pin %d", out.Id, out.SwitchNo)
+		}
+		out.sw = &dev.Switches[out.SwitchNo]
 	}
+
+	// TODO: inputs
+	// for _, in := range dev.Inputs {
+	// 	she.Inputs = append(she.Inputs, ShellyInput{
+	// 		Pin: uint16(len(she.Inputs)),
+	// 		in:  &in.Status,
+	// 	})
+	// }
 
 	she.isReady = true
 
@@ -167,6 +174,9 @@ func (she *ShellyIO) Setup(inputs []uint16, outputs []uint16) error {
 }
 
 func (she *ShellyIO) Close() error {
+	for _, dev := range she.Devices {
+		dev.Close()
+	}
 	she.isReady = false
 	return nil
 }
@@ -213,7 +223,7 @@ func (sout *ShellyOutput) GetState() (bool, error) {
 	if sout.sw == nil {
 		return false, errors.New("shelly output internal SwitchStatus nil error")
 	}
-	return sout.sw.Status.Output, nil
+	return *sout.sw.Status.Output, nil
 }
 
 func (sout *ShellyOutput) Set(state bool) error {

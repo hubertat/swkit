@@ -1,11 +1,12 @@
 module github.com/hubertat/swkit
 
-go 1.18
+go 1.20
 
 require (
 	github.com/brutella/dnssd v1.2.4
 	github.com/brutella/hap v0.0.20
-	github.com/hubertat/go-ethereum v0.0.0-20230806160835-150a86711eda
+	github.com/gorilla/websocket v1.5.0
+	github.com/hubertat/go-ethereum v0.0.0-20230814164731-1c17bb558390
 	github.com/hubertat/servicemaker v0.1.2
 	github.com/influxdata/influxdb-client-go/v2 v2.5.1
 	github.com/julienschmidt/httprouter v1.3.0
@@ -16,12 +17,13 @@ require (
 
 require (
 	github.com/StackExchange/wmi v0.0.0-20180116203802-5d049714c4a6 // indirect
+	github.com/btcsuite/btcd/btcec/v2 v2.2.0 // indirect
 	github.com/deckarep/golang-set/v2 v2.1.0 // indirect
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/deepmap/oapi-codegen v1.8.2 // indirect
 	github.com/go-chi/chi v1.5.4 // indirect
 	github.com/go-ole/go-ole v1.2.1 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
-	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/holiman/uint256 v1.2.3 // indirect
 	github.com/influxdata/line-protocol v0.0.0-20210311194329-9aa0e372d097 // indirect
 	github.com/logrusorgru/aurora v0.0.0-20181002194514-a7b3b318ed4e // indirect
