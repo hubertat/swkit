@@ -147,17 +147,27 @@ func (she *ShellyIO) Setup(inputs []uint16, outputs []uint16) error {
 		}
 	}
 
-	log.Println("found devices: ", she.Devices)
+	log.Println("found devices: ", she.Devices, "subscribing to events")
+	for _, dev := range she.Devices {
+		err = dev.SubscribeDeviceStatus()
+		if err != nil {
+			return errors.Join(err, errors.New("failed to subscribe to shelly events for device "+dev.Info.ID))
+		}
+	}
 
-	for _, out := range she.Outputs {
+	for ix, out := range she.Outputs {
 		dev, exist := she.Devices[out.Id]
 		if !exist {
 			return fmt.Errorf("device with id %s not found", out.Id)
 		}
+		out.dev = dev
+
 		if out.SwitchNo >= len(dev.Switches) {
 			return fmt.Errorf("device %s does not have output pin %d", out.Id, out.SwitchNo)
 		}
 		out.sw = &dev.Switches[out.SwitchNo]
+
+		she.Outputs[ix] = out
 	}
 
 	// TODO: inputs
@@ -221,7 +231,7 @@ type ShellyOutput struct {
 
 func (sout *ShellyOutput) GetState() (bool, error) {
 	if sout.sw == nil {
-		return false, errors.New("shelly output internal SwitchStatus nil error")
+		return false, errors.New("shelly output internal Switch nil error")
 	}
 	return *sout.sw.Status.Output, nil
 }

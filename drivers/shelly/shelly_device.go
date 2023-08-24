@@ -2,6 +2,7 @@ package shelly
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 
@@ -93,14 +94,28 @@ func (sd *ShellyDevice) SubscribeDeviceStatus() error {
 				conn.Close()
 				return
 			default:
+				// mType, p, err := conn.ReadMessage()
+				// if err == nil {
+				// 	log.Println("got message", mType)
+				// 	log.Println(string(p))
+				// 	return
+				// }
 				resp := &ShellyNotifyStatusResponse{}
 				if err = conn.ReadJSON(resp); err == nil {
-					for _, sw := range resp.SwitchSlice() {
-						if sw.Output != nil && len(sd.Switches) > sw.ID {
-							sd.Switches[sw.ID].Status.Output = sw.Output
-
+					for id, jsonSwState := range resp.SwitchSlice() {
+						if len(jsonSwState) > 5 && len(sd.Switches) > id {
+							currentStatus := sd.Switches[id].Status
+							err = json.Unmarshal([]byte(jsonSwState), &currentStatus)
+							if err == nil {
+								sd.Switches[id].Status = currentStatus
+							} else {
+								log.Println("failed to unmarshal switch status", err)
+							}
 						}
 					}
+
+				} else {
+					log.Println("failed to websocket ReadJSON", err)
 				}
 			}
 		}
@@ -113,7 +128,8 @@ func (sd *ShellyDevice) SubscribeComponentsStatus() error {
 	dialer := websocketDialer()
 
 	originHeaders := http.Header{}
-	originHeaders.Add("Origin", "ws://10.100.70.173:80")
+	// originHeaders.Add("Origin", "ws://10.100.70.173:80")
+	originHeaders.Add("Origin", "ws://10.100.100.187:80")
 
 	ctx := context.Background()
 	ctx, close := context.WithTimeout(ctx, discoverConnectionTimeout)
@@ -144,8 +160,16 @@ func (sd *ShellyDevice) SubscribeComponentsStatus() error {
 				return
 			default:
 				message := RpcResponse{}
+
+				mType, p, err := conn.ReadMessage()
+				if err == nil {
+					log.Println("got message", mType)
+					log.Println(string(p))
+					return
+				}
 				if err = conn.ReadJSON(&message); err == nil {
-					log.Println("got message", message)
+
+					return
 					req, err := rpcClient.GetRequest(message.Id)
 					if err == nil {
 						switch req.Method {

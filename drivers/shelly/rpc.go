@@ -3,8 +3,6 @@ package shelly
 import (
 	"encoding/json"
 	"errors"
-
-	"github.com/hubertat/swkit/drivers/shelly/components"
 )
 
 type RpcClient struct {
@@ -71,30 +69,58 @@ type ShellyNotifyStatusResponse struct {
 	Id     int    `json:"id"`
 	Src    string `json:"src"`
 	Dst    string `json:"dst"`
-	Method string `json:"method"`
-	Params struct {
-		Switch0 *components.SwitchStatus `json:"switch:0,omitempty"`
-		Switch1 *components.SwitchStatus `json:"switch:1,omitempty"`
-		Switch2 *components.SwitchStatus `json:"switch:2,omitempty"`
-		Switch3 *components.SwitchStatus `json:"switch:3,omitempty"`
-	}
+	Result struct {
+		Switch0 json.RawMessage `json:"switch:0"`
+		Switch1 json.RawMessage `json:"switch:1"`
+		Switch2 json.RawMessage `json:"switch:2"`
+		Switch3 json.RawMessage `json:"switch:3"`
+		Input0  json.RawMessage `json:"input:0"`
+		Input1  json.RawMessage `json:"input:1"`
+		Input2  json.RawMessage `json:"input:2"`
+		Input3  json.RawMessage `json:"input:3"`
+	} `json:"result"`
 }
 
-func (rssr *ShellyNotifyStatusResponse) SwitchSlice() []*components.SwitchStatus {
-	ss := []*components.SwitchStatus{}
-	if rssr.Params.Switch0 != nil {
-		ss = append(ss, rssr.Params.Switch0)
-	}
-
-	if rssr.Params.Switch1 != nil {
-		ss = append(ss, rssr.Params.Switch1)
-	}
-	if rssr.Params.Switch2 != nil {
-		ss = append(ss, rssr.Params.Switch2)
-	}
-	if rssr.Params.Switch3 != nil {
-		ss = append(ss, rssr.Params.Switch3)
-	}
-
-	return ss
+func (rssr *ShellyNotifyStatusResponse) SwitchSlice() [][]byte {
+	return [][]byte{rssr.Result.Switch0, rssr.Result.Switch1, rssr.Result.Switch2, rssr.Result.Switch3}
 }
+
+func (rssr *ShellyNotifyStatusResponse) InputSlice() [][]byte {
+	return [][]byte{rssr.Result.Input0, rssr.Result.Input1, rssr.Result.Input2, rssr.Result.Input3}
+}
+
+// func (rssr *ShellyNotifyStatusResponse) SwitchSlice() []*components.SwitchStatus {
+// 	ss := []*components.SwitchStatus{}
+// 	if rssr.Result.Switch0 != nil {
+// 		ss = append(ss, rssr.Result.Switch0)
+// 	}
+// 	if rssr.Result.Switch1 != nil {
+// 		ss = append(ss, rssr.Result.Switch1)
+// 	}
+// 	if rssr.Result.Switch2 != nil {
+// 		ss = append(ss, rssr.Result.Switch2)
+// 	}
+// 	if rssr.Result.Switch3 != nil {
+// 		ss = append(ss, rssr.Result.Switch3)
+// 	}
+
+// 	return ss
+// }
+
+// func (rssr *ShellyNotifyStatusResponse) InputSlice() []*components.InputStatus {
+// 	is := []*components.InputStatus{}
+// 	if rssr.Result.Input0 != nil {
+// 		is = append(is, rssr.Result.Input0)
+// 	}
+// 	if rssr.Result.Input1 != nil {
+// 		is = append(is, rssr.Result.Input1)
+// 	}
+// 	if rssr.Result.Input2 != nil {
+// 		is = append(is, rssr.Result.Input2)
+// 	}
+// 	if rssr.Result.Input3 != nil {
+// 		is = append(is, rssr.Result.Input3)
+// 	}
+
+// 	return is
+// }

@@ -75,7 +75,7 @@ func (li *Light) Sync() (err error) {
 
 	li.State, err = li.output.GetState()
 	if err != nil {
-		return
+		return errors.Wrap(err, "Sync failed on output.GetState()")
 	}
 	if li.hk != nil {
 		li.hk.Lightbulb.On.SetValue(li.State)
