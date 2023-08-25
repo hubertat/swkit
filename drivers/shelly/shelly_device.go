@@ -108,6 +108,7 @@ func (sd *ShellyDevice) SubscribeDeviceStatus() error {
 							err = json.Unmarshal([]byte(jsonSwState), &currentStatus)
 							if err == nil {
 								sd.Switches[id].Status = currentStatus
+								log.Println("got switch not., state: ", *currentStatus.Output, ", power: ", *currentStatus.APower)
 							} else {
 								log.Println("failed to unmarshal switch status", err)
 							}
