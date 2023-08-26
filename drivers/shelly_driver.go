@@ -233,7 +233,7 @@ func (sout *ShellyOutput) GetState() (bool, error) {
 	if sout.sw == nil {
 		return false, errors.New("shelly output internal Switch nil error")
 	}
-	return *sout.sw.Status.Output, nil
+	return sout.sw.Status.Output, nil
 }
 
 func (sout *ShellyOutput) Set(state bool) error {

@@ -2,7 +2,6 @@ package shelly
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 
@@ -79,12 +78,11 @@ func (sd *ShellyDevice) SubscribeDeviceStatus() error {
 		return errors.Join(errors.New("failed to ws dial"), err)
 	}
 
-	rpcClient := NewRpcClient("swkit")
-	subStatus := rpcClient.NewRpcRequest("Shelly.GetStatus", nil)
+	rpcClient := NewRpcClient("swkit", conn)
 
-	err = conn.WriteJSON(subStatus)
+	err = rpcClient.SendJson("Shelly.GetStatus", nil)
 	if err != nil {
-		return errors.Join(errors.New("failed to write json rpc message"), err)
+		return errors.Join(errors.New("failed to rpc GetStatus message"), err)
 	}
 
 	go func() {
@@ -98,23 +96,25 @@ func (sd *ShellyDevice) SubscribeDeviceStatus() error {
 				// if err == nil {
 				// 	log.Println("got message", mType)
 				// 	log.Println(string(p))
-				// 	return
 				// }
-				resp := &ShellyNotifyStatusResponse{}
-				if err = conn.ReadJSON(resp); err == nil {
-					for id, jsonSwState := range resp.SwitchSlice() {
-						if len(jsonSwState) > 5 && len(sd.Switches) > id {
-							currentStatus := sd.Switches[id].Status
-							err = json.Unmarshal([]byte(jsonSwState), &currentStatus)
-							if err == nil {
-								sd.Switches[id].Status = currentStatus
-								log.Println("got switch not., state: ", *currentStatus.Output, ", power: ", *currentStatus.APower)
-							} else {
-								log.Println("failed to unmarshal switch status", err)
+				notify := NotifyStatus{}
+				msg, err := rpcClient.ReadJsonMessage()
+
+				if err == nil {
+					switch msg.Method {
+					case "NotifyStatus":
+						err = msg.UnmarshalParams(&notify)
+						if err != nil {
+							log.Println("failed to unmarshal params", err)
+						} else {
+							err = notify.FillSwitches(sd.Switches)
+							if err != nil {
+								log.Println("failed to fill switches", err)
 							}
 						}
+					default:
+						log.Println("got unsupported message: ", msg.Id)
 					}
-
 				} else {
 					log.Println("failed to websocket ReadJSON", err)
 				}
@@ -142,15 +142,10 @@ func (sd *ShellyDevice) SubscribeComponentsStatus() error {
 		return errors.Join(errors.New("failed to dial"), err)
 	}
 
-	rpcClient := NewRpcClient("swkit")
-	subSwitch0 := rpcClient.NewRpcRequest("Switch.GetStatus", map[string]interface{}{"id": 0})
-	subIn0 := rpcClient.NewRpcRequest("Input.GetStatus", map[string]interface{}{"id": 0})
-
-	for _, msg := range []RpcRequest{subSwitch0, subIn0} {
-		err = conn.WriteJSON(msg)
-		if err != nil {
-			return errors.Join(errors.New("failed to write json rpc message"), err)
-		}
+	rpcClient := NewRpcClient("swkit", conn)
+	err = rpcClient.SendJson("Switch.GetStatus", map[string]interface{}{"id": 0})
+	if err != nil {
+		return errors.Join(errors.New("failed to rpc GetStatus message"), err)
 	}
 
 	go func() {
@@ -160,7 +155,6 @@ func (sd *ShellyDevice) SubscribeComponentsStatus() error {
 				conn.Close()
 				return
 			default:
-				message := RpcResponse{}
 
 				mType, p, err := conn.ReadMessage()
 				if err == nil {
@@ -168,28 +162,29 @@ func (sd *ShellyDevice) SubscribeComponentsStatus() error {
 					log.Println(string(p))
 					return
 				}
-				if err = conn.ReadJSON(&message); err == nil {
 
-					return
-					req, err := rpcClient.GetRequest(message.Id)
-					if err == nil {
-						switch req.Method {
-						case "Switch.GetStatus":
-							swStatus := components.SwitchStatus{}
-							if err = message.UnmarshalResult(&swStatus); err == nil {
-								log.Println("got switch status", swStatus)
-							}
+				// if err = conn.ReadJSON(&message); err == nil {
 
-						case "Input.GetStatus":
-							inStatus := components.InputStatus{}
-							if err = message.UnmarshalResult(&inStatus); err == nil {
-								log.Println("got input status", inStatus)
-							}
-						}
-					}
-				} else {
-					log.Println("failed to read json", err)
-				}
+				// 	return
+				// 	req, err := rpcClient.GetRequest(message.Id)
+				// 	if err == nil {
+				// 		switch req.Method {
+				// 		case "Switch.GetStatus":
+				// 			swStatus := components.SwitchStatus{}
+				// 			if err = message.UnmarshalResult(&swStatus); err == nil {
+				// 				log.Println("got switch status", swStatus)
+				// 			}
+
+				// 		case "Input.GetStatus":
+				// 			inStatus := components.InputStatus{}
+				// 			if err = message.UnmarshalResult(&inStatus); err == nil {
+				// 				log.Println("got input status", inStatus)
+				// 			}
+				// 		}
+				// 	}
+				// } else {
+				// 	log.Println("failed to read json", err)
+				// }
 
 			}
 		}

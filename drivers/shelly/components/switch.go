@@ -26,9 +26,9 @@ type SwitchConfig struct {
 }
 
 type SwitchStatus struct {
-	ID     int     `json:"id"`
-	Source *string `json:"source,omitempty"`
-	Output *bool   `json:"output,omitempty"`
+	ID     int    `json:"id"`
+	Source string `json:"source,omitempty"`
+	Output bool   `json:"output,omitempty"`
 
 	TimerStartedAt *int `json:"timer_started_at,omitempty"`
 	TimerDuration  *int `json:"timer_duration,omitempty"`

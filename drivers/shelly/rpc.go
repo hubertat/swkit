@@ -3,15 +3,18 @@ package shelly
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/gorilla/websocket"
 )
 
 type RpcClient struct {
 	rpcSrc   string
-	requests []RpcRequest
+	wsConn   *websocket.Conn
+	requests []rpcRequest
 }
 
-func (rc *RpcClient) NewRpcRequest(method string, params map[string]interface{}) RpcRequest {
-	req := RpcRequest{
+func (rc *RpcClient) newRpcRequest(method string, params map[string]interface{}) rpcRequest {
+	req := rpcRequest{
 		Jsonrpc: "2.0",
 		Src:     rc.rpcSrc,
 		Method:  method,
@@ -23,21 +26,35 @@ func (rc *RpcClient) NewRpcRequest(method string, params map[string]interface{})
 	return req
 }
 
-func (rc *RpcClient) GetRequest(id int) (RpcRequest, error) {
+func (rc *RpcClient) SendJson(method string, params map[string]interface{}) error {
+	req := rc.newRpcRequest(method, params)
+	return rc.wsConn.WriteJSON(req)
+}
+
+func (rc *RpcClient) GetRequest(id int) (rpcRequest, error) {
 	if len(rc.requests) < id {
-		return RpcRequest{}, errors.New("Request not found")
+		return rpcRequest{}, errors.New("request not found")
 	}
 
 	return rc.requests[id-1], nil
 }
 
-func NewRpcClient(RpcSrc string) *RpcClient {
+func (rc *RpcClient) ReadJsonMessage() (message RpcMessage, err error) {
+	err = rc.wsConn.ReadJSON(&message)
+	if err != nil {
+		err = errors.Join(errors.New("failed to read json rpc message"), err)
+	}
+	return
+}
+
+func NewRpcClient(source string, wsConnection *websocket.Conn) *RpcClient {
 	return &RpcClient{
-		rpcSrc: RpcSrc,
+		wsConn: wsConnection,
+		rpcSrc: source,
 	}
 }
 
-type RpcRequest struct {
+type rpcRequest struct {
 	Jsonrpc string                 `json:"jsonrpc"`
 	Src     string                 `json:"src"`
 	Method  string                 `json:"method"`
@@ -45,82 +62,21 @@ type RpcRequest struct {
 	Id      int                    `json:"id"`
 }
 
-type RpcResponse struct {
-	Id     int         `json:"id"`
-	Src    string      `json:"src"`
-	Dst    string      `json:"dst"`
-	Result interface{} `json:"result"`
+type RpcMessage struct {
+	Id     int             `json:"id"`
+	Src    string          `json:"src"`
+	Dst    string          `json:"dst"`
+	Method string          `json:"method"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Params json.RawMessage `json:"params,omitempty"`
 }
 
-func (rres *RpcResponse) UnmarshalResult(v interface{}) error {
-	bytes, err := json.Marshal(rres.Result)
-	if err != nil {
-		return errors.Join(errors.New("failed to marshal result into bytes"), err)
+func (rm *RpcMessage) UnmarshalParams(params interface{}) (err error) {
+	if len(rm.Params) == 0 {
+		err = errors.New("failed to read json params: message does not contain any")
+		return
 	}
 
-	err = json.Unmarshal(bytes, v)
-	if err != nil {
-		return errors.Join(errors.New("failed to unmarshal bytes into result"), err)
-	}
-	return nil
+	err = json.Unmarshal(rm.Params, params)
+	return
 }
-
-type ShellyNotifyStatusResponse struct {
-	Id     int    `json:"id"`
-	Src    string `json:"src"`
-	Dst    string `json:"dst"`
-	Result struct {
-		Switch0 json.RawMessage `json:"switch:0"`
-		Switch1 json.RawMessage `json:"switch:1"`
-		Switch2 json.RawMessage `json:"switch:2"`
-		Switch3 json.RawMessage `json:"switch:3"`
-		Input0  json.RawMessage `json:"input:0"`
-		Input1  json.RawMessage `json:"input:1"`
-		Input2  json.RawMessage `json:"input:2"`
-		Input3  json.RawMessage `json:"input:3"`
-	} `json:"result"`
-}
-
-func (rssr *ShellyNotifyStatusResponse) SwitchSlice() [][]byte {
-	return [][]byte{rssr.Result.Switch0, rssr.Result.Switch1, rssr.Result.Switch2, rssr.Result.Switch3}
-}
-
-func (rssr *ShellyNotifyStatusResponse) InputSlice() [][]byte {
-	return [][]byte{rssr.Result.Input0, rssr.Result.Input1, rssr.Result.Input2, rssr.Result.Input3}
-}
-
-// func (rssr *ShellyNotifyStatusResponse) SwitchSlice() []*components.SwitchStatus {
-// 	ss := []*components.SwitchStatus{}
-// 	if rssr.Result.Switch0 != nil {
-// 		ss = append(ss, rssr.Result.Switch0)
-// 	}
-// 	if rssr.Result.Switch1 != nil {
-// 		ss = append(ss, rssr.Result.Switch1)
-// 	}
-// 	if rssr.Result.Switch2 != nil {
-// 		ss = append(ss, rssr.Result.Switch2)
-// 	}
-// 	if rssr.Result.Switch3 != nil {
-// 		ss = append(ss, rssr.Result.Switch3)
-// 	}
-
-// 	return ss
-// }
-
-// func (rssr *ShellyNotifyStatusResponse) InputSlice() []*components.InputStatus {
-// 	is := []*components.InputStatus{}
-// 	if rssr.Result.Input0 != nil {
-// 		is = append(is, rssr.Result.Input0)
-// 	}
-// 	if rssr.Result.Input1 != nil {
-// 		is = append(is, rssr.Result.Input1)
-// 	}
-// 	if rssr.Result.Input2 != nil {
-// 		is = append(is, rssr.Result.Input2)
-// 	}
-// 	if rssr.Result.Input3 != nil {
-// 		is = append(is, rssr.Result.Input3)
-// 	}
-
-// 	return is
-// }
