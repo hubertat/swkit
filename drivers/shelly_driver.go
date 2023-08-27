@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 const shellyDriverName = "shelly"
 const httpDetectReadTimeout = 400 * time.Millisecond
+const shellyDiscoverTimeout = 20 * time.Second
 
 type ShellyIO struct {
 	OriginAddr string
@@ -66,11 +68,15 @@ func (she *ShellyIO) getStartEndIp() (start netip.Addr, end netip.Addr, err erro
 	return
 }
 
-func checkForShellyGen2(addr string) bool {
+func checkForShellyGen2(addr *url.URL) bool {
+	addr.Scheme = "http"
+
+	addr = addr.JoinPath("shelly", "rpc")
+
 	httpClient := http.DefaultClient
 	httpClient.Timeout = httpDetectReadTimeout
 
-	resp, err := httpClient.Get(addr)
+	resp, err := httpClient.Get(addr.String())
 	if err != nil {
 		return false
 	}
@@ -92,42 +98,24 @@ func checkForShellyGen2(addr string) bool {
 	return shellyInfo.Gen == 2
 }
 
-func tryShellyDevice(addr netip.Addr, origin *url.URL) (device *shelly.ShellyDevice, err error) {
-	log.Println("trying addr ", addr.String())
-	uri, err := url.Parse(addr.String())
-	if err != nil {
-		err = errors.Join(errors.New("failed to parse url from ip addr: "+addr.String()), err)
-	}
-	uri.Scheme = "http"
-
-	testUri := uri.JoinPath("shelly")
-	uri = uri.JoinPath("rpc")
-
-	if !checkForShellyGen2(testUri.String()) {
-		return
-	}
-
-	return shelly.DiscoverShelly(uri, origin)
-}
-
-func (she *ShellyIO) Setup(inputs []uint16, outputs []uint16) error {
+func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) error {
 
 	origin, err := url.Parse(she.OriginAddr)
 	if err != nil {
 		return errors.Join(errors.New("failed to parse origin address"), err)
 	}
 
-	she.Devices = make(map[string]*shelly.ShellyDevice)
-
+	log.Println("checking proviced ip range for shelly devices")
+	addrToTry := []*url.URL{}
 	ipStart, ipEnd, ipRangeErr := she.getStartEndIp()
 	if ipRangeErr == nil {
-		for addr := ipStart; addr.Less(ipEnd); addr = addr.Next() {
-			dev, err := tryShellyDevice(addr, origin)
+		for ip := ipStart; ip.Less(ipEnd); ip = ip.Next() {
+			addr, err := url.Parse(ip.String())
 			if err != nil {
-				return errors.Join(errors.New("failed to discover shelly device at ip address "+addr.String()), err)
+				return errors.Join(errors.New("failed to parse ip address "+ip.String()), err)
 			}
-			if dev != nil {
-				she.Devices[dev.Info.ID] = dev
+			if checkForShellyGen2(addr) {
+				addrToTry = append(addrToTry, addr)
 			}
 		}
 	} else {
@@ -136,22 +124,28 @@ func (she *ShellyIO) Setup(inputs []uint16, outputs []uint16) error {
 			return errors.Join(errors.New("failed to parse ip address cidr notation and ip address start end values, cannot continue"), err, ipRangeErr)
 		}
 
-		for addr := prefix.Masked().Addr().Next(); prefix.Contains(addr.Next()); addr = addr.Next() {
-			dev, err := tryShellyDevice(addr, origin)
+		for ip := prefix.Masked().Addr().Next(); prefix.Contains(ip.Next()); ip = ip.Next() {
+			addr, err := url.Parse(ip.String())
 			if err != nil {
-				return errors.Join(errors.New("failed to discover shelly device at ip address "+addr.String()), err)
+				return errors.Join(errors.New("failed to parse ip address "+ip.String()), err)
 			}
-			if dev != nil {
-				she.Devices[dev.Info.ID] = dev
+			if checkForShellyGen2(addr) {
+				addrToTry = append(addrToTry, addr)
 			}
 		}
 	}
 
-	log.Println("found devices: ", she.Devices, "subscribing to events")
-	for _, dev := range she.Devices {
-		err = dev.SubscribeDeviceStatus()
+	log.Println("found ", len(addrToTry), " addresses to try, will try discover")
+	she.Devices = make(map[string]*shelly.ShellyDevice)
+	for _, addr := range addrToTry {
+		ctx, cancel := context.WithTimeout(ctx, shellyDiscoverTimeout)
+		defer cancel()
+		dev, err := shelly.DiscoverShelly(ctx, addr, origin)
 		if err != nil {
-			return errors.Join(err, errors.New("failed to subscribe to shelly events for device "+dev.Info.ID))
+			log.Println(errors.Join(errors.New("failed to discover shelly device at ip address "+addr.String()), err))
+		} else {
+			she.Devices[dev.Info.ID] = dev
+			log.Println("found and subscribed device:\n", dev.String())
 		}
 	}
 

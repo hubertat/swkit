@@ -244,7 +244,7 @@ func (sw *SwKit) getHkThings() (things []HkThing) {
 	return
 }
 
-func (sw *SwKit) InitDrivers() error {
+func (sw *SwKit) InitDrivers(ctx context.Context) error {
 	sw.ioDrivers = make(map[string]drivers.IoDriver)
 	for _, io := range sw.getIos() {
 		sw.ioDrivers[io.GetDriverName()] = nil
@@ -260,7 +260,7 @@ func (sw *SwKit) InitDrivers() error {
 		if err != nil {
 			return errors.Wrapf(err, "failed initilaizing drivers: failed to get %s io driver by name", ioDriverName)
 		}
-		err = ioDriver.Setup(sw.getInPins(ioDriverName), sw.getOutPins(ioDriverName))
+		err = ioDriver.Setup(ctx, sw.getInPins(ioDriverName), sw.getOutPins(ioDriverName))
 		if err != nil {
 			return errors.Wrapf(err, "got error with setup for %s driver", ioDriverName)
 		}

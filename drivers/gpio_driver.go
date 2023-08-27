@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/pkg/errors"
@@ -67,7 +68,7 @@ func (gpo *GpOutput) GetState() (state bool, err error) {
 	return
 }
 
-func (gp *GpIO) Setup(inputs []uint16, outputs []uint16) error {
+func (gp *GpIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) error {
 	err := rpio.Open()
 	if err != nil {
 		return errors.Wrapf(err, "failed to Setup gpio driver for pins: %v, %v; ", inputs, outputs)

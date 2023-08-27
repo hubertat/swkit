@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -226,7 +227,7 @@ func (gio *GrentonIO) setState(state bool, output *GrentonOutput) (err error) {
 	return
 }
 
-func (gio *GrentonIO) Setup(inputs []uint16, outputs []uint16) (err error) {
+func (gio *GrentonIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) (err error) {
 	gio.ready = false
 	gio.gateLock = &sync.Mutex{}
 

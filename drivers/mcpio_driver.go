@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -86,7 +87,7 @@ func (mcpio *McpIO) IsReady() bool {
 	return mcpio.isReady
 }
 
-func (mcp *McpIO) Setup(inputs []uint16, outputs []uint16) (err error) {
+func (mcp *McpIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) (err error) {
 	mcp.device, err = mcp23017.Open(mcp.BusNo, mcp.DevNo)
 	if err != nil {
 		return

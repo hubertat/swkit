@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"fmt"
 	"io"
 
@@ -45,7 +46,7 @@ type MockIoDriver struct {
 	ready   bool
 }
 
-func (md *MockIoDriver) Setup(inputs []uint16, outputs []uint16) error {
+func (md *MockIoDriver) Setup(ctx context.Context, inputs []uint16, outputs []uint16) error {
 	for _, inPin := range inputs {
 		md.inputs = append(md.inputs, &MockInput{pin: inPin})
 	}

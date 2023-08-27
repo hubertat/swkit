@@ -1,7 +1,9 @@
 package drivers
 
+import "context"
+
 type IoDriver interface {
-	Setup(inputs []uint16, outputs []uint16) error
+	Setup(ctx context.Context, inputs []uint16, outputs []uint16) error
 	Close() error
 	NameId() string
 	IsReady() bool

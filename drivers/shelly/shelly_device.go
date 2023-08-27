@@ -3,22 +3,17 @@ package shelly
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
-
-	"net/http"
-	"net/url"
+	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
-
-	"github.com/hubertat/go-ethereum/rpc"
+	"net/url"
 
 	"github.com/hubertat/swkit/drivers/shelly/components"
 )
 
-const maxSwitchNumber = 4
-const maxInputNumber = 4
-const discoverConnectionTimeout = 5 * time.Second
+const sendCommandTimeout = 5 * time.Second
 
 type ShellyDevice struct {
 	Addr *url.URL
@@ -33,221 +28,126 @@ type ShellyDevice struct {
 	Switches []components.Switch
 	Inputs   []components.Input
 
-	origin *url.URL
+	rpcClient *RpcClient
 
-	msg  chan interface{}
 	done chan bool
 }
 
-type Receiver struct {
-	TS        int64       `json:"ts"`
-	Component interface{} `json:"component"`
+func (sd *ShellyDevice) String() string {
+	str := strings.Builder{}
+
+	str.WriteString("## ShellyDevice ##\n")
+	str.WriteString("## ID: " + sd.Info.ID + "\n")
+	str.WriteString("## MAC: " + sd.Info.MAC + "\n")
+	str.WriteString("## Model: " + sd.Info.Model + "\n")
+	str.WriteString("## Addr: " + sd.Addr.String() + "\n")
+	if sd.Wifi != nil {
+		str.WriteString("## Wifi: " + sd.Wifi.Status.Status + "\n")
+		if sd.Wifi.Status.StaIP != nil {
+			str.WriteString("## Wifi.StaIP: " + *sd.Wifi.Status.StaIP + "\n")
+		}
+		if sd.Wifi.Status.SSID != nil {
+			str.WriteString("## Wifi.SSID: " + *sd.Wifi.Status.SSID + "\n")
+		}
+	}
+	if sd.Ethernet != nil {
+		str.WriteString("## Ethernet:\n")
+		str.WriteString("## Ethernet.IP: " + *sd.Ethernet.Status.Ip + "\n")
+	}
+	str.WriteString("## Switches:\n")
+	for _, sw := range sd.Switches {
+		stateString := "[ ] off"
+		if sw.Status.Output {
+			stateString = "[x]  on"
+		}
+		str.WriteString(fmt.Sprintf("## Switch:%d %s\t", sw.Status.ID, stateString))
+		if sw.Status.APower != nil {
+			str.WriteString(fmt.Sprintf("[APower: %.2f W]\n", *sw.Status.APower))
+		} else {
+			str.WriteString("\n")
+		}
+	}
+	str.WriteString("## Inputs:\n")
+	for _, in := range sd.Inputs {
+		if in.Status.State == nil {
+			str.WriteString(fmt.Sprintf("## Input:%d\n [no binary state]", in.Status.ID))
+		} else {
+			str.WriteString(fmt.Sprintf("## Input:%d.State:%v\n", in.Status.ID, *in.Status.State))
+		}
+	}
+	str.WriteString("## End ##\n")
+
+	return str.String()
 }
 
 func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
-	sd.Addr.Scheme = "http"
-	client, err := rpc.Dial(sd.Addr.String())
+	// ctx, cancel := context.WithTimeout(context.Background(), sendCommandTimeout)
+	// defer cancel()
+	// msg, err := sd.rpcClient.SendJsonAwait(ctx, "Switch.Set", map[string]interface{}{"id": id, "on": state})
+	err := sd.rpcClient.SendJson("Switch.Set", map[string]interface{}{"id": id, "on": state})
+
 	if err != nil {
-		return errors.Join(errors.New("failed to rpc Dial"), err)
+		return errors.Join(errors.New("failed to send rpc Switch.Set message"), err)
 	}
 
-	return client.Call(nil, "Switch.Set", map[string]interface{}{"id": id, "on": state})
+	// log.Println("DBG switch set resp: ", msg)
+	return nil
 }
 
-func websocketDialer() websocket.Dialer {
-	return websocket.Dialer{
-		HandshakeTimeout: discoverConnectionTimeout,
-		ReadBufferSize:   1024,
-		WriteBufferSize:  1024,
-	}
-}
-
-func (sd *ShellyDevice) SubscribeDeviceStatus() error {
-	headers := http.Header{}
-	sd.origin.Scheme = "ws"
-	headers.Add("Origin", sd.origin.String())
-
-	ctx := context.Background()
-	ctx, close := context.WithTimeout(ctx, discoverConnectionTimeout)
-	defer close()
-
-	dialer := websocketDialer()
-	sd.Addr.Scheme = "ws"
-	conn, _, err := dialer.DialContext(ctx, sd.Addr.String(), headers)
-	if err != nil {
-		return errors.Join(errors.New("failed to ws dial"), err)
-	}
-
-	rpcClient := NewRpcClient("swkit", conn)
-
-	err = rpcClient.SendJson("Shelly.GetStatus", nil)
-	if err != nil {
-		return errors.Join(errors.New("failed to rpc GetStatus message"), err)
-	}
+func (sd *ShellyDevice) ListenForNotifications() {
+	errChan := make(chan error)
+	msgChan := make(chan RpcMessage)
 
 	go func() {
 		for {
-			select {
-			case <-sd.done:
-				conn.Close()
+			msg, err := sd.rpcClient.ReadJsonMessage()
+			if err != nil {
+				errChan <- errors.Join(errors.New("failed to read json rpc message"), err)
 				return
-			default:
-				// mType, p, err := conn.ReadMessage()
-				// if err == nil {
-				// 	log.Println("got message", mType)
-				// 	log.Println(string(p))
-				// }
+			}
+			msgChan <- msg
+		}
+	}()
+
+	for {
+		select {
+		case <-sd.done:
+			sd.rpcClient.Close()
+			return
+		case err := <-errChan:
+			log.Println("shelly listen | got error", err)
+		case msg := <-msgChan:
+			// mType, p, err := conn.ReadMessage()
+			// if err == nil {
+			// 	log.Println("got message", mType)
+			// 	log.Println(string(p))
+			// }
+
+			switch msg.Method {
+			case "NotifyStatus":
 				notify := NotifyStatus{}
-				msg, err := rpcClient.ReadJsonMessage()
-
-				if err == nil {
-					switch msg.Method {
-					case "NotifyStatus":
-						err = msg.UnmarshalParams(&notify)
-						if err != nil {
-							log.Println("failed to unmarshal params", err)
-						} else {
-							err = notify.FillSwitches(sd.Switches)
-							if err != nil {
-								log.Println("failed to fill switches", err)
-							}
-						}
-					default:
-						log.Println("got unsupported message: ", msg.Id)
-					}
+				err := msg.UnmarshalParams(&notify)
+				if err != nil {
+					log.Println("failed to unmarshal params", err)
 				} else {
-					log.Println("failed to websocket ReadJSON", err)
+					err = notify.FillSwitches(sd.Switches)
+					if err != nil {
+						log.Println("failed to fill switches", err)
+					} else {
+						log.Println("[she] filled switches for device:\n", sd.String())
+					}
 				}
-			}
-		}
-	}()
-
-	return nil
-}
-
-func (sd *ShellyDevice) SubscribeComponentsStatus() error {
-	dialer := websocketDialer()
-
-	originHeaders := http.Header{}
-	// originHeaders.Add("Origin", "ws://10.100.70.173:80")
-	originHeaders.Add("Origin", "ws://10.100.100.187:80")
-
-	ctx := context.Background()
-	ctx, close := context.WithTimeout(ctx, discoverConnectionTimeout)
-	defer close()
-
-	sd.Addr.Scheme = "ws"
-	conn, _, err := dialer.DialContext(ctx, sd.Addr.String(), originHeaders)
-	if err != nil {
-		return errors.Join(errors.New("failed to dial"), err)
-	}
-
-	rpcClient := NewRpcClient("swkit", conn)
-	err = rpcClient.SendJson("Switch.GetStatus", map[string]interface{}{"id": 0})
-	if err != nil {
-		return errors.Join(errors.New("failed to rpc GetStatus message"), err)
-	}
-
-	go func() {
-		for {
-			select {
-			case <-sd.done:
-				conn.Close()
-				return
 			default:
-
-				mType, p, err := conn.ReadMessage()
-				if err == nil {
-					log.Println("got message", mType)
-					log.Println(string(p))
-					return
-				}
-
-				// if err = conn.ReadJSON(&message); err == nil {
-
-				// 	return
-				// 	req, err := rpcClient.GetRequest(message.Id)
-				// 	if err == nil {
-				// 		switch req.Method {
-				// 		case "Switch.GetStatus":
-				// 			swStatus := components.SwitchStatus{}
-				// 			if err = message.UnmarshalResult(&swStatus); err == nil {
-				// 				log.Println("got switch status", swStatus)
-				// 			}
-
-				// 		case "Input.GetStatus":
-				// 			inStatus := components.InputStatus{}
-				// 			if err = message.UnmarshalResult(&inStatus); err == nil {
-				// 				log.Println("got input status", inStatus)
-				// 			}
-				// 		}
-				// 	}
-				// } else {
-				// 	log.Println("failed to read json", err)
-				// }
-
+				log.Println("got unsupported message: ", msg.Id, msg.Method)
 			}
+
 		}
-	}()
-
-	log.Println("subV finished")
-	return nil
-}
-
-func (sd *ShellyDevice) SubscribeOther() error {
-
-	dialer := websocketDialer()
-
-	websocketOptions := rpc.WithWebsocketDialer(dialer)
-	websocketOrigin := rpc.WithHeader("Origin", "ws://10.100.70.173:80")
-
-	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, discoverConnectionTimeout)
-	defer cancel()
-
-	sd.Addr.Scheme = "ws"
-	client, err := rpc.DialOptions(ctx, sd.Addr.String(), websocketOrigin, websocketOptions)
-	if err != nil {
-		panic(err)
 	}
 
-	// res := interface{}(nil)
-	// err = client.CallContext(ctx, &res, "Shelly.GetStatus")
-
-	sd.msg = make(chan interface{})
-	sub, _ := client.Subscribe(ctx, "Shelly.GetStatus", sd.msg)
-
-	// if err != nil {
-	// 	return errors.Join(errors.New("failed to call GetStatus method"), err)
-	// }
-
-	// log.Println(res)
-
-	go func() {
-		for {
-			log.Println("waiting for message")
-			select {
-			case <-sd.done:
-				sub.Unsubscribe()
-				client.Close()
-			case message := <-sd.msg:
-				log.Println("message: ", message)
-
-			}
-		}
-	}()
-
-	log.Println("sub finished")
-	return nil
 }
 
-func DiscoverShelly(addr *url.URL, origin *url.URL) (device *ShellyDevice, err error) {
-
-	addr.Scheme = "http"
-	ctx, cancel := context.WithTimeout(context.Background(), discoverConnectionTimeout)
-	defer cancel()
-
-	client, err := rpc.Dial(addr.String())
+/*
+client, err := rpc.Dial(addr.String())
 	if err != nil {
 		err = errors.Join(errors.New("failed to rpc Dial"), err)
 		return
@@ -260,11 +160,6 @@ func DiscoverShelly(addr *url.URL, origin *url.URL) (device *ShellyDevice, err e
 	if err != nil {
 		err = errors.Join(errors.New("failed to call GetDeviceInfo method"), err)
 		return
-	}
-	device = &ShellyDevice{
-		Addr:   addr,
-		Info:   *devInfo,
-		origin: origin,
 	}
 
 	profiles := &[]string{}
@@ -330,13 +225,72 @@ func DiscoverShelly(addr *url.URL, origin *url.URL) (device *ShellyDevice, err e
 			device.Inputs = append(device.Inputs, in)
 		}
 	}
+*/
 
-	err = device.SubscribeDeviceStatus()
+func DiscoverShelly(ctx context.Context, addr *url.URL, origin *url.URL) (device *ShellyDevice, err error) {
+
+	rpcClient, err := NewRpcClient(ctx, origin, addr)
+	if err != nil {
+		err = errors.Join(errors.New("failed to create rpc client"), err)
+		return
+	}
+
+	device = &ShellyDevice{
+		Addr:      addr,
+		rpcClient: rpcClient,
+	}
+
+	var msg RpcMessage
+
+	msg, err = rpcClient.SendJsonAwait(ctx, "Shelly.GetDeviceInfo", nil)
+	if err != nil {
+		err = errors.Join(errors.New("failed to send rpc GetDeviceInfo message"), err)
+		return
+	}
+
+	err = msg.UnmarshalResult(&device.Info)
+	if err != nil {
+		err = errors.Join(errors.New("failed to unmarshal rpc GetDeviceInfo message"), err)
+		return
+	}
+
+	msg, err = rpcClient.SendJsonAwait(ctx, "Shelly.GetStatus", nil)
+	if err != nil {
+		err = errors.Join(errors.New("failed to send rpc GetStatus message"), err)
+		return
+	}
+
+	getStatus := GetStatus{}
+	err = msg.UnmarshalResult(&getStatus)
+	if err != nil {
+		err = errors.Join(errors.New("failed to unmarshal rpc GetStatus message"), err)
+	}
+
+	if ethInfo := getStatus.GetEthernet(); ethInfo != nil {
+		device.Ethernet = &components.Ethernet{
+			Status: *ethInfo,
+		}
+	}
+
+	if wifiInfo := getStatus.GetWifi(); wifiInfo != nil {
+		device.Wifi = &components.Wifi{
+			Status: *wifiInfo,
+		}
+	}
+
+	for _, sw := range getStatus.GetSwitches() {
+		device.Switches = append(device.Switches, components.Switch{Status: sw})
+	}
+
+	for _, in := range getStatus.GetInputs() {
+		device.Inputs = append(device.Inputs, components.Input{Status: in})
+	}
+
+	go device.ListenForNotifications()
 
 	return
 }
 
 func (sd *ShellyDevice) Close() {
 	sd.done <- true
-	return
 }

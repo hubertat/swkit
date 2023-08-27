@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -38,7 +39,7 @@ func (ris *RemoteIoSlave) Close() error {
 	return ris.server.Close()
 }
 
-func (ris *RemoteIoSlave) Setup(inputs []uint16, outputs []uint16) error {
+func (ris *RemoteIoSlave) Setup(ctx context.Context, inputs []uint16, outputs []uint16) error {
 
 	for _, inPin := range inputs {
 		ris.inputs = append(ris.inputs, &InFromRemoteIo{pin: uint8(inPin)})

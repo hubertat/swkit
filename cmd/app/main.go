@@ -50,6 +50,9 @@ func main() {
 		}
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	syncDuration, err := time.ParseDuration(*syncInterval)
 	if err != nil {
 		panic(err)
@@ -75,7 +78,7 @@ func main() {
 		log.Fatalf("can't find/open config file (%s), will terminate. Reason: \n%v\n", *config, err)
 	}
 	log.Println("will init swkit drivers...")
-	err = sk.InitDrivers()
+	err = sk.InitDrivers(ctx)
 	defer sk.Close()
 	if err != nil {
 		panic(err)

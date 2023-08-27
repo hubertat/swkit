@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -88,7 +89,7 @@ func (rio *RemoteIO) getRemoteResponse(path string) (response *http.Response, er
 	return
 }
 
-func (rio *RemoteIO) Setup(inputs []uint8, outputs []uint8) error {
+func (rio *RemoteIO) Setup(ctx context.Context, inputs []uint8, outputs []uint8) error {
 	response, err := rio.getRemoteResponse("config")
 	if err != nil {
 		return errors.Wrap(err, "RemoteIO Setup: preparing net client error")
