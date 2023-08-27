@@ -23,17 +23,18 @@ func (ns *NotifyStatus) rawSwitchSlice() [][]byte {
 }
 
 func (ns *NotifyStatus) FillSwitches(switches []components.Switch) error {
-	for _, sw := range switches {
+	for ix, sw := range switches {
 		swId := sw.Status.ID
 		if swId < 0 || swId > 3 {
 			return errors.New("switch id out of range [0, 3]")
 		}
 		rawSwitch := ns.rawSwitchSlice()[swId]
 		if len(rawSwitch) > 0 {
-			err := json.Unmarshal(rawSwitch, &sw)
+			err := json.Unmarshal(rawSwitch, &sw.Status)
 			if err != nil {
 				return errors.Join(errors.New("failed to unmarshal switch"), err)
 			}
+			switches[ix] = sw
 		}
 	}
 

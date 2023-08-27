@@ -123,6 +123,8 @@ func (sd *ShellyDevice) ListenForNotifications() {
 			// 	log.Println(string(p))
 			// }
 
+			// log.Println("got msg: ", string(msg.Params))
+
 			switch msg.Method {
 			case "NotifyStatus":
 				notify := NotifyStatus{}
