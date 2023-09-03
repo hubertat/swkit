@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/brutella/hap/accessory"
+	"github.com/brutella/hap/characteristic"
 	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
 )
@@ -17,13 +18,17 @@ type Outlet struct {
 	DriverName     string
 	OutPin         uint16
 	DisableHomekit bool
+	IsFaulty       bool
 
 	ControlBy []ControllingDevice
 
 	output drivers.DigitalOutput
 	driver drivers.IoDriver
-	hk     *accessory.Outlet
-	lock   sync.Mutex
+
+	hk    *accessory.Outlet
+	fault *characteristic.StatusFault
+
+	lock sync.Mutex
 }
 
 func (ou *Outlet) GetDriverName() string {
@@ -61,6 +66,11 @@ func (ou *Outlet) Init(driver drivers.IoDriver) error {
 		SerialNumber: fmt.Sprintf("outlet:%s:%02d", ou.DriverName, ou.OutPin),
 	}
 	ou.hk = accessory.NewOutlet(info)
+
+	ou.fault = characteristic.NewStatusFault()
+	ou.fault.SetValue(characteristic.StatusFaultNoFault)
+	ou.hk.Outlet.AddC(ou.fault.C)
+
 	ou.hk.Outlet.On.OnValueRemoteUpdate(ou.SetValue)
 	return nil
 }
@@ -68,12 +78,30 @@ func (ou *Outlet) Init(driver drivers.IoDriver) error {
 func (ou *Outlet) Sync() error {
 	ou.lock.Lock()
 	defer ou.lock.Unlock()
+	var err error
+
+	oldState := ou.State
+	ou.State, err = ou.output.GetState()
 
 	if ou.hk != nil {
+		if err != nil {
+			ou.fault.SetValue(characteristic.StatusFaultGeneralFault)
+			ou.IsFaulty = true
+		} else {
+			ou.fault.SetValue(characteristic.StatusFaultNoFault)
+			ou.IsFaulty = false
+		}
+	}
+
+	if err != nil {
+		return errors.Wrap(err, "Sync failed")
+	}
+
+	if oldState != ou.State && ou.hk != nil {
 		ou.hk.Outlet.On.SetValue(ou.State)
 	}
 
-	return ou.output.Set(ou.State)
+	return nil
 }
 
 func (ou *Outlet) GetControllers() []ControllingDevice {

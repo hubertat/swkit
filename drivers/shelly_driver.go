@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/netip"
+	"strings"
 
 	"net/url"
 	"time"
@@ -19,6 +20,8 @@ import (
 const shellyDriverName = "shelly"
 const httpDetectReadTimeout = 400 * time.Millisecond
 const shellyDiscoverTimeout = 20 * time.Second
+const healthCheckInterval = 2 * time.Second
+const unhealthyCountLimit = 5
 
 type ShellyIO struct {
 	OriginAddr string
@@ -32,7 +35,11 @@ type ShellyIO struct {
 
 	Devices map[string]*shelly.ShellyDevice
 
-	isReady bool
+	isReady        bool
+	healthTicker   *time.Ticker
+	done           chan bool
+	originUrl      *url.URL
+	unhealthyCount int
 }
 
 func (she *ShellyIO) getStartEndIp() (start netip.Addr, end netip.Addr, err error) {
@@ -96,38 +103,39 @@ func checkForShellyGen2(addr *url.URL) bool {
 	}
 
 	return shellyInfo.Gen == 2
+
 }
 
-func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) error {
-
-	origin, err := url.Parse(she.OriginAddr)
-	if err != nil {
-		return errors.Join(errors.New("failed to parse origin address"), err)
-	}
-
-	log.Println("checking proviced ip range for shelly devices")
-	addrToTry := []*url.URL{}
+func (she *ShellyIO) getAddressesToTry() (addrToTry []*url.URL, err error) {
+	addrToTry = []*url.URL{}
 	ipStart, ipEnd, ipRangeErr := she.getStartEndIp()
+
+	var addr *url.URL
 	if ipRangeErr == nil {
 		for ip := ipStart; ip.Less(ipEnd); ip = ip.Next() {
-			addr, err := url.Parse(ip.String())
+			addr, err = url.Parse(ip.String())
 			if err != nil {
-				return errors.Join(errors.New("failed to parse ip address "+ip.String()), err)
+				err = errors.Join(errors.New("failed to parse ip address "+ip.String()), err)
+				return
 			}
 			if checkForShellyGen2(addr) {
 				addrToTry = append(addrToTry, addr)
 			}
 		}
 	} else {
-		prefix, err := netip.ParsePrefix(she.IpCidr)
+		var prefix netip.Prefix
+		prefix, err = netip.ParsePrefix(she.IpCidr)
 		if err != nil {
-			return errors.Join(errors.New("failed to parse ip address cidr notation and ip address start end values, cannot continue"), err, ipRangeErr)
+			err = errors.Join(errors.New("failed to parse ip address cidr notation and ip address start end values, cannot continue"), err, ipRangeErr)
+			return
+
 		}
 
 		for ip := prefix.Masked().Addr().Next(); prefix.Contains(ip.Next()); ip = ip.Next() {
-			addr, err := url.Parse(ip.String())
+			addr, err = url.Parse(ip.String())
 			if err != nil {
-				return errors.Join(errors.New("failed to parse ip address "+ip.String()), err)
+				err = errors.Join(errors.New("failed to parse ip address "+ip.String()), err)
+				return
 			}
 			if checkForShellyGen2(addr) {
 				addrToTry = append(addrToTry, addr)
@@ -135,12 +143,87 @@ func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint1
 		}
 	}
 
-	log.Println("found ", len(addrToTry), " addresses to try, will try discover")
+	return
+}
+
+func (she *ShellyIO) startHealthCheck(ctx context.Context) {
+	she.healthTicker = time.NewTicker(healthCheckInterval)
+
+	for {
+		select {
+		case <-she.done:
+			she.healthTicker.Stop()
+			return
+		case <-ctx.Done():
+			she.healthTicker.Stop()
+			return
+		case <-she.healthTicker.C:
+			for _, dev := range she.Devices {
+				healthy, err := dev.HealthCheck()
+				if !healthy {
+					she.unhealthyCount++
+					log.Println("device", dev.Info.ID, "is not healthy, err:", err)
+				}
+			}
+			if unhealthyCountLimit > 0 && she.unhealthyCount > unhealthyCountLimit {
+				log.Println("too many unhealthy devices, performing discovery")
+				err := she.discoverDevices(ctx)
+				if err != nil {
+					log.Println("failed to discover devices", err)
+				} else {
+					she.unhealthyCount = 0
+				}
+			}
+		}
+	}
+}
+
+func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) error {
+	var err error
+	she.originUrl, err = url.Parse(she.OriginAddr)
+	if err != nil {
+		return errors.Join(errors.New("failed to parse origin address"), err)
+	}
+
 	she.Devices = make(map[string]*shelly.ShellyDevice)
+
+	err = she.discoverDevices(ctx)
+	if err != nil {
+		return errors.Join(errors.New("failed to discover devices"), err)
+	}
+
+	go she.startHealthCheck(ctx)
+
+	she.isReady = true
+
+	return nil
+}
+
+func (she *ShellyIO) discoverDevices(ctx context.Context) error {
+	log.Println("checking provided ip range for shelly devices")
+	addrToTry, err := she.getAddressesToTry()
+	if err != nil {
+		return errors.Join(errors.New("failed to get addresses to try"), err)
+	}
+
+	log.Println("checking devices list for already discovered devices")
+	for _, dev := range she.Devices {
+		healthy, _ := dev.HealthCheck()
+		if healthy {
+			for i, addr := range addrToTry {
+				if strings.EqualFold(addr.Host, dev.Addr.Host) {
+					log.Println("device", dev.Info.ID, "addr: ", addr, "already discovered and healthy, removing from list")
+					addrToTry = append(addrToTry[:i], addrToTry[i+1:]...)
+				}
+			}
+		}
+	}
+
+	log.Println("found ", len(addrToTry), " addresses to try, will try discover")
 	for _, addr := range addrToTry {
 		ctx, cancel := context.WithTimeout(ctx, shellyDiscoverTimeout)
 		defer cancel()
-		dev, err := shelly.DiscoverShelly(ctx, addr, origin)
+		dev, err := shelly.DiscoverShelly(ctx, addr, she.originUrl)
 		if err != nil {
 			log.Println(errors.Join(errors.New("failed to discover shelly device at ip address "+addr.String()), err))
 		} else {
@@ -149,6 +232,10 @@ func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint1
 		}
 	}
 
+	return she.matchIOs()
+}
+
+func (she *ShellyIO) matchIOs() error {
 	for ix, out := range she.Outputs {
 		dev, exist := she.Devices[out.Id]
 		if !exist {
@@ -171,8 +258,6 @@ func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint1
 	// 		in:  &in.Status,
 	// 	})
 	// }
-
-	she.isReady = true
 
 	return nil
 }
@@ -224,15 +309,21 @@ type ShellyOutput struct {
 }
 
 func (sout *ShellyOutput) GetState() (bool, error) {
-	if sout.sw == nil {
-		return false, errors.New("shelly output internal Switch nil error")
+	if sout.sw == nil || sout.dev == nil {
+		return false, errors.New("shelly output internal Switch/Device nil error")
 	}
-	return sout.sw.Status.Output, nil
+
+	healthy, err := sout.dev.HealthCheck()
+	if healthy {
+		return sout.sw.Status.Output, nil
+	}
+
+	return false, errors.Join(errors.New("shelly output is not healthy"), err)
 }
 
 func (sout *ShellyOutput) Set(state bool) error {
 	if sout.sw == nil || sout.dev == nil {
-		return errors.New("shelly output internal Switch nil error")
+		return errors.New("shelly output internal Switch/Device nil error")
 	}
 	err := sout.dev.SetSwitch(sout.sw.Status.ID, state)
 	if err != nil {
@@ -246,12 +337,19 @@ type ShellyInput struct {
 	Id      string
 	InputNo int
 
-	in *components.InputStatus
+	in  *components.InputStatus
+	dev *shelly.ShellyDevice
 }
 
 func (sin *ShellyInput) GetState() (bool, error) {
-	if sin.in == nil {
-		return false, errors.New("shelly input internal InputStatus nil error")
+	if sin.in == nil || sin.dev == nil {
+		return false, errors.New("shelly input internal InputStatus/Device nil error")
 	}
-	return *sin.in.State, nil
+
+	healthy, err := sin.dev.HealthCheck()
+	if healthy {
+		return *sin.in.State, nil
+	}
+
+	return false, errors.Join(errors.New("shelly input is not healthy"), err)
 }

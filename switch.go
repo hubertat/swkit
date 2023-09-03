@@ -8,6 +8,7 @@ import (
 	drivers "github.com/hubertat/swkit/drivers"
 
 	"github.com/brutella/hap/accessory"
+	"github.com/brutella/hap/characteristic"
 	"github.com/pkg/errors"
 )
 
@@ -17,11 +18,14 @@ type Switch struct {
 	DriverName     string
 	InPin          uint16
 	DisableHomekit bool
+	IsFaulty       bool
 
 	switchThis []SwitchableDevice
 	input      drivers.DigitalInput
 	driver     drivers.IoDriver
-	hk         *accessory.Switch
+
+	hk    *accessory.Switch
+	fault *characteristic.StatusFault
 }
 
 type SwitchableDevice interface {
@@ -64,14 +68,35 @@ func (swb *Switch) Init(driver drivers.IoDriver) error {
 		SerialNumber: fmt.Sprintf("switch:%s:%02d", swb.DriverName, swb.InPin),
 	}
 	swb.hk = accessory.NewSwitch(info)
+
+	swb.fault = characteristic.NewStatusFault()
+	swb.fault.SetValue(characteristic.StatusFaultNoFault)
+	swb.hk.Switch.AddC(swb.fault.C)
+
 	swb.hk.Switch.On.OnValueRemoteUpdate(swb.Set)
 
 	return nil
 }
 func (swb *Switch) Sync() (err error) {
+	oldState := swb.State
+
 	swb.State, err = swb.input.GetState()
 
 	if swb.hk != nil {
+		if err != nil {
+			swb.fault.SetValue(characteristic.StatusFaultGeneralFault)
+			swb.IsFaulty = true
+		} else {
+			swb.fault.SetValue(characteristic.StatusFaultNoFault)
+			swb.IsFaulty = false
+		}
+	}
+
+	if err != nil {
+		return errors.Wrap(err, "Sync failed")
+	}
+
+	if oldState != swb.State && swb.hk != nil {
 		swb.hk.Switch.On.SetValue(swb.State)
 	}
 

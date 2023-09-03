@@ -25,6 +25,8 @@ const homeKitBridgeName = "swkit"
 const homeKitBridgeAuthor = "github.com/hubertat"
 
 type SwKit struct {
+	Name string
+
 	Lights             []*Light
 	Buttons            []*Button
 	Switches           []*Switch
@@ -529,8 +531,12 @@ func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 }
 
 func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error {
+	hkName := sw.Name
+	if len(hkName) < 1 {
+		hkName = homeKitBridgeName
+	}
 	bridge := accessory.NewBridge(accessory.Info{
-		Name:         homeKitBridgeName,
+		Name:         hkName,
 		Manufacturer: homeKitBridgeAuthor,
 		Firmware:     firmwareVersion,
 	})

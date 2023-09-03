@@ -60,7 +60,7 @@ func (bu *Button) Init(driver drivers.IoDriver) error {
 
 	err = bu.input.SubscribeToPushEvent(bu)
 	if err != nil {
-		return errors.Join(errors.New("Failed to subsribe to push event"), err)
+		return errors.Join(errors.New("failed to subsribe to push event"), err)
 	}
 
 	if !bu.DisableHomekit {

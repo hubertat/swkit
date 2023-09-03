@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/brutella/hap/accessory"
+	"github.com/brutella/hap/characteristic"
 	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
 )
@@ -17,12 +18,14 @@ type Light struct {
 	DriverName     string
 	OutPin         uint16
 	DisableHomekit bool
+	IsFaulty       bool
 
 	ControlBy []ControllingDevice
 
 	output drivers.DigitalOutput
 	driver drivers.IoDriver
 	hk     *accessory.Lightbulb
+	fault  *characteristic.StatusFault
 	lock   sync.Mutex
 }
 
@@ -64,6 +67,11 @@ func (li *Light) Init(driver drivers.IoDriver) error {
 		SerialNumber: fmt.Sprintf("light:%s:%02d", li.DriverName, li.OutPin),
 	}
 	li.hk = accessory.NewLightbulb(info)
+
+	li.fault = characteristic.NewStatusFault()
+	li.fault.SetValue(characteristic.StatusFaultNoFault)
+	li.hk.Lightbulb.AddC(li.fault.C)
+
 	li.hk.Lightbulb.On.OnValueRemoteUpdate(li.SetValue)
 
 	return nil
@@ -73,11 +81,23 @@ func (li *Light) Sync() (err error) {
 	li.lock.Lock()
 	defer li.lock.Unlock()
 
+	oldState := li.State
 	li.State, err = li.output.GetState()
+	if li.hk != nil {
+		if err != nil {
+			li.fault.SetValue(characteristic.StatusFaultGeneralFault)
+			li.IsFaulty = true
+		} else {
+			li.fault.SetValue(characteristic.StatusFaultNoFault)
+			li.IsFaulty = false
+		}
+	}
+
 	if err != nil {
 		return errors.Wrap(err, "Sync failed on output.GetState()")
 	}
-	if li.hk != nil {
+
+	if li.State != oldState && li.hk != nil {
 		li.hk.Lightbulb.On.SetValue(li.State)
 	}
 
