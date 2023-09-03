@@ -14,7 +14,7 @@ import (
 )
 
 const sendCommandTimeout = 5 * time.Second
-const maxTimeSinceRefresh = 15 * time.Second
+const maxTimeSinceRefresh = 15 * time.Minute
 
 type ShellyDevice struct {
 	Addr *url.URL
@@ -111,6 +111,8 @@ func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
 func (sd *ShellyDevice) ListenForNotifications() {
 	errChan := make(chan error)
 	msgChan := make(chan RpcMessage)
+
+	sd.lastRefreshed = time.Now()
 
 	go func() {
 		for {

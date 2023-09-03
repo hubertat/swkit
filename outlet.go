@@ -117,12 +117,9 @@ func (ou *Outlet) GetHk() *accessory.A {
 
 func (ou *Outlet) SetValue(state bool) {
 	ou.State = state
-
-	ou.Sync()
+	ou.output.Set(ou.State)
 }
 
 func (ou *Outlet) Toggle() {
-	ou.State = !ou.State
-
-	ou.Sync()
+	ou.SetValue(!ou.State)
 }

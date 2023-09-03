@@ -118,7 +118,6 @@ func (li *Light) GetHk() *accessory.A {
 func (li *Light) SetValue(state bool) {
 	li.State = state
 	li.output.Set(li.State)
-
 }
 
 func (li *Light) Toggle() {
