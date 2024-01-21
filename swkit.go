@@ -536,7 +536,7 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 		hkName = homeKitBridgeName
 	}
 	bridge := accessory.NewBridge(accessory.Info{
-		Name:         hkName,
+		Name:         hkName	,
 		Manufacturer: homeKitBridgeAuthor,
 		Firmware:     firmwareVersion,
 	})

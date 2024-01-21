@@ -2,13 +2,9 @@ package drivers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
-	"net/netip"
-	"strings"
 
 	"net/url"
 	"time"
@@ -24,12 +20,6 @@ const healthCheckInterval = 2 * time.Second
 const unhealthyCountLimit = 5
 
 type ShellyIO struct {
-	OriginAddr string
-	IpCidr     string
-
-	IpStart string
-	IpEnd   string
-
 	Outputs []ShellyOutput
 	Inputs  []ShellyInput
 
@@ -40,110 +30,6 @@ type ShellyIO struct {
 	done           chan bool
 	originUrl      *url.URL
 	unhealthyCount int
-}
-
-func (she *ShellyIO) getStartEndIp() (start netip.Addr, end netip.Addr, err error) {
-	if len(she.IpStart) == 0 || len(she.IpEnd) == 0 {
-		err = errors.New("parameters IpStart and/or IpEnd are empty")
-		return
-	}
-
-	firstAddr, err := netip.ParseAddr(she.IpStart)
-	if err != nil {
-		err = errors.Join(errors.New("failed to parse IpStart"), err)
-		return
-	}
-
-	secondAddr, err := netip.ParseAddr(she.IpEnd)
-	if err != nil {
-		err = errors.Join(errors.New("failed to parse IpEnd"), err)
-		return
-	}
-
-	if !firstAddr.Is4() || !secondAddr.Is4() {
-		err = errors.New("provided ip address is not IPv4, IPv6 is not supported")
-		return
-	}
-
-	if firstAddr.Less(secondAddr) {
-		start = firstAddr
-		end = secondAddr
-	} else {
-		start = secondAddr
-		end = firstAddr
-	}
-	return
-}
-
-func checkForShellyGen2(addr *url.URL) bool {
-	addr.Scheme = "http"
-
-	addr = addr.JoinPath("shelly", "rpc")
-
-	httpClient := http.DefaultClient
-	httpClient.Timeout = httpDetectReadTimeout
-
-	resp, err := httpClient.Get(addr.String())
-	if err != nil {
-		return false
-	}
-
-	defer resp.Body.Close()
-	dec := json.NewDecoder(resp.Body)
-
-	type ShellyGen2 struct {
-		Id  string
-		Gen int
-	}
-
-	shellyInfo := &ShellyGen2{}
-	err = dec.Decode(shellyInfo)
-	if err != nil {
-		return false
-	}
-
-	return shellyInfo.Gen == 2
-
-}
-
-func (she *ShellyIO) getAddressesToTry() (addrToTry []*url.URL, err error) {
-	addrToTry = []*url.URL{}
-	ipStart, ipEnd, ipRangeErr := she.getStartEndIp()
-
-	var addr *url.URL
-	if ipRangeErr == nil {
-		for ip := ipStart; ip.Less(ipEnd); ip = ip.Next() {
-			addr, err = url.Parse(ip.String())
-			if err != nil {
-				err = errors.Join(errors.New("failed to parse ip address "+ip.String()), err)
-				return
-			}
-			if checkForShellyGen2(addr) {
-				addrToTry = append(addrToTry, addr)
-			}
-		}
-	} else {
-		var prefix netip.Prefix
-		prefix, err = netip.ParsePrefix(she.IpCidr)
-		if err != nil {
-			err = errors.Join(errors.New("failed to parse ip address cidr notation and ip address start end values, cannot continue"), err, ipRangeErr)
-			return
-
-		}
-
-		for ip := prefix.Masked().Addr().Next(); prefix.Contains(ip.Next()); ip = ip.Next() {
-			addr, err = url.Parse(ip.String())
-			if err != nil {
-				err = errors.Join(errors.New("failed to parse ip address "+ip.String()), err)
-				return
-			}
-			if checkForShellyGen2(addr) {
-				addrToTry = append(addrToTry, addr)
-			}
-		}
-	}
-
-	return
 }
 
 func (she *ShellyIO) startHealthCheck(ctx context.Context) {
@@ -180,10 +66,6 @@ func (she *ShellyIO) startHealthCheck(ctx context.Context) {
 
 func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) error {
 	var err error
-	she.originUrl, err = url.Parse(she.OriginAddr)
-	if err != nil {
-		return errors.Join(errors.New("failed to parse origin address"), err)
-	}
 
 	she.Devices = make(map[string]*shelly.ShellyDevice)
 
@@ -200,37 +82,6 @@ func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint1
 }
 
 func (she *ShellyIO) discoverDevices(ctx context.Context) error {
-	log.Println("checking provided ip range for shelly devices")
-	addrToTry, err := she.getAddressesToTry()
-	if err != nil {
-		return errors.Join(errors.New("failed to get addresses to try"), err)
-	}
-
-	log.Println("checking devices list for already discovered devices")
-	for _, dev := range she.Devices {
-		healthy, _ := dev.HealthCheck()
-		if healthy {
-			for i, addr := range addrToTry {
-				if strings.EqualFold(addr.Host, dev.Addr.Host) {
-					log.Println("device", dev.Info.ID, "addr: ", addr, "already discovered and healthy, removing from list")
-					addrToTry = append(addrToTry[:i], addrToTry[i+1:]...)
-				}
-			}
-		}
-	}
-
-	log.Println("found ", len(addrToTry), " addresses to try, will try discover")
-	for _, addr := range addrToTry {
-		ctx, cancel := context.WithTimeout(ctx, shellyDiscoverTimeout)
-		defer cancel()
-		dev, err := shelly.DiscoverShelly(ctx, addr, she.originUrl)
-		if err != nil {
-			log.Println(errors.Join(errors.New("failed to discover shelly device at ip address "+addr.String()), err))
-		} else {
-			she.Devices[dev.Info.ID] = dev
-			log.Println("found and subscribed device:\n", dev.String())
-		}
-	}
 
 	return she.matchIOs()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/racerxdl/go-mcp23017"
 )
@@ -74,8 +75,11 @@ func (mout *McpOutput) Set(state bool) (err error) {
 		state = !state
 	}
 
+	log.Println("DEBUG: Setting mcpio pin", mout.pin, "to", state)
 	err = mout.device.DigitalWrite(mout.pin, mcp23017.PinLevel(state))
-
+	if err != nil {
+		log.Println("DEBUG: Failed to set mcpio pin", mout.pin, "err ", err)
+	}
 	return
 }
 
@@ -114,6 +118,7 @@ func (mcp *McpIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) 
 			err = fmt.Errorf("output pin out of range (mcpio takes uint8 pin id)")
 			return
 		}
+		log.Println("DEBUG: Setting mcpio pin", outputPin, "to output")
 		err = mcp.device.PinMode(uint8(outputPin), mcp23017.OUTPUT)
 		if err != nil {
 			return

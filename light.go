@@ -3,6 +3,7 @@ package swkit
 import (
 	"fmt"
 	"hash/fnv"
+	"log"
 	"strings"
 	"sync"
 
@@ -82,7 +83,8 @@ func (li *Light) Sync() (err error) {
 	defer li.lock.Unlock()
 
 	oldState := li.State
-	li.State, err = li.output.GetState()
+	_, err = li.output.GetState()
+	log.Println("DEBUG: Light.Sync() li.State", li.State, "oldState", oldState, "err: ", err)
 	if li.hk != nil {
 		if err != nil {
 			li.fault.SetValue(characteristic.StatusFaultGeneralFault)
