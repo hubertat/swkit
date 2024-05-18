@@ -6,8 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/log"
+
 	"github.com/eclipse/paho.golang/paho"
 	"github.com/hubertat/swkit/drivers/shelly/components"
+	"github.com/hubertat/swkit/mqtt"
 )
 
 const maxTimeSinceRefresh = 15 * time.Minute
@@ -28,18 +31,17 @@ type ShellyDevice struct {
 	setError      error
 	lastRefreshed time.Time
 
-	pub Publisher
+	pub mqtt.Publisher
 
 	done chan bool
 }
 
-type Publisher interface {
-	Publish(payload []byte) error
-	GetClientId() string
+func (sd *ShellyDevice) SetPublisher(pub mqtt.Publisher) {
+	sd.pub = pub
 }
 
-func (sd *ShellyDevice) MqttHandler(pub *paho.Publish) {
-
+func (sd *ShellyDevice) MqttHandle(pub *paho.Publish) {
+	log.Info("received mqtt message from", "topic", pub.Topic)
 }
 
 func (sd *ShellyDevice) MqttSubscribeTopic() string {
@@ -113,7 +115,7 @@ func (sd *ShellyDevice) String() string {
 func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
 	msg := rpcRequest{
 		Jsonrpc: "2.0",
-		Src:     sd.pub.GetClientId(),
+		Src:     sd.Id,
 		Method:  "Switch.Set",
 		Params: map[string]interface{}{
 			"id": id,
@@ -122,7 +124,7 @@ func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
 
 	b, err := msg.Bytes()
 	if err == nil {
-		err = sd.pub.Publish(b)
+		err = sd.pub.Publish(sd.MqttPublishTopic(), b)
 	}
 
 	sd.setError = err

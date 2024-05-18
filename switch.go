@@ -43,7 +43,7 @@ func (swb *Switch) GetUniqueId() uint64 {
 }
 
 func (swb *Switch) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.NameId(), swb.DriverName) {
+	if !strings.EqualFold(driver.String(), swb.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
 

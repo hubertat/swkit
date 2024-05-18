@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -123,7 +124,9 @@ func TestGrentonioSetup(t *testing.T) {
 	grenton.GateAddress = "incorrect address"
 	grenton.CluId = 123
 
-	err := grenton.Setup([]uint16{}, []uint16{3, 4})
+	ctx := context.Background()
+
+	err := grenton.Setup(ctx, []uint16{}, []uint16{3, 4})
 	if err == nil {
 		t.Error("expected error from grenton io setup (incorrect address)")
 	}
@@ -131,23 +134,23 @@ func TestGrentonioSetup(t *testing.T) {
 	grentonMock := mockGrentonIo()
 	grenton.GateAddress = grentonMock.URL
 
-	err = grenton.Setup([]uint16{1}, []uint16{3, 4})
+	err = grenton.Setup(ctx, []uint16{1}, []uint16{3, 4})
 	if err == nil {
 		t.Error("expected error from grenton io setup (inputs in setup - should be unsupported)")
 	}
 
-	err = grenton.Setup([]uint16{}, []uint16{302})
+	err = grenton.Setup(ctx, []uint16{}, []uint16{302})
 	if err == nil {
 		t.Error("expected error from grenton io setup (wrong clu id provided)")
 	}
 
 	grenton.CluId = 0x0d1cf087
-	err = grenton.Setup([]uint16{}, []uint16{3, 2})
+	err = grenton.Setup(ctx, []uint16{}, []uint16{3, 2})
 	if err == nil {
 		t.Error("expected error from grenton io setup (wrong object id provided)")
 	}
 
-	err = grenton.Setup([]uint16{}, []uint16{302})
+	err = grenton.Setup(ctx, []uint16{}, []uint16{302})
 	if err != nil {
 		t.Errorf("received error from grenton io setup: %v", err)
 	}

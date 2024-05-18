@@ -42,7 +42,7 @@ func (ou *Outlet) GetUniqueId() uint64 {
 }
 
 func (ou *Outlet) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.NameId(), ou.DriverName) {
+	if !strings.EqualFold(driver.String(), ou.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
 

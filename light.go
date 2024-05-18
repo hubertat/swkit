@@ -3,9 +3,10 @@ package swkit
 import (
 	"fmt"
 	"hash/fnv"
-	"log"
 	"strings"
 	"sync"
+
+	"github.com/charmbracelet/log"
 
 	"github.com/brutella/hap/accessory"
 	"github.com/brutella/hap/characteristic"
@@ -41,7 +42,7 @@ func (li *Light) GetUniqueId() uint64 {
 }
 
 func (li *Light) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.NameId(), li.DriverName) {
+	if !strings.EqualFold(driver.String(), li.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
 
@@ -84,7 +85,7 @@ func (li *Light) Sync() (err error) {
 
 	oldState := li.State
 	_, err = li.output.GetState()
-	log.Println("DEBUG: Light.Sync() li.State", li.State, "oldState", oldState, "err: ", err)
+
 	if li.hk != nil {
 		if err != nil {
 			li.fault.SetValue(characteristic.StatusFaultGeneralFault)
@@ -100,6 +101,7 @@ func (li *Light) Sync() (err error) {
 	}
 
 	if li.State != oldState && li.hk != nil {
+		log.Info("Light.Sync() state changed li.State", li.State, "oldState", oldState, "err: ", err)
 		li.hk.Lightbulb.On.SetValue(li.State)
 	}
 

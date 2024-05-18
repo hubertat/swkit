@@ -57,10 +57,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	sensorsSyncDuration, err := time.ParseDuration(*sensorsSyncInterval)
-	if err != nil {
-		panic(err)
-	}
 
 	sk := &swkit.SwKit{}
 	configFile, err := os.Open(*config)
@@ -88,11 +84,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	log.Println("will init swkit sensors...")
-	err = sk.InitSensors()
-	if err != nil {
-		panic(err)
-	}
+
 	log.Printf("drivers OK!\nwill try to MatchControllers:\n")
 	err = sk.MatchControllers()
 	if err != nil {
@@ -101,25 +93,15 @@ func main() {
 		log.Println("MatchControllers OK!")
 	}
 
-	log.Println("trying to match thermostats:")
-	err = sk.MatchSensors()
-	if err != nil {
-		log.Println(err)
-	} else {
-		log.Printf("\tOK\n")
-	}
-
 	sk.PrintIoStatus(os.Stdout)
 
 	if len(sk.HkPin) == 8 {
 		log.Println("Starting with HomeKit server")
 
 		go sk.StartTicker(syncDuration)
-		go sk.StartSensorTicker(sensorsSyncDuration)
 		log.Fatal(sk.StartHomeKit(context.Background(), Version))
 	} else {
 		log.Println("HomeKit not configured, disabled")
-		go sk.StartSensorTicker(sensorsSyncDuration)
 		sk.StartTicker(syncDuration)
 	}
 

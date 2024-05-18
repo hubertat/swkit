@@ -37,7 +37,7 @@ func (ms *MotionSensor) GetUniqueId() uint64 {
 }
 
 func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.NameId(), ms.DriverName) {
+	if !strings.EqualFold(driver.String(), ms.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
 

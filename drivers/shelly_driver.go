@@ -4,18 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+
+	"github.com/charmbracelet/log"
 
 	"net/url"
 	"time"
 
 	"github.com/hubertat/swkit/drivers/shelly"
 	"github.com/hubertat/swkit/drivers/shelly/components"
+	"github.com/hubertat/swkit/mqtt"
 )
 
 const shellyDriverName = "shelly"
-const httpDetectReadTimeout = 400 * time.Millisecond
-const shellyDiscoverTimeout = 20 * time.Second
+
 const healthCheckInterval = 2 * time.Second
 const unhealthyCountLimit = 5
 
@@ -48,56 +49,63 @@ func (she *ShellyIO) startHealthCheck(ctx context.Context) {
 				healthy, err := dev.HealthCheck()
 				if !healthy {
 					she.unhealthyCount++
-					log.Println("device", dev.Info.ID, "is not healthy, err:", err)
+					log.Warn("device", dev.Info.ID, "is not healthy, err:", err)
 				}
 			}
 			if unhealthyCountLimit > 0 && she.unhealthyCount > unhealthyCountLimit {
-				log.Println("too many unhealthy devices, performing discovery")
-				err := she.discoverDevices(ctx)
-				if err != nil {
-					log.Println("failed to discover devices", err)
-				} else {
-					she.unhealthyCount = 0
-				}
+				log.Error("too many unhealthy devices, SHOULD PERFORM action (TODO)")
+				log.Info("action needed here")
 			}
 		}
 	}
 }
 
-func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) error {
-	var err error
-
+func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) (err error) {
 	she.Devices = make(map[string]*shelly.ShellyDevice)
 
-	err = she.discoverDevices(ctx)
+	err = she.matchIOs()
 	if err != nil {
-		return errors.Join(errors.New("failed to discover devices"), err)
+		err = errors.Join(err, errors.New("failed to match IOs"))
 	}
 
-	go she.startHealthCheck(ctx)
+	// go she.startHealthCheck(ctx)
 
 	she.isReady = true
 
-	return nil
+	return
 }
 
-func (she *ShellyIO) discoverDevices(ctx context.Context) error {
+func (she *ShellyIO) SetMqtt(publisher mqtt.Publisher) (handlers []mqtt.MqttHandler) {
+	for _, dev := range she.Devices {
+		dev.SetPublisher(publisher)
+		handlers = append(handlers, dev)
+	}
 
-	return she.matchIOs()
+	return
+}
+
+func (she *ShellyIO) GetDevices() (devices []*shelly.ShellyDevice) {
+	for _, dev := range she.Devices {
+		devices = append(devices, dev)
+	}
+	return
 }
 
 func (she *ShellyIO) matchIOs() error {
 	for ix, out := range she.Outputs {
 		dev, exist := she.Devices[out.Id]
 		if !exist {
-			return fmt.Errorf("device with id %s not found", out.Id)
+			dev = &shelly.ShellyDevice{
+				Id: out.Id,
+			}
+			she.Devices[out.Id] = dev
 		}
 		out.dev = dev
 
-		if out.SwitchNo >= len(dev.Switches) {
-			return fmt.Errorf("device %s does not have output pin %d", out.Id, out.SwitchNo)
-		}
-		out.sw = &dev.Switches[out.SwitchNo]
+		// if out.SwitchNo >= len(dev.Switches) {
+		// 	return fmt.Errorf("device %s does not have output pin %d", out.Id, out.SwitchNo)
+		// }
+		// out.sw = &dev.Switches[out.SwitchNo]
 
 		she.Outputs[ix] = out
 	}
@@ -121,7 +129,7 @@ func (she *ShellyIO) Close() error {
 	return nil
 }
 
-func (she *ShellyIO) NameId() string {
+func (she *ShellyIO) String() string {
 	return shellyDriverName
 }
 
@@ -170,6 +178,10 @@ func (sout *ShellyOutput) GetState() (bool, error) {
 	}
 
 	return false, errors.Join(errors.New("shelly output is not healthy"), err)
+}
+
+func (sout *ShellyOutput) MqttSubscribeTopic() string {
+	return sout.Id + "/events/rpc"
 }
 
 func (sout *ShellyOutput) Set(state bool) error {

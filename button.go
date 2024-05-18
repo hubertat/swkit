@@ -42,7 +42,7 @@ func (bu *Button) GetUniqueId() uint64 {
 }
 
 func (bu *Button) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.NameId(), bu.DriverName) {
+	if !strings.EqualFold(driver.String(), bu.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
 

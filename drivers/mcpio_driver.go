@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/hubertat/swkit/mqtt"
 	"github.com/racerxdl/go-mcp23017"
 )
 
@@ -83,7 +84,7 @@ func (mout *McpOutput) Set(state bool) (err error) {
 	return
 }
 
-func (mcpio *McpIO) NameId() string {
+func (mcpio *McpIO) String() string {
 	return mcpioDriverName
 }
 
@@ -128,6 +129,10 @@ func (mcp *McpIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) 
 
 	mcp.isReady = err == nil
 
+	return
+}
+
+func (mcp *McpIO) SetMqtt(publisher mqtt.Publisher) (h []mqtt.MqttHandler) {
 	return
 }
 

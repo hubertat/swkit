@@ -6,6 +6,8 @@ import (
 	"io"
 
 	"errors"
+
+	"github.com/hubertat/swkit/mqtt"
 )
 
 type MockOutput struct {
@@ -57,11 +59,15 @@ func (md *MockIoDriver) Setup(ctx context.Context, inputs []uint16, outputs []ui
 	return nil
 }
 
+func (md *MockIoDriver) SetMqtt(publisher mqtt.Publisher) (h []mqtt.MqttHandler) {
+	return
+}
+
 func (md *MockIoDriver) Close() error {
 	return nil
 }
 
-func (md *MockIoDriver) NameId() string {
+func (md *MockIoDriver) String() string {
 	return "mock_driver"
 }
 

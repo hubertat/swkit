@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hubertat/swkit/mqtt"
 	"github.com/pkg/errors"
 	"github.com/stianeikeland/go-rpio/v4"
 )
@@ -96,7 +97,11 @@ func (gp *GpIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) er
 	return nil
 }
 
-func (gp *GpIO) NameId() string {
+func (gp *GpIO) SetMqtt(publisher mqtt.Publisher) (topics []mqtt.MqttHandler) {
+	return
+}
+
+func (gp *GpIO) String() string {
 	return gpioDriverName
 }
 
