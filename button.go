@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"strings"
 
 	"github.com/brutella/hap/accessory"
@@ -19,9 +20,10 @@ type Button struct {
 
 	DisableHomekit bool
 
-	toggleThis []ClickableDevice
-	input      drivers.DigitalInput
-	driver     drivers.IoDriver
+	toggleMap map[drivers.PushEvent][]ClickableDevice
+
+	input  drivers.DigitalInput
+	driver drivers.IoDriver
 
 	hk *accessory.A
 	ss *service.StatelessProgrammableSwitch
@@ -51,6 +53,8 @@ func (bu *Button) Init(driver drivers.IoDriver) error {
 	}
 
 	var err error
+
+	bu.toggleMap = make(map[drivers.PushEvent][]ClickableDevice)
 
 	bu.driver = driver
 	bu.input, err = driver.GetInput(bu.InPin)
@@ -95,5 +99,16 @@ func (bu *Button) GetValue() bool {
 }
 
 func (bu *Button) FireEvent(event drivers.PushEvent) {
-	bu.ss.ProgrammableSwitchEvent.SetValue(int(event))
+	log.Println("[DEBUG] Button: Push event: ", event, " ", bu.Name)
+
+	if !bu.DisableHomekit {
+		bu.ss.ProgrammableSwitchEvent.SetValue(int(event))
+	}
+
+	if devices, ok := bu.toggleMap[event]; ok {
+		for _, device := range devices {
+			device.Toggle()
+		}
+	}
+
 }

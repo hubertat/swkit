@@ -81,7 +81,6 @@ func (li *Light) Sync() (err error) {
 	li.lock.Lock()
 	defer li.lock.Unlock()
 
-	oldState := li.State
 	li.State, err = li.output.GetState()
 	if li.hk != nil {
 		if err != nil {
@@ -97,7 +96,7 @@ func (li *Light) Sync() (err error) {
 		return errors.Wrap(err, "Sync failed on output.GetState()")
 	}
 
-	if li.State != oldState && li.hk != nil {
+	if li.State != li.hk.Lightbulb.On.Value() && li.hk != nil {
 		li.hk.Lightbulb.On.SetValue(li.State)
 	}
 

@@ -76,9 +76,9 @@ type HkThing interface {
 }
 
 type ControllingDevice struct {
-	Enable     bool
 	Pin        uint16
 	DriverName string
+	Event      int
 }
 
 type Controllable interface {
@@ -205,9 +205,6 @@ func (sw *SwKit) getIos() []IO {
 	}
 	for _, mosens := range sw.MotionSensors {
 		ios = append(ios, mosens)
-	}
-	for _, but := range sw.Buttons {
-		ios = append(ios, but)
 	}
 
 	return ios
@@ -348,6 +345,8 @@ func (sw *SwKit) MatchControllers() error {
 				return errors.Errorf("matching controlled failed, driver (%s) not present or not ready", driverName)
 			}
 
+			log.Println("| match ctrl | got controller driver: ", controller.DriverName, " pin: ", controller.Pin, " event: ", controller.Event)
+
 			swb := sw.findSwitch(controller.Pin, driverName)
 			but := sw.findButton(controller.Pin, driverName)
 			if swb == nil && but == nil {
@@ -355,11 +354,21 @@ func (sw *SwKit) MatchControllers() error {
 			}
 
 			if swb != nil {
-				swb.switchThis = append(swb.switchThis, controllable)
+				swb.switchSlice = append(swb.switchSlice, controllable)
+
+				log.Println("| match ctrl | matched to switch (driver: ", swb.DriverName, " pin: ", swb.InPin, ")")
 			}
 
 			if but != nil {
-				but.toggleThis = append(but.toggleThis, controllable)
+				event := drivers.PushEvent(controller.Event)
+				toggleMap, exist := but.toggleMap[event]
+				if !exist {
+					toggleMap = []ClickableDevice{}
+				}
+				toggleMap = append(toggleMap, controllable)
+				but.toggleMap[event] = toggleMap
+
+				log.Println("| match ctrl | matched to button (driver: ", but.DriverName, " pin: ", but.InPin, ")")
 			}
 		}
 	}

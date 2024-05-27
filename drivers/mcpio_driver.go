@@ -2,13 +2,16 @@ package drivers
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"time"
 
 	"github.com/racerxdl/go-mcp23017"
 )
 
 const mcpioDriverName = "mcpio"
+const listenInterval = 15 * time.Millisecond
+const pushConfirmationInterval = 75 * time.Millisecond
+const deadTime = 300 * time.Millisecond
 
 type McpIO struct {
 	device *mcp23017.Device
@@ -28,6 +31,8 @@ type McpInput struct {
 	invert bool
 
 	device *mcp23017.Device
+
+	timer *time.Timer
 }
 
 type McpOutput struct {
@@ -52,7 +57,33 @@ func (min *McpInput) GetState() (state bool, err error) {
 }
 
 func (min *McpInput) SubscribeToPushEvent(listener EventListener) error {
-	return errors.New("SubscribeToPushEvent not implemented")
+	if min.timer != nil {
+		return nil
+	}
+
+	min.timer = time.NewTimer(listenInterval)
+
+	go func() {
+		for {
+			select {
+			case <-min.timer.C:
+				state, _ := min.GetState()
+
+				if state {
+					time.Sleep(pushConfirmationInterval)
+					state, _ = min.GetState()
+					if state {
+						listener.FireEvent(PushEventSinglePress)
+						time.Sleep(deadTime)
+					}
+				}
+
+				min.timer.Reset(listenInterval)
+			}
+		}
+	}()
+
+	return nil
 }
 
 func (mout *McpOutput) GetState() (state bool, err error) {
