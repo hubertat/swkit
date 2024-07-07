@@ -45,3 +45,9 @@ func (rm *RpcMessage) UnmarshalResult(result interface{}) (err error) {
 	err = json.Unmarshal(rm.Result, result)
 	return
 }
+
+func UnmarshalRpcMessage(data []byte) (rm *RpcMessage, err error) {
+	rm = &RpcMessage{}
+	err = json.Unmarshal(data, rm)
+	return
+}

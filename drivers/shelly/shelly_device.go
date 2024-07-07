@@ -6,14 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/log"
-
-	"github.com/eclipse/paho.golang/paho"
 	"github.com/hubertat/swkit/drivers/shelly/components"
 	"github.com/hubertat/swkit/mqtt"
 )
 
 const maxTimeSinceRefresh = 15 * time.Minute
+const defaultShellyTopic = "shellypro4.0/events/rpc"
 
 type ShellyDevice struct {
 	Id   string
@@ -40,18 +38,6 @@ func (sd *ShellyDevice) SetPublisher(pub mqtt.Publisher) {
 	sd.pub = pub
 }
 
-func (sd *ShellyDevice) MqttHandle(pub *paho.Publish) {
-	log.Info("received mqtt message from", "topic", pub.Topic)
-}
-
-func (sd *ShellyDevice) MqttSubscribeTopic() string {
-	return sd.Id + "/events/rpc"
-}
-
-func (sd *ShellyDevice) MqttPublishTopic() string {
-	return sd.Id + "/events/rpc"
-}
-
 func (sd *ShellyDevice) HealthCheck() (healthy bool, err error) {
 	if sd.setError != nil {
 		err = sd.setError
@@ -65,9 +51,18 @@ func (sd *ShellyDevice) HealthCheck() (healthy bool, err error) {
 	return
 }
 
+func (sd *ShellyDevice) IsReady() bool {
+	if sd.lastRefreshed.IsZero() {
+		return false
+	}
+
+	return true
+}
+
 func (sd *ShellyDevice) String() string {
 	str := strings.Builder{}
 
+	str.WriteString("__________________\n")
 	str.WriteString("## ShellyDevice ##\n")
 	str.WriteString("## ID: " + sd.Id + "\n")
 	str.WriteString("## Info ID: " + sd.Info.ID + "\n")
@@ -107,7 +102,8 @@ func (sd *ShellyDevice) String() string {
 			str.WriteString(fmt.Sprintf("## Input:%d.State:%v\n", in.Status.ID, *in.Status.State))
 		}
 	}
-	str.WriteString("## End ##\n")
+	str.WriteString("##          end ##\n")
+	str.WriteString("------------------\n")
 
 	return str.String()
 }

@@ -2,7 +2,6 @@ package mqtt
 
 import (
 	"context"
-	"fmt"
 	"net/url"
 	"os"
 	"time"
@@ -12,24 +11,68 @@ import (
 	"github.com/eclipse/paho.golang/paho"
 )
 
-const subscribeTimeoutSeconds = 15
-const connectionTimeoutSeconds = 5
+const subscribeTimeout = 15 * time.Second
 const publishTimeoutSeconds = 4
-
-type MqttHandler interface {
-	MqttHandle(pub *paho.Publish)
-	MqttSubscribeTopic() string
-}
-
-type Publisher interface {
-	Publish(topic string, payload []byte) error
-}
+const mqqtKeepAlive = 20
+const mqqtSessionExpiry = 60
 
 type MqttClient struct {
-	config autopaho.ClientConfig
+	clientId  string
+	brokerUrl *url.URL
+
 	conn   *autopaho.ConnectionManager
 	logger *log.Logger
-	topics []string
+
+	handlers []MqttHandler
+}
+
+func NewMqttClient(broker string, clientId string) (mc *MqttClient, err error) {
+	mc = &MqttClient{
+		logger: log.NewWithOptions(os.Stderr, log.Options{
+			Prefix: "MqttClient 🐰: ",
+			Level:  log.GetLevel(),
+		}),
+	}
+
+	mc.brokerUrl, err = url.Parse(broker)
+
+	return
+}
+
+func (mc *MqttClient) Connect(ctx context.Context, handlers []MqttHandler) (err error) {
+	var cm *autopaho.ConnectionManager
+
+	mc.handlers = []MqttHandler{}
+	for _, handlerExt := range handlers {
+		h := handlerExt
+		mc.handlers = append(mc.handlers, h)
+
+		mc.logger.Debug("setting up mqtt topics config", "topic", h.MqttSubscribeTopic())
+	}
+
+	mc.logger.Debug("NewConnection")
+	cm, err = autopaho.NewConnection(ctx, mc.clientConfig())
+	if err != nil {
+		return
+	}
+	mc.conn = cm
+	mc.logger.Debug("NewConnection done", "err", err)
+
+	mc.logger.Debug("AwaitConnection")
+	err = cm.AwaitConnection(ctx)
+	mc.logger.Debug("AwaitConnection done", "err", err)
+
+	return
+}
+
+func (mc *MqttClient) Disconnect(ctx context.Context) error {
+	mc.handlers = []MqttHandler{}
+
+	return mc.conn.Disconnect(ctx)
+}
+
+func (mc *MqttClient) Done() <-chan struct{} {
+	return mc.conn.Done()
 }
 
 func (mc *MqttClient) Publish(topic string, payload []byte) (err error) {
@@ -44,26 +87,56 @@ func (mc *MqttClient) Publish(topic string, payload []byte) (err error) {
 	return
 }
 
+func (mc *MqttClient) ClientId() string {
+	return mc.clientId
+}
+
+func (mc *MqttClient) clientConfig() autopaho.ClientConfig {
+	return autopaho.ClientConfig{
+		BrokerUrls:                    []*url.URL{mc.brokerUrl},
+		KeepAlive:                     mqqtKeepAlive,
+		SessionExpiryInterval:         mqqtSessionExpiry,
+		CleanStartOnInitialConnection: true,
+		OnConnectionUp:                mc.onConnUp,
+		OnConnectError:                mc.onConnError,
+		ClientConfig: paho.ClientConfig{
+			ClientID:           mc.clientId,
+			OnClientError:      mc.onConnError,
+			OnServerDisconnect: mc.onSrvDisconnect,
+			OnPublishReceived:  mc.onPublishRecv(),
+		},
+	}
+}
+
+func (mc *MqttClient) topics() (topics []string) {
+	for _, h := range mc.handlers {
+		topics = append(topics, h.MqttSubscribeTopic())
+	}
+
+	return
+}
+
 func (mc *MqttClient) onConnUp(cm *autopaho.ConnectionManager, connAck *paho.Connack) {
 	mc.logger.Info("Connected to MQTT broker")
 
 	subs := []paho.SubscribeOptions{}
-	for _, topic := range mc.topics {
+	for _, topic := range mc.topics() {
 		subs = append(subs, paho.SubscribeOptions{
 			QoS:   1,
 			Topic: topic,
 		})
 	}
 
-	mc.logger.Debug("subscribing mqtt", "subs", subs)
+	mc.logger.Debug("subscribing to mqtt", "subs", subs, "timeout", subscribeTimeout)
 
-	ctx, cancel := context.WithTimeout(context.Background(), subscribeTimeoutSeconds*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), subscribeTimeout)
 	defer cancel()
 
 	_, err := cm.Subscribe(ctx, &paho.Subscribe{
 		Subscriptions: subs,
 	})
-	mc.logger.Debug("subscribed mqtt", "err", err)
+
+	mc.logger.Debug("subscribed!")
 
 	if err != nil {
 		mc.logger.Error("Failed to subscribe to topics", "err", err)
@@ -79,77 +152,11 @@ func (mc *MqttClient) onSrvDisconnect(d *paho.Disconnect) {
 }
 
 func (mc *MqttClient) onPublishRecv() []func(paho.PublishReceived) (bool, error) {
-	return []func(paho.PublishReceived) (bool, error){
-		func(pr paho.PublishReceived) (bool, error) {
-			fmt.Printf("received message on topic %s; body: %s (retain: %t)\n", pr.Packet.Topic, pr.Packet.Payload, pr.Packet.Retain)
-			return true, nil
-		},
-	}
-}
+	pubs := []func(paho.PublishReceived) (bool, error){}
 
-func (mc *MqttClient) Connect(handlers []MqttHandler) (err error) {
-	var cm *autopaho.ConnectionManager
-
-	ctx, cancel := context.WithTimeout(context.Background(), connectionTimeoutSeconds*time.Second)
-	defer cancel()
-
-	mc.topics = []string{}
-	for _, h := range handlers {
-		mc.logger.Debug("setting up mqtt topics config", "topic", h.MqttSubscribeTopic())
-		mc.topics = append(mc.topics, h.MqttSubscribeTopic())
-		// mc.config.ClientConfig.Router.RegisterHandler(h.MqttSubscribeTopic(), h.MqttHandle)
+	for _, h := range mc.handlers {
+		pubs = append(pubs, h.MqttHandle)
 	}
 
-	mc.logger.Debug("NewConnection")
-	cm, err = autopaho.NewConnection(ctx, mc.config)
-	if err != nil {
-		return
-	}
-	mc.logger.Debug("NewConnection done", "err", err)
-
-	mc.logger.Debug("AwaitConnection")
-	err = cm.AwaitConnection(ctx)
-	mc.logger.Debug("AwaitConnection done", "err", err)
-
-	return
-}
-
-func (mc *MqttClient) Disconnect(ctx context.Context) error {
-	for _, topic := range mc.topics {
-		mc.config.ClientConfig.Router.UnregisterHandler(topic)
-	}
-
-	mc.topics = []string{}
-
-	return mc.conn.Disconnect(ctx)
-}
-
-func NewMqttClient(broker string, clientId string) (mc *MqttClient, err error) {
-	addr, err := url.Parse(broker)
-	if err != nil {
-		return
-	}
-
-	mc = &MqttClient{
-		logger: log.NewWithOptions(os.Stderr, log.Options{
-			Prefix: "MqttClient 🐰: ",
-			Level:  log.GetLevel(),
-		}),
-	}
-
-	mc.config = autopaho.ClientConfig{
-		BrokerUrls:            []*url.URL{addr},
-		KeepAlive:             20,
-		SessionExpiryInterval: 60,
-		OnConnectionUp:        mc.onConnUp,
-		OnConnectError:        mc.onConnError,
-		ClientConfig: paho.ClientConfig{
-			ClientID:           clientId,
-			OnClientError:      mc.onConnError,
-			OnServerDisconnect: mc.onSrvDisconnect,
-			OnPublishReceived:  mc.onPublishRecv(),
-		},
-	}
-
-	return
+	return pubs
 }

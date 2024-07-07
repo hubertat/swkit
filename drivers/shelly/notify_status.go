@@ -8,14 +8,14 @@ import (
 )
 
 type NotifyStatus struct {
-	Switch0 json.RawMessage `json:"switch:0"`
-	Switch1 json.RawMessage `json:"switch:1"`
-	Switch2 json.RawMessage `json:"switch:2"`
-	Switch3 json.RawMessage `json:"switch:3"`
-	Input0  json.RawMessage `json:"input:0"`
-	Input1  json.RawMessage `json:"input:1"`
-	Input2  json.RawMessage `json:"input:2"`
-	Input3  json.RawMessage `json:"input:3"`
+	Switch0 json.RawMessage `json:"switch:0,omitempty"`
+	Switch1 json.RawMessage `json:"switch:1,omitempty"`
+	Switch2 json.RawMessage `json:"switch:2,omitempty"`
+	Switch3 json.RawMessage `json:"switch:3,omitempty"`
+	Input0  json.RawMessage `json:"input:0,omitempty"`
+	Input1  json.RawMessage `json:"input:1,omitempty"`
+	Input2  json.RawMessage `json:"input:2,omitempty"`
+	Input3  json.RawMessage `json:"input:3,omitempty"`
 }
 
 func (ns *NotifyStatus) rawSwitchSlice() [][]byte {
@@ -39,4 +39,17 @@ func (ns *NotifyStatus) FillSwitches(switches []components.Switch) error {
 	}
 
 	return nil
+}
+
+func (ns *NotifyStatus) GetAllSwitches() (switches []components.Switch) {
+	for _, rawSwitch := range ns.rawSwitchSlice() {
+		if len(rawSwitch) > 0 {
+			var sw components.Switch
+			if json.Unmarshal(rawSwitch, &sw.Status) == nil {
+				switches = append(switches, sw)
+			}
+		}
+	}
+
+	return
 }
