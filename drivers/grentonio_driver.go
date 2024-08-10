@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hubertat/swkit/mqtt"
 	"github.com/pkg/errors"
 )
 
@@ -281,10 +280,6 @@ func (gio *GrentonIO) Setup(ctx context.Context, inputs []uint16, outputs []uint
 
 	gio.ready = true
 
-	return
-}
-
-func (gio *GrentonIO) SetMqtt(publisher mqtt.Publisher) (h []mqtt.MqttHandler) {
 	return
 }
 

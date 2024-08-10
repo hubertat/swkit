@@ -13,7 +13,7 @@ type rpcRequest struct {
 	Id      uint                   `json:"id"`
 }
 
-func (rr *rpcRequest) Bytes() ([]byte, error) {
+func (rr rpcRequest) bytes() ([]byte, error) {
 	return json.Marshal(rr)
 }
 
@@ -49,5 +49,10 @@ func (rm *RpcMessage) UnmarshalResult(result interface{}) (err error) {
 func UnmarshalRpcMessage(data []byte) (rm *RpcMessage, err error) {
 	rm = &RpcMessage{}
 	err = json.Unmarshal(data, rm)
+	return
+}
+
+func UnmarshalOnlineStatus(data []byte) (isOnline bool, err error) {
+	err = json.Unmarshal(data, &isOnline)
 	return
 }

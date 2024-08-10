@@ -28,6 +28,7 @@ type MqttClient struct {
 
 func NewMqttClient(broker string, clientId string) (mc *MqttClient, err error) {
 	mc = &MqttClient{
+		clientId: clientId,
 		logger: log.NewWithOptions(os.Stderr, log.Options{
 			Prefix: "MqttClient 🐰: ",
 			Level:  log.GetLevel(),
@@ -47,7 +48,7 @@ func (mc *MqttClient) Connect(ctx context.Context, handlers []MqttHandler) (err 
 		h := handlerExt
 		mc.handlers = append(mc.handlers, h)
 
-		mc.logger.Debug("setting up mqtt topics config", "topic", h.MqttSubscribeTopic())
+		mc.logger.Debug("setting up mqtt topics config", "topics", h.MqttSubscribeTopics())
 	}
 
 	mc.logger.Debug("NewConnection")
@@ -110,7 +111,7 @@ func (mc *MqttClient) clientConfig() autopaho.ClientConfig {
 
 func (mc *MqttClient) topics() (topics []string) {
 	for _, h := range mc.handlers {
-		topics = append(topics, h.MqttSubscribeTopic())
+		topics = append(topics, h.MqttSubscribeTopics()...)
 	}
 
 	return

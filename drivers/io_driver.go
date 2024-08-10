@@ -2,13 +2,10 @@ package drivers
 
 import (
 	"context"
-
-	"github.com/hubertat/swkit/mqtt"
 )
 
 type IoDriver interface {
 	Setup(ctx context.Context, inputs []uint16, outputs []uint16) error
-	SetMqtt(publisher mqtt.Publisher) []mqtt.MqttHandler
 	Close() error
 	String() string
 	IsReady() bool

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/hubertat/swkit/drivers/shelly/components"
-	"github.com/hubertat/swkit/mqtt"
 )
 
 const maxTimeSinceRefresh = 15 * time.Minute
@@ -29,13 +28,9 @@ type ShellyDevice struct {
 	setError      error
 	lastRefreshed time.Time
 
-	pub mqtt.Publisher
+	mqttHandler *ShellyMqtt
 
 	done chan bool
-}
-
-func (sd *ShellyDevice) SetPublisher(pub mqtt.Publisher) {
-	sd.pub = pub
 }
 
 func (sd *ShellyDevice) HealthCheck() (healthy bool, err error) {
@@ -109,26 +104,47 @@ func (sd *ShellyDevice) String() string {
 }
 
 func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
-	msg := rpcRequest{
-		Jsonrpc: "2.0",
-		Src:     sd.Id,
-		Method:  "Switch.Set",
-		Params: map[string]interface{}{
-			"id": id,
-			"on": state,
-		}}
 
-	b, err := msg.Bytes()
-	if err == nil {
-		err = sd.pub.Publish(sd.MqttPublishTopic(), b)
-	}
+	msg := sd.mqttHandler.newRpcRequest("Switch.Set", map[string]interface{}{
+		"id": id,
+		"on": state,
+	})
 
+	err := sd.mqttHandler.publishDeviceMessage(sd, msg)
 	sd.setError = err
 
 	if err != nil {
 		return errors.Join(errors.New("failed to send rpc Switch.Set message"), err)
 	}
 
+	return nil
+}
+
+func (sd *ShellyDevice) FillStatus(status GetStatus) error {
+	sd.Switches = make([]components.Switch, len(status.Switches))
+	for _, sw := range status.GetSwitches() {
+		sd.Switches[sw.ID] = components.Switch{
+			Status: sw,
+		}
+	}
+
+	inputs := status.GetInputs()
+	sd.Inputs = make([]components.Input, len(status.GetInputs()))
+	for _, in := range status.GetInputs() {
+		sd.Inputs[in.ID] = components.Input{
+			Status: in,
+		}
+	}
+
+	sd.Wifi = &components.Wifi{
+		Status: *status.GetWifi(),
+	}
+
+	sd.Ethernet = &components.Ethernet{
+		Status: *status.GetEthernet(),
+	}
+
+	sd.lastRefreshed = time.Now()
 	return nil
 }
 

@@ -4,7 +4,7 @@ import "github.com/eclipse/paho.golang/paho"
 
 type MqttHandler interface {
 	MqttHandle(paho.PublishReceived) (bool, error)
-	MqttSubscribeTopic() string
+	MqttSubscribeTopics() []string
 }
 
 type Publisher interface {

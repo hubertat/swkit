@@ -34,8 +34,8 @@ type Handler struct {
 	topic string
 }
 
-func (h *Handler) MqttSubscribeTopic() string {
-	return h.topic
+func (h *Handler) MqttSubscribeTopics() []string {
+	return []string{h.topic}
 }
 
 func (h *Handler) MqttHandle(pub paho.PublishReceived) (bool, error) {
@@ -61,13 +61,16 @@ func main() {
 
 	tHan := &Handler{topic: "testTopic"}
 
-	shel := &shelly.ShellyDevice{
-		Id: "shellypro4pm-083af2be0f68",
+	shels := []*shelly.ShellyDevice{
+		{
+			Id: "shellypro4pm-083af2be0f68",
+		},
 	}
 
+	shelM := shelly.NewShellyMqtt(shels, mc)
+
 	mqttHandlers := []mqtt.MqttHandler{
-		shel,
-		tHan,
+		shelM,
 	}
 
 	err = mc.Connect(ctx, mqttHandlers)
