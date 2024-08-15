@@ -95,4 +95,6 @@ func (gs *GetStatus) FillDevice(device *ShellyDevice) error {
 			}
 		}
 	}
+
+	return nil
 }

@@ -12,7 +12,6 @@ import (
 
 	"github.com/hubertat/swkit/drivers/shelly"
 	"github.com/hubertat/swkit/drivers/shelly/components"
-	"github.com/hubertat/swkit/mqtt"
 )
 
 const shellyDriverName = "shelly"
@@ -24,7 +23,11 @@ type ShellyIO struct {
 	Outputs []ShellyOutput
 	Inputs  []ShellyInput
 
-	Devices map[string]*shelly.ShellyDevice
+	MqttBroker string
+	DeviceIds  []string
+
+	devices []shelly.ShellyDevice
+	mqtt    *shelly.ShellyMqtt
 
 	isReady        bool
 	healthTicker   *time.Ticker
@@ -71,15 +74,6 @@ func (she *ShellyIO) Setup(ctx context.Context, inputs []uint16, outputs []uint1
 	// go she.startHealthCheck(ctx)
 
 	she.isReady = true
-
-	return
-}
-
-func (she *ShellyIO) SetMqtt(publisher mqtt.Publisher) (handlers []mqtt.MqttHandler) {
-	for _, dev := range she.Devices {
-		dev.SetPublisher(publisher)
-		handlers = append(handlers, dev)
-	}
 
 	return
 }
@@ -178,10 +172,6 @@ func (sout *ShellyOutput) GetState() (bool, error) {
 	}
 
 	return false, errors.Join(errors.New("shelly output is not healthy"), err)
-}
-
-func (sout *ShellyOutput) MqttSubscribeTopic() string {
-	return sout.Id + "/events/rpc"
 }
 
 func (sout *ShellyOutput) Set(state bool) error {

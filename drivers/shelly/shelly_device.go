@@ -121,16 +121,17 @@ func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
 }
 
 func (sd *ShellyDevice) FillStatus(status GetStatus) error {
-	sd.Switches = make([]components.Switch, len(status.Switches))
-	for _, sw := range status.GetSwitches() {
+	switches := status.GetSwitches()
+	sd.Switches = make([]components.Switch, len(switches))
+	for _, sw := range switches {
 		sd.Switches[sw.ID] = components.Switch{
 			Status: sw,
 		}
 	}
 
 	inputs := status.GetInputs()
-	sd.Inputs = make([]components.Input, len(status.GetInputs()))
-	for _, in := range status.GetInputs() {
+	sd.Inputs = make([]components.Input, len(inputs))
+	for _, in := range inputs {
 		sd.Inputs[in.ID] = components.Input{
 			Status: in,
 		}

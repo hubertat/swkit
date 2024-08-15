@@ -40,6 +40,7 @@ func (smh *ShellyMqtt) MqttHandle(pub paho.PublishReceived) (bool, error) {
 
 	switch {
 	case strings.HasSuffix(pub.Packet.Topic, onlineStatusTopicSuffix):
+		log.Debug("handling shelly mqtt", "type", "online status")
 		device := smh.findDeviceByTopic(pub.Packet.Topic)
 		if device == nil {
 			log.Error("failed to find device by topic", "topic", pub.Packet.Topic)
@@ -67,7 +68,7 @@ func (smh *ShellyMqtt) MqttHandle(pub paho.PublishReceived) (bool, error) {
 		return true, nil
 
 	case strings.EqualFold(pub.Packet.Topic, smh.responseTopic()):
-
+		log.Debug("handling shelly mqtt", "type", "response")
 		rpc, err := UnmarshalRpcMessage(pub.Packet.Payload)
 		if err != nil {
 			log.Error("failed to unmarshal rpc message", "error", err, "message", string(pub.Packet.Payload))
@@ -80,17 +81,25 @@ func (smh *ShellyMqtt) MqttHandle(pub paho.PublishReceived) (bool, error) {
 			return false, nil
 		}
 
-		status := &GetStatus{}
-		err = rpc.UnmarshalResult(status)
+		status := GetStatus{}
+		err = rpc.UnmarshalResult(&status)
 		if err != nil {
 			log.Error("failed to unmarshal rpc result", "error", err)
 			return false, err
 		}
 
-		log.Debug("got status response", "device", device, "status", status)
+		err = device.FillStatus(status)
+		if err != nil {
+			log.Error("failed to fill status", "error", err)
+			return false, err
+		}
+
+		log.Debug("processed response", "device", device)
+		return true, nil
 
 	// process response
 	case strings.HasSuffix(pub.Packet.Topic, notificationTopicSuffix):
+		log.Debug("handling shelly mqtt", "type", "notification")
 		device := smh.findDeviceByTopic(pub.Packet.Topic)
 		if device == nil {
 			log.Error("failed to find device by topic", "topic", pub.Packet.Topic)
@@ -126,6 +135,7 @@ func (smh *ShellyMqtt) MqttHandle(pub paho.PublishReceived) (bool, error) {
 		log.Debug("processed notification", "device", device)
 
 	case strings.HasSuffix(pub.Packet.Topic, publishRequestTopicSuffix):
+		log.Debug("handling shelly mqtt", "type", "publish request")
 		device := smh.findDeviceByTopic(pub.Packet.Topic)
 		if device == nil {
 			log.Error("failed to find device by topic", "topic", pub.Packet.Topic)

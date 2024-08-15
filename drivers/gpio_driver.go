@@ -12,12 +12,11 @@ import (
 const gpioDriverName = "gpio"
 
 type GpIO struct {
-	inputs  []GpInput
-	outputs []GpOutput
-
 	InvertInputs  bool
 	InvertOutputs bool
 
+	inputs  []GpInput
+	outputs []GpOutput
 	isReady bool
 }
 
