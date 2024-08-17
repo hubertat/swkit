@@ -33,17 +33,15 @@ type ShellyDevice struct {
 	done chan bool
 }
 
-func (sd *ShellyDevice) HealthCheck() (healthy bool, err error) {
+func (sd *ShellyDevice) HealthCheck() error {
 	if sd.setError != nil {
-		err = sd.setError
-		return
+		return errors.Join(sd.setError, errors.New("set error present"))
 	}
 	if time.Since(sd.lastRefreshed) > maxTimeSinceRefresh {
-		err = errors.New("device is not healthy, last refresh was too long ago")
-		return
+		return errors.New("device is not healthy, last refresh was too long ago")
 	}
-	healthy = true
-	return
+
+	return nil
 }
 
 func (sd *ShellyDevice) IsReady() bool {
@@ -120,6 +118,23 @@ func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
 	return nil
 }
 
+func (sd *ShellyDevice) GetInputState(id int) (bool, error) {
+	if len(sd.Inputs) <= id {
+		return false, errors.New("input id out of range")
+	}
+	var state bool
+	state = *sd.Inputs[id].Status.State
+	return state, sd.HealthCheck()
+}
+
+func (sd *ShellyDevice) GetOutputState(id int) (bool, error) {
+	if len(sd.Switches) <= id {
+		return false, errors.New("switch id out of range")
+	}
+	state := sd.Switches[id].Status.Output
+	return state, sd.HealthCheck()
+}
+
 func (sd *ShellyDevice) FillStatus(status GetStatus) error {
 	switches := status.GetSwitches()
 	sd.Switches = make([]components.Switch, len(switches))
@@ -137,12 +152,43 @@ func (sd *ShellyDevice) FillStatus(status GetStatus) error {
 		}
 	}
 
-	sd.Wifi = &components.Wifi{
-		Status: *status.GetWifi(),
+	if wifiStatus := status.GetWifi(); wifiStatus != nil {
+		sd.Wifi = &components.Wifi{
+			Status: *wifiStatus,
+		}
 	}
 
-	sd.Ethernet = &components.Ethernet{
-		Status: *status.GetEthernet(),
+	if ethernetStatus := status.GetEthernet(); ethernetStatus != nil {
+		sd.Ethernet = &components.Ethernet{
+			Status: *ethernetStatus,
+		}
+	}
+
+	sd.lastRefreshed = time.Now()
+	return nil
+}
+
+func (sd *ShellyDevice) UpdateFromStatus(status GetStatus) error {
+	for _, sw := range status.GetSwitches() {
+		if sw.ID >= len(sd.Switches) {
+			return errors.New("update from status failed, switch id out of range")
+		}
+		sd.Switches[sw.ID].Status = sw
+	}
+
+	for _, in := range status.GetInputs() {
+		if in.ID >= len(sd.Inputs) {
+			return errors.New("update from status failed, input id out of range")
+		}
+		sd.Inputs[in.ID].Status = in
+	}
+
+	if wifiStatus := status.GetWifi(); wifiStatus != nil {
+		sd.Wifi.Status = *wifiStatus
+	}
+
+	if ethernetStatus := status.GetEthernet(); ethernetStatus != nil {
+		sd.Ethernet.Status = *ethernetStatus
 	}
 
 	sd.lastRefreshed = time.Now()

@@ -16,7 +16,7 @@ type Outlet struct {
 	Name           string
 	State          bool
 	DriverName     string
-	OutPin         uint16
+	IoName         string
 	DisableHomekit bool
 	IsFaulty       bool
 
@@ -53,7 +53,7 @@ func (ou *Outlet) Init(driver drivers.IoDriver) error {
 	var err error
 
 	ou.driver = driver
-	ou.output, err = driver.GetOutput(ou.OutPin)
+	ou.output, err = driver.GetOutput(ou.IoName)
 	if err != nil {
 		return errors.Wrap(err, "Init failed")
 	}
@@ -63,7 +63,7 @@ func (ou *Outlet) Init(driver drivers.IoDriver) error {
 	}
 	info := accessory.Info{
 		Name:         ou.Name,
-		SerialNumber: fmt.Sprintf("outlet:%s:%02d", ou.DriverName, ou.OutPin),
+		SerialNumber: fmt.Sprintf("outlet:%s:%s", ou.DriverName, ou.IoName),
 	}
 	ou.hk = accessory.NewOutlet(info)
 

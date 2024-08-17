@@ -25,6 +25,7 @@ type GrentonOutput struct {
 
 	state       bool
 	refreshedAt time.Time
+	cluId       uint32
 	id          uint16
 }
 
@@ -77,9 +78,35 @@ func (gro *GrentonOutput) Set(state bool) error {
 	return nil
 }
 
+func (gro *GrentonOutput) parseId(id string) error {
+	idSlice := strings.Split(id, ":")
+	if len(idSlice) != 2 {
+		return errors.Errorf("invalid id format, expected: %d:%d")
+	}
+
+	cluId, err := strconv.ParseUint(idSlice[0], 10, 32)
+	if err != nil {
+		return errors.Wrapf(err, "failed to parse clu id: %s", idSlice[0])
+	}
+	if cluId > 0xFFFFFFFF {
+		return errors.Errorf("clu id is out of range")
+	}
+	gro.cluId = uint32(cluId)
+
+	outputId, err := strconv.ParseUint(idSlice[1], 10, 16)
+	if err != nil {
+		return errors.Wrapf(err, "failed to parse output id: %s", idSlice[1])
+	}
+	if outputId > 0xFFFF {
+		return errors.Errorf("output id is out of range")
+	}
+	gro.id = uint16(outputId)
+
+	return nil
+}
+
 type GrentonIO struct {
 	GateAddress string
-	CluId       uint32
 
 	ObjectFreshnessDuration string
 
@@ -89,10 +116,6 @@ type GrentonIO struct {
 	outputs         []*GrentonOutput
 	gateLock        *sync.Mutex
 	objectFreshness time.Duration
-}
-
-func (gio *GrentonIO) getCluString() string {
-	return fmt.Sprintf("CLU_%08x", gio.CluId)
 }
 
 func (gio *GrentonIO) getQueryBody() (b []byte) {
@@ -105,14 +128,18 @@ func (gio *GrentonIO) getQueryBody() (b []byte) {
 	grentonSet := []GrentonObject{}
 
 	for _, out := range gio.outputs {
-		grentonSet = append(grentonSet, GrentonObject{"Light", gio.getCluString(), fmt.Sprintf("DOU%04d", out.id)})
+		grentonSet = append(grentonSet, GrentonObject{
+			Kind: "Light",
+			Clu:  fmt.Sprintf("CLU_%08x", out.cluId),
+			Id:   fmt.Sprintf("DOU%04d", out.id),
+		})
 	}
 
 	b, _ = json.Marshal(grentonSet)
 	return
 }
 
-func (gio *GrentonIO) getSetBody(state bool, id uint16) (b []byte) {
+func (gio *GrentonIO) getSetBody(output *GrentonOutput, state bool) (b []byte) {
 	type GrentonObject struct {
 		Kind  string
 		Clu   string
@@ -123,7 +150,13 @@ func (gio *GrentonIO) getSetBody(state bool, id uint16) (b []byte) {
 		}
 	}
 
-	objSet := GrentonObject{"Light", gio.getCluString(), fmt.Sprintf("DOU%04d", id), "SET", struct{ State bool }{state}}
+	objSet := GrentonObject{
+		Kind:  "Light",
+		Clu:   fmt.Sprintf("CLU_%08x", output.cluId),
+		Id:    fmt.Sprintf("DOU%04d", output.id),
+		Cmd:   "SET",
+		Light: struct{ State bool }{state},
+	}
 
 	b, _ = json.Marshal(objSet)
 	return
@@ -209,7 +242,7 @@ func (gio *GrentonIO) setState(state bool, output *GrentonOutput) (err error) {
 		Timeout: grentonNetClientTimeout,
 	}
 
-	bodyReader := strings.NewReader(string(gio.getSetBody(state, output.id)))
+	bodyReader := strings.NewReader(string(gio.getSetBody(output, state)))
 	req, err := http.NewRequest("POST", gio.setUrl.String(), bodyReader)
 	if err != nil {
 		err = errors.Wrap(err, "preparing request failed")
@@ -227,7 +260,7 @@ func (gio *GrentonIO) setState(state bool, output *GrentonOutput) (err error) {
 	return
 }
 
-func (gio *GrentonIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) (err error) {
+func (gio *GrentonIO) Setup(ctx context.Context, inputs []string, outputs []string) (err error) {
 	gio.ready = false
 	gio.gateLock = &sync.Mutex{}
 
@@ -268,8 +301,12 @@ func (gio *GrentonIO) Setup(ctx context.Context, inputs []uint16, outputs []uint
 
 	gio.outputs = []*GrentonOutput{}
 
-	for _, outId := range outputs {
-		gio.outputs = append(gio.outputs, &GrentonOutput{id: outId, Grenton: gio})
+	for _, output := range outputs {
+		out := GrentonOutput{}
+		if out.parseId(output) == nil {
+			gio.outputs = append(gio.outputs, &out)
+		}
+
 	}
 
 	err = gio.updateState()
@@ -295,22 +332,27 @@ func (gio *GrentonIO) IsReady() bool {
 	return gio.ready
 }
 
-func (gio *GrentonIO) GetInput(pin uint16) (DigitalInput, error) {
+func (gio *GrentonIO) GetInput(id string) (DigitalInput, error) {
 	return nil, errors.Errorf("grenton io not supports inputs")
 }
 
-func (gio *GrentonIO) GetOutput(pin uint16) (DigitalOutput, error) {
+func (gio *GrentonIO) GetOutput(id string) (DigitalOutput, error) {
+	outputQuery := GrentonOutput{}
+	err := outputQuery.parseId(id)
+	if err != nil {
+		return nil, err
+	}
 	for _, out := range gio.outputs {
-		if out.id == pin {
+		if out.id == outputQuery.id && out.cluId == outputQuery.cluId {
 			return out, nil
 		}
 	}
-	return nil, errors.Errorf("output id %d not found", pin)
+	return nil, errors.Errorf("output id=%s not found", id)
 }
 
-func (gio *GrentonIO) GetAllIo() (inputs []uint16, outputs []uint16) {
+func (gio *GrentonIO) GetAllIo() (inputs []string, outputs []string) {
 	for _, out := range gio.outputs {
-		outputs = append(outputs, out.id)
+		outputs = append(outputs, fmt.Sprintf("%d:%d", out.cluId, out.id))
 	}
 
 	return

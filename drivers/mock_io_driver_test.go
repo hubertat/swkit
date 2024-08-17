@@ -1,6 +1,9 @@
 package drivers
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func assertBools(t testing.TB, got, want bool) {
 	t.Helper()
@@ -86,10 +89,39 @@ func TestMockIoSetup(t *testing.T) {
 
 func TestMockIoGetAllIo(t *testing.T) {
 	md := MockIoDriver{}
-	md.Setup([]uint16{1, 3, 5}, []uint16{2, 4})
-	inputs, outputs := md.GetAllIo()
-	assertUint16Slices(t, inputs, []uint16{1, 3, 5})
-	assertUint16Slices(t, outputs, []uint16{2, 4})
+	ctx := context.Background()
+
+	outputs := []string{"2", "4"}
+	inputs := []string{"1", "3", "5"}
+	md.Setup(ctx, inputs, outputs)
+
+	ins, outs := md.GetAllIo()
+	for _, val := range ins {
+		found := false
+		for _, input := range inputs {
+			if val == input {
+				found = true
+			}
+		}
+
+		if !found {
+			t.Errorf("insput: %s not found in returned ios", val)
+		}
+	}
+
+	for _, val := range outs {
+		found := false
+		for _, output := range outputs {
+			if val == output {
+				found = true
+			}
+		}
+
+		if !found {
+			t.Errorf("output: %s not found in returned ios", val)
+		}
+	}
+
 }
 
 func TestMockIoGetUniqueId(t *testing.T) {
@@ -105,8 +137,10 @@ func TestMockIoGetUniqueId(t *testing.T) {
 
 func TestMockGetOutput(t *testing.T) {
 	md := MockIoDriver{}
-	md.Setup([]uint16{}, []uint16{3})
-	output, err := md.GetOutput(3)
+	ctx := context.Background()
+	md.Setup(ctx, []string{"1", "3"}, []string{"2", "Xy"})
+
+	output, err := md.GetOutput("2")
 	if err != nil {
 		t.Errorf("GetOutput returned err: %v", err)
 	}
@@ -116,7 +150,7 @@ func TestMockGetOutput(t *testing.T) {
 	got, _ := output.GetState()
 	assertBools(t, got, want)
 
-	anotherOut, _ := md.GetOutput(3)
+	anotherOut, _ := md.GetOutput("Xy")
 	got, _ = anotherOut.GetState()
 	assertBools(t, got, want)
 

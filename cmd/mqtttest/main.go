@@ -16,10 +16,6 @@
 package main
 
 import (
-	"context"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -47,10 +43,6 @@ func main() {
 	// broker := "mqtt://10.100.10.55:1883"
 	broker := "mqtt://10.100.80.44:1883"
 
-	// App will run until cancelled by user (e.g. ctrl-c)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	log.SetLevel(log.DebugLevel)
 
 	mc, err := mqtt.NewMqttClient(broker, clientID)
@@ -73,7 +65,7 @@ func main() {
 		shelM,
 	}
 
-	err = mc.Connect(ctx, mqttHandlers)
+	err = mc.Connect(mqttHandlers)
 	if err != nil {
 		log.Error("failed to connect to mqtt broker", "error", err)
 		return

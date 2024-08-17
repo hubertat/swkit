@@ -10,4 +10,5 @@ type MqttHandler interface {
 type Publisher interface {
 	Publish(topic string, payload []byte) error
 	ClientId() string
+	ConnectionReady() bool
 }
