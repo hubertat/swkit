@@ -16,7 +16,7 @@ type Switch struct {
 	Name           string
 	State          bool
 	DriverName     string
-	InPin          uint16
+	IoName         string
 	DisableHomekit bool
 	IsFaulty       bool
 
@@ -54,7 +54,7 @@ func (swb *Switch) Init(driver drivers.IoDriver) error {
 	var err error
 
 	swb.driver = driver
-	swb.input, err = driver.GetInput(swb.InPin)
+	swb.input, err = driver.GetInput(swb.IoName)
 	if err != nil {
 		return errors.Wrap(err, "Init failed")
 	}
@@ -65,7 +65,7 @@ func (swb *Switch) Init(driver drivers.IoDriver) error {
 
 	info := accessory.Info{
 		Name:         swb.Name,
-		SerialNumber: fmt.Sprintf("switch:%s:%02d", swb.DriverName, swb.InPin),
+		SerialNumber: fmt.Sprintf("switch:%s:%s", swb.DriverName, swb.IoName),
 	}
 	swb.hk = accessory.NewSwitch(info)
 

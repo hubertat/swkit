@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"errors"
 
@@ -12,7 +13,7 @@ import (
 
 type MockOutput struct {
 	state            bool
-	pin              uint16
+	id               string
 	writeTo          io.Writer
 	writeStateChange bool
 }
@@ -23,7 +24,7 @@ func (mo *MockOutput) GetState() (bool, error) {
 
 func (mo *MockOutput) Set(state bool) error {
 	if mo.writeStateChange && state != mo.state {
-		fmt.Fprintf(mo.writeTo, "[pin %d] state changed to %v\n", mo.pin, mo.state)
+		fmt.Fprintf(mo.writeTo, "[pin %s] state changed to %v\n", mo.id, mo.state)
 	}
 	mo.state = state
 	return nil
@@ -31,7 +32,7 @@ func (mo *MockOutput) Set(state bool) error {
 
 type MockInput struct {
 	State bool
-	pin   uint16
+	id    string
 }
 
 func (mi *MockInput) GetState() (bool, error) {
@@ -48,12 +49,12 @@ type MockIoDriver struct {
 	ready   bool
 }
 
-func (md *MockIoDriver) Setup(ctx context.Context, inputs []uint16, outputs []uint16) error {
-	for _, inPin := range inputs {
-		md.inputs = append(md.inputs, &MockInput{pin: inPin})
+func (md *MockIoDriver) Setup(ctx context.Context, inputs []string, outputs []string) (err error) {
+	for _, input := range inputs {
+		md.inputs = append(md.inputs, &MockInput{id: input})
 	}
-	for _, outPin := range outputs {
-		md.outputs = append(md.outputs, &MockOutput{pin: outPin})
+	for _, output := range outputs {
+		md.outputs = append(md.outputs, &MockOutput{id: output})
 	}
 	md.ready = true
 	return nil
@@ -80,30 +81,30 @@ func (md *MockIoDriver) IsReady() bool {
 	return md.ready
 }
 
-func (md *MockIoDriver) GetInput(pin uint16) (DigitalInput, error) {
+func (md *MockIoDriver) GetInput(id string) (DigitalInput, error) {
 	for _, input := range md.inputs {
-		if pin == input.pin {
+		if strings.EqualFold(id, input.id) {
 			return input, nil
 		}
 	}
-	return nil, fmt.Errorf("mock input %d not found", pin)
+	return nil, fmt.Errorf("mock input %d not found", id)
 }
 
-func (md *MockIoDriver) GetOutput(pin uint16) (DigitalOutput, error) {
+func (md *MockIoDriver) GetOutput(id string) (DigitalOutput, error) {
 	for _, output := range md.outputs {
-		if pin == output.pin {
+		if strings.EqualFold(id, output.id) {
 			return output, nil
 		}
 	}
-	return nil, fmt.Errorf("mock output %d not found", pin)
+	return nil, fmt.Errorf("mock output %d not found", id)
 }
 
-func (md *MockIoDriver) GetAllIo() (inputs []uint16, outputs []uint16) {
+func (md *MockIoDriver) GetAllIo() (inputs []string, outputs []string) {
 	for _, input := range md.inputs {
-		inputs = append(inputs, input.pin)
+		inputs = append(inputs, input.id)
 	}
 	for _, output := range md.outputs {
-		outputs = append(outputs, output.pin)
+		outputs = append(outputs, output.id)
 	}
 	return
 }

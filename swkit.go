@@ -40,8 +40,6 @@ type SwKit struct {
 	HkAddress   string
 	HkDebug     bool
 
-	MqttBroker string
-
 	Mcp23017   *drivers.McpIO
 	Gpio       *drivers.GpIO
 	Grenton    *drivers.GrentonIO
@@ -67,7 +65,7 @@ type HkThing interface {
 
 type ControllingDevice struct {
 	Enable     bool
-	Pin        uint16
+	IoName     string
 	DriverName string
 }
 
@@ -78,35 +76,35 @@ type Controllable interface {
 	Toggle()
 }
 
-func (sw *SwKit) getInPins(driverName string) (pins []uint16) {
+func (sw *SwKit) getInPins(driverName string) (pins []string) {
 	for _, io := range sw.Buttons {
 		if strings.EqualFold(io.DriverName, driverName) {
-			pins = append(pins, io.InPin)
+			pins = append(pins, io.IoName)
 		}
 	}
 	for _, io := range sw.Switches {
 		if strings.EqualFold(io.DriverName, driverName) {
-			pins = append(pins, io.InPin)
+			pins = append(pins, io.IoName)
 		}
 	}
 	for _, io := range sw.MotionSensors {
 		if strings.EqualFold(io.DriverName, driverName) {
-			pins = append(pins, io.InPin)
+			pins = append(pins, io.IoName)
 		}
 	}
 
 	return
 }
 
-func (sw *SwKit) getOutPins(driverName string) (pins []uint16) {
+func (sw *SwKit) getOutPins(driverName string) (pins []string) {
 	for _, io := range sw.Lights {
 		if strings.EqualFold(io.DriverName, driverName) {
-			pins = append(pins, io.OutPin)
+			pins = append(pins, io.IoName)
 		}
 	}
 	for _, io := range sw.Outlets {
 		if strings.EqualFold(io.DriverName, driverName) {
-			pins = append(pins, io.OutPin)
+			pins = append(pins, io.IoName)
 		}
 	}
 
@@ -208,9 +206,9 @@ func (sw *SwKit) InitIos() error {
 	return nil
 }
 
-func (sw *SwKit) findSwitch(pinNo uint16, driverName string) *Switch {
+func (sw *SwKit) findSwitch(ioName string, driverName string) *Switch {
 	for _, swb := range sw.Switches {
-		if swb.InPin == pinNo && swb.DriverName == driverName {
+		if strings.EqualFold(swb.IoName, ioName) && strings.EqualFold(swb.DriverName, driverName) {
 			return swb
 		}
 	}
@@ -218,9 +216,9 @@ func (sw *SwKit) findSwitch(pinNo uint16, driverName string) *Switch {
 	return nil
 }
 
-func (sw *SwKit) findButton(pinNo uint16, driverName string) *Button {
+func (sw *SwKit) findButton(pinNo string, driverName string) *Button {
 	for _, but := range sw.Buttons {
-		if but.InPin == pinNo && but.DriverName == driverName {
+		if strings.EqualFold(but.IoName, pinNo) && strings.EqualFold(but.DriverName, driverName) {
 			return but
 		}
 	}
@@ -250,10 +248,10 @@ func (sw *SwKit) MatchControllers() error {
 				return errors.Errorf("matching controlled failed, driver (%s) not present or not ready", driverName)
 			}
 
-			swb := sw.findSwitch(controller.Pin, driverName)
-			but := sw.findButton(controller.Pin, driverName)
+			swb := sw.findSwitch(controller.IoName, driverName)
+			but := sw.findButton(controller.IoName, driverName)
 			if swb == nil && but == nil {
-				return errors.Errorf("matching controlled failed, no button or switch found with pin = %d and driver %s", controller.Pin, driverName)
+				return errors.Errorf("matching controlled failed, no button or switch found with io = %s and driver %s", controller.IoName, driverName)
 			}
 
 			if swb != nil {
@@ -385,31 +383,4 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 	}()
 
 	return hkServer.ListenAndServe(ctx)
-}
-
-func (sw *SwKit) InitMqtt() (err error) {
-	if len(sw.MqttBroker) == 0 {
-		err = errors.New("mqtt broker not set")
-		return
-	}
-
-	mc, err := mqtt.NewMqttClient(sw.MqttBroker, sw.Name)
-	if err != nil {
-		err = errors.Wrap(err, "failed to create mqtt client")
-		return
-	}
-
-	sw.mqttClient = mc
-
-	mqttHandlers := []mqtt.MqttHandler{}
-	for _, driver := range sw.ioDrivers {
-		mqttHandlers = append(mqttHandlers, driver.SetMqtt(mc)...)
-	}
-
-	err = mc.Connect(mqttHandlers)
-	if err != nil {
-		err = errors.Wrap(err, "failed to connect to mqtt broker")
-	}
-
-	return
 }

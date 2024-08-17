@@ -5,13 +5,13 @@ import (
 )
 
 type IoDriver interface {
-	Setup(ctx context.Context, inputs []uint16, outputs []uint16) error
+	Setup(ctx context.Context, inputs []string, outputs []string) error
 	Close() error
 	String() string
 	IsReady() bool
-	GetInput(pin uint16) (DigitalInput, error)
-	GetOutput(pin uint16) (DigitalOutput, error)
-	GetAllIo() (inputs []uint16, outputs []uint16)
+	GetInput(id string) (DigitalInput, error)
+	GetOutput(id string) (DigitalOutput, error)
+	GetAllIo() (inputs []string, outputs []string)
 }
 
 func MapAllIoDrivers() map[string]IoDriver {

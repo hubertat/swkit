@@ -11,7 +11,8 @@ import (
 	"github.com/eclipse/paho.golang/paho"
 )
 
-const subscribeTimeout = 15 * time.Second
+const subscribeTimeout = 10 * time.Second
+const connectTimeout = 30 * time.Second
 const publishTimeoutSeconds = 4
 const mqqtKeepAlive = 20
 const mqqtSessionExpiry = 60
@@ -20,8 +21,9 @@ type MqttClient struct {
 	clientId  string
 	brokerUrl *url.URL
 
-	conn   *autopaho.ConnectionManager
-	logger *log.Logger
+	conn      *autopaho.ConnectionManager
+	connReady bool
+	logger    *log.Logger
 
 	handlers []MqttHandler
 }
@@ -30,7 +32,7 @@ func NewMqttClient(broker string, clientId string) (mc *MqttClient, err error) {
 	mc = &MqttClient{
 		clientId: clientId,
 		logger: log.NewWithOptions(os.Stderr, log.Options{
-			Prefix: "MqttClient 🐰: ",
+			Prefix: "MqttClient 🐰",
 			Level:  log.GetLevel(),
 		}),
 	}
@@ -51,7 +53,7 @@ func (mc *MqttClient) Connect(ctx context.Context, handlers []MqttHandler) (err 
 		mc.logger.Debug("setting up mqtt topics config", "topics", h.MqttSubscribeTopics())
 	}
 
-	mc.logger.Debug("NewConnection")
+	mc.logger.Debug("mqtt autopaho NewConnection", "timeout", connectTimeout)
 	cm, err = autopaho.NewConnection(ctx, mc.clientConfig())
 	if err != nil {
 		return
@@ -90,6 +92,10 @@ func (mc *MqttClient) Publish(topic string, payload []byte) (err error) {
 
 func (mc *MqttClient) ClientId() string {
 	return mc.clientId
+}
+
+func (mc *MqttClient) ConnectionReady() bool {
+	return mc.connReady && mc.conn != nil
 }
 
 func (mc *MqttClient) clientConfig() autopaho.ClientConfig {
@@ -142,14 +148,18 @@ func (mc *MqttClient) onConnUp(cm *autopaho.ConnectionManager, connAck *paho.Con
 	if err != nil {
 		mc.logger.Error("Failed to subscribe to topics", "err", err)
 	}
+
+	mc.connReady = true
 }
 
 func (mc *MqttClient) onConnError(err error) {
 	mc.logger.Error("Received Mqtt connection error", "err", err)
+	mc.connReady = false
 }
 
 func (mc *MqttClient) onSrvDisconnect(d *paho.Disconnect) {
 	mc.logger.Info("Disconnected from MQTT broker")
+	mc.connReady = false
 }
 
 func (mc *MqttClient) onPublishRecv() []func(paho.PublishReceived) (bool, error) {

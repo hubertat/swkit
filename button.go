@@ -15,7 +15,7 @@ type Button struct {
 	Name       string
 	State      bool
 	DriverName string
-	InPin      uint16
+	IoName     string
 
 	DisableHomekit bool
 
@@ -53,7 +53,7 @@ func (bu *Button) Init(driver drivers.IoDriver) error {
 	var err error
 
 	bu.driver = driver
-	bu.input, err = driver.GetInput(bu.InPin)
+	bu.input, err = driver.GetInput(bu.IoName)
 	if err != nil {
 		return errors.Join(errors.New("Init failed on getting input"), err)
 	}

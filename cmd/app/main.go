@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"flag"
 	"io"
-	"log"
 	"os"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/hubertat/servicemaker"
-
 	"github.com/hubertat/swkit"
 )
 
@@ -25,6 +24,7 @@ var (
 	flagInstall         = flag.Bool("install", false, "Install service in os")
 	syncInterval        = flag.String("sync", defaultSyncInterval, "sync interval (time.Duration)")
 	sensorsSyncInterval = flag.String("sensors-sync", defaultSensorsSyncInterval, "sensors sync interval (time.Duration)")
+	debug               = flag.Bool("debug", false, "debug mode")
 
 	swkService = servicemaker.ServiceMaker{
 		User:               "swkit",
@@ -37,15 +37,20 @@ var (
 )
 
 func main() {
-	log.Printf("swkit %s started\n", Version)
+	log.Info("swkit started", "version", Version)
 	flag.Parse()
+
+	if *debug {
+		log.SetLevel(log.DebugLevel)
+		log.Info("debug mode enabled")
+	}
 
 	if *flagInstall {
 		err := swkService.InstallService()
 		if err != nil {
 			panic(err)
 		} else {
-			log.Println("service installed!")
+			log.Info("service installed, will exit")
 			return
 		}
 	}
@@ -63,45 +68,53 @@ func main() {
 	if err == nil {
 		cBuff, err := io.ReadAll(configFile)
 		if err != nil {
-			log.Fatalf("failed reading config file: %v\n", err)
+			log.Fatal("failed reading config file", "error", err)
 		}
 
 		err = json.Unmarshal(cBuff, sk)
 		if err != nil {
-			log.Fatalf("failed unmarshalling json config: %v", err)
+			log.Fatal("failed unmarshalling json config", "error", err)
 		}
 	} else {
-		log.Fatalf("can't find/open config file (%s), will terminate. Reason: \n%v\n", *config, err)
+		log.Fatal("can't find/open config file, will terminate.", "file", *config, "error", err)
 	}
-	log.Println("will init swkit drivers...")
+	log.Info("will init swkit drivers...")
 	err = sk.InitDrivers(ctx)
 	defer sk.Close()
 	if err != nil {
 		panic(err)
 	}
-	log.Println("will init swkit IOs...")
+	log.Info("will init swkit IOs...")
 	err = sk.InitIos()
 	if err != nil {
 		panic(err)
 	}
 
-	log.Printf("drivers OK!\nwill try to MatchControllers:\n")
+	log.Info("drivers OK!")
+	log.Info("will try to MatchControllers...")
 	err = sk.MatchControllers()
 	if err != nil {
-		log.Printf("Matching Controllers returned error: %v\n we will proceed...", err)
+		log.Error("Matching Controllers returned error", "error", err)
 	} else {
-		log.Println("MatchControllers OK!")
+		log.Info("controllers matched OK")
 	}
 
 	sk.PrintIoStatus(os.Stdout)
 
 	if len(sk.HkPin) == 8 {
-		log.Println("Starting with HomeKit server")
+		log.Info("HomeKit configured, starting", "pin", sk.HkPin)
 
+		log.Info("starting sync ticker", "interval", syncDuration)
 		go sk.StartTicker(syncDuration)
-		log.Fatal(sk.StartHomeKit(context.Background(), Version))
+
+		if sk.StartHomeKit(context.Background(), Version) == nil {
+			log.Info("homekit terminated ok")
+		} else {
+			log.Error("homekit terminated with error")
+		}
+
 	} else {
-		log.Println("HomeKit not configured, disabled")
+		log.Info("starting sync ticker", "interval", syncDuration)
 		sk.StartTicker(syncDuration)
 	}
 

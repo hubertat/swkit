@@ -18,7 +18,7 @@ type Light struct {
 	Name           string
 	State          bool
 	DriverName     string
-	OutPin         uint16
+	IoName         string
 	DisableHomekit bool
 	IsFaulty       bool
 
@@ -55,7 +55,7 @@ func (li *Light) Init(driver drivers.IoDriver) error {
 	var err error
 
 	li.driver = driver
-	li.output, err = driver.GetOutput(li.OutPin)
+	li.output, err = driver.GetOutput(li.IoName)
 	if err != nil {
 		return errors.Wrap(err, "Init failed")
 	}
@@ -66,7 +66,7 @@ func (li *Light) Init(driver drivers.IoDriver) error {
 
 	info := accessory.Info{
 		Name:         li.Name,
-		SerialNumber: fmt.Sprintf("light:%s:%02d", li.DriverName, li.OutPin),
+		SerialNumber: fmt.Sprintf("light:%s:%s", li.DriverName, li.IoName),
 	}
 	li.hk = accessory.NewLightbulb(info)
 

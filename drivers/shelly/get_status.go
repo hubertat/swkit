@@ -82,7 +82,7 @@ func (gs *GetStatus) GetProfiles() []string {
 }
 
 func (gs *GetStatus) FillDevice(device *ShellyDevice) error {
-	for _, sw := range device.Switches {
+	for ix, sw := range device.Switches {
 		swId := sw.Status.ID
 		if swId < 0 || swId > 3 {
 			return errors.New("switch id out of range [0, 3]")
@@ -93,6 +93,7 @@ func (gs *GetStatus) FillDevice(device *ShellyDevice) error {
 			if err != nil {
 				return errors.Join(errors.New("failed to unmarshal switch"), err)
 			}
+			device.Switches[ix] = sw
 		}
 	}
 

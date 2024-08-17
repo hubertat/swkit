@@ -16,7 +16,7 @@ type MotionSensor struct {
 	Name           string
 	State          bool
 	DriverName     string
-	InPin          uint16
+	IoName         string
 	DisableHomekit bool
 
 	input       drivers.DigitalInput
@@ -48,7 +48,7 @@ func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
 	var err error
 
 	ms.driver = driver
-	ms.input, err = driver.GetInput(ms.InPin)
+	ms.input, err = driver.GetInput(ms.IoName)
 	if err != nil {
 		return errors.Wrap(err, "Init failed on getting input")
 	}
@@ -64,7 +64,7 @@ func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
 
 	info := accessory.Info{
 		Name:         ms.Name,
-		SerialNumber: fmt.Sprintf("motion_sensor:%s:%02d", ms.DriverName, ms.InPin),
+		SerialNumber: fmt.Sprintf("motion_sensor:%s:%s", ms.DriverName, ms.IoName),
 	}
 
 	ms.hkAccessory = accessory.New(info, accessory.TypeSensor)
