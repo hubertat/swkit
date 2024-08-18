@@ -2,6 +2,7 @@ package shelly
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -17,12 +18,16 @@ const onlineStatusTopicSuffix = "/online"
 type ShellyMqtt struct {
 	devices   []*ShellyDevice
 	publisher mqtt.Publisher
+
+	queue       requestQueue
+	sendingLock sync.Mutex
 }
 
 func NewShellyMqtt(devices []*ShellyDevice, publisher mqtt.Publisher) *ShellyMqtt {
 	smh := ShellyMqtt{
 		devices:   devices,
 		publisher: publisher,
+		queue:     requestQueue{},
 	}
 
 	for _, dev := range devices {
@@ -42,131 +47,15 @@ func (smh *ShellyMqtt) MqttHandle(pub paho.PublishReceived) (bool, error) {
 	switch {
 	case strings.HasSuffix(pub.Packet.Topic, onlineStatusTopicSuffix):
 		log.Debug("handling shelly mqtt", "type", "online status")
-		device := smh.findDeviceByTopic(pub.Packet.Topic)
-		if device == nil {
-			log.Error("failed to find device by topic", "topic", pub.Packet.Topic)
-			return false, nil
-		}
-
-		isOnline, err := UnmarshalOnlineStatus(pub.Packet.Payload)
-		if err != nil {
-			log.Error("failed to unmarshal online status", "error", err)
-			return false, err
-		}
-
-		log.Debug("got online status notification", "device", device, "is online", isOnline)
-
-		if isOnline {
-			log.Debug("requesting full status update", "publisher", smh.publisher)
-			req := smh.newRpcRequest("Shelly.GetStatus", nil)
-			err := smh.publishDeviceMessage(device, req)
-			if err != nil {
-				retryAfter := time.Second * 25
-				log.Error("failed to publish GetStatus request", "error", err, "retry after", retryAfter)
-				log.Debug("got error while publishing GetStatus request", "connReady", smh.publisher.ConnectionReady())
-				time.Sleep(retryAfter)
-				err = smh.publishDeviceMessage(device, req)
-				if err != nil {
-					log.Error("failed to publish GetStatus request", "error", err)
-					return false, err
-				}
-			}
-		}
-
-		return true, nil
+		return smh.handleOnlineStatus(pub)
 
 	case strings.EqualFold(pub.Packet.Topic, smh.responseTopic()):
 		log.Debug("handling shelly mqtt", "type", "response")
-		rpc, err := UnmarshalRpcMessage(pub.Packet.Payload)
-		if err != nil {
-			log.Error("failed to unmarshal rpc message", "error", err, "message", string(pub.Packet.Payload))
-			return false, err
-		}
-
-		device := smh.deviceById(rpc.Src)
-		if device == nil {
-			log.Error("failed to find device by id", "id", rpc.Src)
-			return false, nil
-		}
-
-		status := GetStatus{}
-		err = rpc.UnmarshalResult(&status)
-		if err != nil {
-			log.Error("failed to unmarshal rpc result", "error", err)
-			return false, err
-		}
-
-		if device.IsReady() {
-			err = device.UpdateFromStatus(status)
-		} else {
-			err = device.FillStatus(status)
-		}
-		if err != nil {
-			log.Error("failed to fill status", "error", err)
-			return false, err
-		}
-
-		log.Debug("processed response", "device", device)
-		return true, nil
+		return smh.handleResponse(pub)
 
 	case strings.HasSuffix(pub.Packet.Topic, notificationTopicSuffix):
 		log.Debug("handling shelly mqtt", "type", "notification")
-		device := smh.findDeviceByTopic(pub.Packet.Topic)
-		if device == nil {
-			log.Error("failed to find device by topic", "topic", pub.Packet.Topic)
-			return false, nil
-		}
-
-		rpc, err := UnmarshalRpcMessage(pub.Packet.Payload)
-		if err != nil {
-			log.Error("failed to unmarshal rpc message", "error", err, "message", string(pub.Packet.Payload))
-			return false, err
-		}
-
-		if !strings.EqualFold(rpc.Src, device.Id) {
-			log.Error("rpc src mismatch", "src", rpc.Src, "expected src", device.Id)
-			return false, nil
-		}
-
-		log.Debug("handling rpc notification", "method", rpc.Method, "device", device.Id)
-
-		switch rpc.Method {
-		case "NotifyStatus":
-			status := GetStatus{}
-			err = rpc.UnmarshalParams(&status)
-			if err != nil {
-				log.Error("failed to unmarshal NotifyStatus", "error", err, "device", device.Id)
-				return false, err
-			}
-
-			err = device.UpdateFromStatus(status)
-			if err != nil {
-				log.Error("failed to update from status", "error", err, "method", rpc.Method, "device", device.Id)
-				return false, err
-			}
-
-		case "NotifyFullStatus":
-			status := GetStatus{}
-			err = rpc.UnmarshalParams(&status)
-			if err != nil {
-				log.Error("failed to unmarshal NotifyStatus", "error", err, "device", device.Id)
-				return false, err
-			}
-
-			err = device.FillStatus(status)
-			if err != nil {
-				log.Error("failed to fill status", "error", err, "method", rpc.Method, "device", device.Id)
-				return false, err
-			}
-
-		case "NotifyEvent":
-			log.Warn("not implemented notification", "method", rpc.Method)
-			return false, nil
-
-		default:
-			log.Warn("unknown notification", "method", rpc.Method)
-			return false, nil
-		}
+		return smh.handleNotification(pub)
 
 	case strings.HasSuffix(pub.Packet.Topic, publishRequestTopicSuffix):
 		log.Debug("handling (ignoring) shelly mqtt", "type", "publish request")
@@ -184,8 +73,6 @@ func (smh *ShellyMqtt) MqttHandle(pub paho.PublishReceived) (bool, error) {
 		log.Info("unexpected topic", "topic", pub.Packet.Topic)
 		return false, nil
 	}
-
-	return true, nil
 }
 
 func (smh *ShellyMqtt) MqttSubscribeTopics() []string {
@@ -196,6 +83,143 @@ func (smh *ShellyMqtt) MqttSubscribeTopics() []string {
 		topics = append(topics, dev.Id+publishRequestTopicSuffix)
 	}
 	return topics
+}
+
+func (smh *ShellyMqtt) handleNotification(pub paho.PublishReceived) (bool, error) {
+	device := smh.findDeviceByTopic(pub.Packet.Topic)
+	if device == nil {
+		log.Error("failed to find device by topic", "topic", pub.Packet.Topic)
+		return false, nil
+	}
+
+	rpc, err := UnmarshalRpcMessage(pub.Packet.Payload)
+	if err != nil {
+		log.Error("failed to unmarshal rpc message", "error", err, "message", string(pub.Packet.Payload))
+		return false, err
+	}
+
+	if !strings.EqualFold(rpc.Src, device.Id) {
+		log.Error("rpc src mismatch", "src", rpc.Src, "expected src", device.Id)
+		return false, nil
+	}
+
+	log.Debug("handling rpc notification", "method", rpc.Method, "device", device.Id)
+
+	switch rpc.Method {
+	case "NotifyStatus":
+		status := GetStatus{}
+		err = rpc.UnmarshalParams(&status)
+		if err != nil {
+			log.Error("failed to unmarshal NotifyStatus", "error", err, "device", device.Id)
+			return false, err
+		}
+
+		err = device.UpdateFromStatus(status)
+		if err != nil {
+			log.Error("failed to update from status", "error", err, "method", rpc.Method, "device", device.Id)
+			return false, err
+		}
+
+	case "NotifyFullStatus":
+		status := GetStatus{}
+		err = rpc.UnmarshalParams(&status)
+		if err != nil {
+			log.Error("failed to unmarshal NotifyStatus", "error", err, "device", device.Id)
+			return false, err
+		}
+
+		err = device.FillStatus(status)
+		if err != nil {
+			log.Error("failed to fill status", "error", err, "method", rpc.Method, "device", device.Id)
+			return false, err
+		}
+
+	case "NotifyEvent":
+		log.Warn("not implemented notification", "method", rpc.Method)
+		return false, nil
+
+	default:
+		log.Warn("unknown notification", "method", rpc.Method)
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func (smh *ShellyMqtt) handleResponse(pub paho.PublishReceived) (bool, error) {
+	rpc, err := unmarshalRpcResponse(pub.Packet.Payload)
+	if err != nil {
+		log.Error("failed to unmarshal rpc message", "error", err, "message", string(pub.Packet.Payload))
+		return false, err
+	}
+
+	device := smh.deviceById(rpc.Src)
+	if device == nil {
+		log.Error("failed to find device by id", "id", rpc.Src)
+		return false, nil
+	}
+
+	request := smh.queue.getRequest(rpc.Id)
+	if request == nil {
+		log.Error("failed to find request by id", "id", rpc.Id)
+		return false, nil
+	}
+
+	switch request.Method {
+	case "GetStatus":
+		status := GetStatus{}
+		err = rpc.UnmarshalResult(&status)
+		if err != nil {
+			log.Error("failed to unmarshal rpc result", "error", err)
+			return false, err
+		}
+
+		err = device.FillStatus(status)
+		if err != nil {
+			log.Error("failed to fill status", "error", err)
+			return false, err
+		}
+
+		return true, nil
+	default:
+		log.Error("received unsupported response", "method", request.Method, "device", device.Id)
+		return false, nil
+	}
+}
+
+func (smh *ShellyMqtt) handleOnlineStatus(pub paho.PublishReceived) (bool, error) {
+	device := smh.findDeviceByTopic(pub.Packet.Topic)
+	if device == nil {
+		log.Error("failed to find device by topic", "topic", pub.Packet.Topic)
+		return false, nil
+	}
+
+	isOnline, err := unmarshalOnlineStatus(pub.Packet.Payload)
+	if err != nil {
+		log.Error("failed to unmarshal online status", "error", err)
+		return false, err
+	}
+
+	log.Debug("got online status notification", "device", device, "is online", isOnline)
+
+	if isOnline {
+		log.Debug("requesting full status update", "publisher", smh.publisher)
+		req := smh.newRpcRequest("Shelly.GetStatus", nil)
+		err := smh.publishDeviceMessage(device, req)
+		if err != nil {
+			retryAfter := time.Second * 25
+			log.Error("failed to publish GetStatus request", "error", err, "retry after", retryAfter)
+			log.Debug("got error while publishing GetStatus request", "connReady", smh.publisher.ConnectionReady())
+			time.Sleep(retryAfter)
+			err = smh.publishDeviceMessage(device, req)
+			if err != nil {
+				log.Error("failed to publish GetStatus request", "error", err)
+				return false, err
+			}
+		}
+	}
+
+	return true, nil
 }
 
 func (smh *ShellyMqtt) deviceById(id string) *ShellyDevice {
@@ -248,26 +272,34 @@ func (smh *ShellyMqtt) findDeviceByTopic(topic string) *ShellyDevice {
 	return nil
 }
 
-func (smh *ShellyMqtt) newRpcRequest(method string, params map[string]interface{}) rpcRequest {
-	req := rpcRequest{
+func (smh *ShellyMqtt) newRpcRequest(method string, params map[string]interface{}) requestFrame {
+	smh.sendingLock.Lock()
+	defer smh.sendingLock.Unlock()
+
+	req := requestFrame{
 		Jsonrpc: "2.0",
 		Src:     smh.publisher.ClientId(),
+		Id:      smh.queue.getNextId(),
 		Method:  method,
 		Params:  params,
-	}
-	if params != nil {
-		req.Params = params
 	}
 
 	return req
 }
 
-func (smh *ShellyMqtt) publishDeviceMessage(dev *ShellyDevice, msg rpcRequest) error {
+func (smh *ShellyMqtt) publishDeviceMessage(dev *ShellyDevice, msg requestFrame) error {
+	smh.sendingLock.Lock()
+	defer smh.sendingLock.Unlock()
+
 	bytes, err := msg.bytes()
 	if err != nil {
 		return err
 	}
 
 	topic := dev.Id + publishRequestTopicSuffix
-	return smh.publisher.Publish(topic, bytes)
+	err = smh.publisher.Publish(topic, bytes)
+	if err == nil {
+		smh.queue = smh.queue.add(msg, dev.Id)
+	}
+	return err
 }
