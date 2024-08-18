@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hubertat/swkit/drivers/shelly/components"
+	"github.com/hubertat/swkit/mqtt"
 )
 
 const maxTimeSinceRefresh = 15 * time.Minute
@@ -28,9 +29,24 @@ type ShellyDevice struct {
 	setError      error
 	lastRefreshed time.Time
 
-	mqttHandler *ShellyMqtt
+	messenger mqtt.Messenger
 
 	done chan bool
+}
+
+func NewShellyDevice(id string, messenger mqtt.Messenger) (*ShellyDevice, error) {
+	if messenger == nil {
+		return nil, errors.New("messenger is nil")
+	}
+	if len(id) == 0 {
+		return nil, errors.New("id is empty")
+	}
+
+	return &ShellyDevice{
+		Id:        id,
+		messenger: messenger,
+		done:      make(chan bool),
+	}, nil
 }
 
 func (sd *ShellyDevice) HealthCheck() error {
@@ -103,12 +119,15 @@ func (sd *ShellyDevice) String() string {
 
 func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
 
-	msg := sd.mqttHandler.newRpcRequest("Switch.Set", map[string]interface{}{
-		"id": id,
-		"on": state,
-	})
-
-	err := sd.mqttHandler.publishDeviceMessage(sd, msg)
+	req := mqtt.RpcRequest{
+		Method: "Switch.Set",
+		Params: map[string]interface{}{
+			"id": id,
+			"on": state,
+		},
+		Dst: sd.Id,
+	}
+	err := sd.messenger.SendRequest(sd.Id, req)
 	sd.setError = err
 
 	if err != nil {

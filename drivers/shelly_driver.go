@@ -32,9 +32,9 @@ type ShellyIO struct {
 	outputs []ShellyOutput
 	inputs  []ShellyInput
 
-	devices     []*shelly.ShellyDevice
-	mqttHandler *shelly.ShellyMqtt
-	mqttClient  *mqtt.MqttClient
+	devices []*shelly.ShellyDevice
+
+	messenger *mqtt.JsonRpcMessenger
 
 	isReady        bool
 	healthTicker   *time.Ticker
@@ -82,30 +82,29 @@ func (she *ShellyIO) Setup(ctx context.Context, inputs []string, outputs []strin
 		return
 	}
 
-	for deviceId := range devicesMap {
-		she.devices = append(she.devices, &shelly.ShellyDevice{Id: deviceId})
-	}
-
 	logger.Debug("creating mqtt client")
-
-	var mqErr error
-	she.mqttClient, mqErr = mqtt.NewMqttClient(she.MqttBroker, she.MqttClientId)
-
+	mqttCli, mqErr := mqtt.NewMqttClient(she.MqttBroker, she.MqttClientId)
 	if mqErr != nil {
 		mqErr = errors.Join(mqErr, errors.New("failed to create mqtt client"))
 		err = errors.Join(err, mqErr)
 		return
 	}
 
-	logger.Debug("creating mqtt handler")
-	she.mqttHandler = shelly.NewShellyMqtt(she.devices, she.mqttClient)
-
-	logger.Debug("connecting to mqtt broker")
-	mqErr = she.mqttClient.Connect(ctx, []mqtt.MqttHandler{she.mqttHandler})
+	logger.Debug("creating messenger (mqtt json rpc)")
+	she.messenger, mqErr = mqtt.NewJsonRpcMessenger(ctx, mqttCli, she)
 	if mqErr != nil {
-		mqErr = errors.Join(mqErr, errors.New("failed to connect to mqtt broker"))
+		mqErr = errors.Join(mqErr, errors.New("failed to create mqtt json rpc messenger"))
 		err = errors.Join(err, mqErr)
 		return
+	}
+
+	for deviceId := range devicesMap {
+		dev, err := shelly.NewShellyDevice(deviceId, she.messenger)
+		if err != nil {
+			err = errors.Join(err, errors.New("failed to create shelly device "+deviceId))
+			return err
+		}
+		she.devices = append(she.devices, dev)
 	}
 
 	logger.Debug("trying to match devices")
@@ -202,6 +201,16 @@ func (she *ShellyIO) getDevice(id string) *shelly.ShellyDevice {
 	return nil
 }
 
+func (she *ShellyIO) getDeviceByTopic(topic string) *shelly.ShellyDevice {
+	for _, dev := range she.devices {
+		if strings.HasPrefix(topic, dev.Id) {
+			return dev
+		}
+	}
+
+	return nil
+}
+
 func (she *ShellyIO) parseIoId(id string) (string, int, error) {
 	parts := strings.Split(id, string(idSeparator))
 	if len(parts) != 2 {
@@ -251,6 +260,91 @@ func (she *ShellyIO) GetAllIo() (inputs []string, outputs []string) {
 		outputs = append(outputs, out.getStringId())
 	}
 	return
+}
+
+func (she *ShellyIO) MqttTopicRoots() []string {
+	roots := make([]string, len(she.devices))
+	for ix, dev := range she.devices {
+		roots[ix] = dev.Id
+	}
+	return roots
+}
+
+func (she *ShellyIO) HandleRpcStatus(online bool, topic string) bool {
+	dev := she.getDeviceByTopic(topic)
+	if dev == nil {
+		log.Warn("handling rpc status, device not found", "topic", topic)
+		return false
+	}
+
+	log.Debug("got online status update", "device", dev.Id, "online", online)
+	req := mqtt.RpcRequest{
+		Dst:    dev.Id,
+		Method: "Shelly.GetStatus",
+	}
+	err := she.messenger.SendRequest(dev.Id, req)
+	if err != nil {
+		log.Error("failed to send GetStatus request", "device", dev.Id, "error", err)
+		return false
+	}
+
+	return true
+}
+
+func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
+	dev := she.getDevice(msg.Src)
+	if dev == nil {
+		log.Warn("handling rpc message, device not found", "device", msg.Src)
+		return false
+	}
+
+	switch msg.MsgType {
+	case mqtt.RpcResponseType:
+		switch msg.Method {
+		case "Shelly.GetStatus":
+			status := shelly.GetStatus{}
+			err := msg.UnmarshalResult(&status)
+			if err != nil {
+				log.Error("failed to unmarshal GetStatus response", "device", dev.Id, "error", err)
+				return false
+			}
+
+			err = dev.FillStatus(status)
+			if err != nil {
+				log.Error("failed to fill device with status", "device", dev.Id, "error", err)
+				return false
+			}
+
+			return true
+		default:
+			log.Warn("handling response, unknown method", "method", msg.Method)
+			return false
+		}
+	case mqtt.RpcNotificationType:
+		switch msg.Method {
+		case "NotifyStatus":
+			status := shelly.GetStatus{}
+			err := msg.UnmarshalParams(&status)
+			if err != nil {
+				log.Error("failed to unmarshal NotifyStatus params", "device", dev.Id, "error", err)
+				return false
+			}
+
+			err = dev.UpdateFromStatus(status)
+			if err != nil {
+				log.Error("failed to update device from status", "device", dev.Id, "error", err)
+				return false
+			}
+
+			return true
+		default:
+			log.Warn("handling notification, unknown method", "method", msg.Method)
+			return false
+		}
+
+	default:
+		return false
+	}
 }
 
 type ShellyOutput struct {

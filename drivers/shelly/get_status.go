@@ -2,7 +2,6 @@ package shelly
 
 import (
 	"encoding/json"
-	"errors"
 
 	"github.com/hubertat/swkit/drivers/shelly/components"
 )
@@ -78,24 +77,5 @@ func (gs *GetStatus) GetProfiles() []string {
 	if json.Unmarshal(gs.Profiles, &profiles) == nil {
 		return profiles
 	}
-	return nil
-}
-
-func (gs *GetStatus) FillDevice(device *ShellyDevice) error {
-	for ix, sw := range device.Switches {
-		swId := sw.Status.ID
-		if swId < 0 || swId > 3 {
-			return errors.New("switch id out of range [0, 3]")
-		}
-		rawSwitch := gs.rawSwitchSlice()[swId]
-		if len(rawSwitch) > 0 {
-			err := json.Unmarshal(rawSwitch, &sw.Status)
-			if err != nil {
-				return errors.Join(errors.New("failed to unmarshal switch"), err)
-			}
-			device.Switches[ix] = sw
-		}
-	}
-
 	return nil
 }
