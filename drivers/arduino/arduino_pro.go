@@ -3,79 +3,10 @@ package arduino
 import (
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"net/netip"
 	"sort"
-	"strings"
 	"time"
 )
-
-type PinState uint8
-
-const (
-	PinStateUnknown PinState = 0
-	PinStateLow     PinState = 1
-	PinStateHigh    PinState = 2
-)
-
-func (ps PinState) String() string {
-	switch ps {
-	case PinStateLow:
-		return "LO"
-	case PinStateHigh:
-		return "HI"
-	default:
-		return "NA"
-	}
-}
-
-type Pin struct {
-	number  uint8
-	isInput bool
-	pullup  bool
-	state   PinState
-}
-
-func NewInputPin(number uint8, pullup bool) Pin {
-	return Pin{
-		number:  number,
-		isInput: true,
-		pullup:  pullup,
-		state:   PinStateUnknown,
-	}
-}
-
-func NewOutputPin(number uint8) Pin {
-	return Pin{
-		number:  number,
-		isInput: false,
-		state:   PinStateUnknown,
-	}
-}
-
-func (pi Pin) ConfigEquals(other Pin) bool {
-	if pi.isInput {
-		return pi.isInput == other.isInput && pi.pullup == other.pullup
-	}
-
-	return pi.isInput == other.isInput
-}
-
-func (pi Pin) String() string {
-	dirString := ""
-	if pi.isInput {
-		dirString = "IN "
-		if pi.pullup {
-			dirString += "PULLUP"
-		} else {
-			dirString += "______"
-		}
-	} else {
-		dirString = "OUT" + "______"
-	}
-
-	return fmt.Sprintf("pin [no: %2d] [%s] %s", pi.number, dirString, pi.state.String())
-}
 
 type ArduinoPro struct {
 	inPins  []Pin
@@ -144,13 +75,13 @@ func (a *ArduinoPro) GetOutputPins() []Pin {
 	return a.outPins
 }
 
-func (a *ArduinoPro) ConfigBytes() []byte {
+func (a *ArduinoPro) ConfigPacket() Packet {
 	inPins := a.GetInputPins()
 	outPins := a.GetOutputPins()
-	// config prefix starts with SOH and CONFIG_
-	cfg := []byte{0x01, 'C', 'O', 'N', 'F', 'I', 'G', '_', 0x00}
 
 	pullupPins := []Pin{}
+
+	cfg := []byte{}
 
 	// IN for input pins
 	cfg = append(cfg, 'I', 'N', byte(len(inPins)))
@@ -171,36 +102,23 @@ func (a *ArduinoPro) ConfigBytes() []byte {
 		cfg = append(cfg, pin.number)
 	}
 
-	// calculate CRC32 without starting SOH
-	crc := crc32.ChecksumIEEE(cfg[1:])
-
-	// append CRC32 to the end, big endian
-	cfg = append(cfg, byte(crc>>24), byte(crc>>16), byte(crc>>8), byte(crc))
-	// append ETX
-	cfg = append(cfg, 0x03)
-
-	return cfg
+	return NewPacket(PACKET_TYPE_ARDUINOPRO_CONFIG, cfg)
 }
 
-func (a *ArduinoPro) ReadStatusPacket(packet []byte) error {
-	// status packet construction: "STATUS_\0" (8) + counts (2) + input states + output states + CRC (4)
-	if len(packet) < 14 {
+func (a *ArduinoPro) ReadStatusPacket(packet Packet) error {
+	// status packet data: in count (1)+ out count (1) + input states + output states
+	if packet.tag != PACKET_TYPE_ARDUINOPRO_STATUS {
+		return errors.New("incorrect packet type (tag)")
+	}
+
+	if len(packet.Data()) < 2 {
 		return errors.New("packet too short")
 	}
 
-	if !strings.EqualFold(string(packet[:7]), "STATUS_") {
-		return errors.New("invalid packet prefix")
-	}
+	inLen := int(packet.Data()[0])
+	outLen := int(packet.Data()[1])
 
-	calculatedCrc := crc32.ChecksumIEEE(packet[:len(packet)-4])
-	receivedCrc := uint32(packet[len(packet)-4])<<24 | uint32(packet[len(packet)-3])<<16 | uint32(packet[len(packet)-2])<<8 | uint32(packet[len(packet)-1])
-	if calculatedCrc != receivedCrc {
-		return errors.New("invalid packet CRC")
-	}
-
-	inLen := int(packet[8])
-	outLen := int(packet[9])
-	states := packet[10 : len(packet)-4]
+	states := packet.Data()[2:]
 
 	if len(states) != inLen+outLen {
 		return errors.New("invalid packet length")

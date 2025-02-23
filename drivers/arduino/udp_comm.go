@@ -74,13 +74,13 @@ func (uc *UdpComm) Close() error {
 func (uc *UdpComm) SendConfigs() error {
 	var errs error
 	for ix, dev := range uc.devices {
-		configPacket := dev.ArduinoPro.ConfigBytes()
-		bytesWritten, err := dev.Conn.Write(configPacket)
+		configPacket := dev.ArduinoPro.ConfigPacket()
+		bytesWritten, err := dev.Conn.Write(configPacket.GetRawData())
 		var writeErr error
 		if err != nil {
 			writeErr = errors.Join(errs, errors.Join(fmt.Errorf("failed to send config to %s", dev.ArduinoPro.address.String()), err))
 		}
-		if bytesWritten != len(configPacket) {
+		if bytesWritten != configPacket.Len() {
 			writeErr = errors.Join(errs, fmt.Errorf("failed to send full config to %s", dev.ArduinoPro.address.String()))
 		}
 		if writeErr != nil {
@@ -107,11 +107,16 @@ func (uc *UdpComm) ListenLoop() {
 				}
 
 				log.Println("[D] received", n, "bytes from", addr, ":", buf[:n])
-				err = dev.ArduinoPro.ReadStatusPacket(buf)
+				packet, err := ParsePacket(buf)
 				if err != nil {
-					log.Println("[E] failed to read status packet for " + dev.ArduinoPro.address.String())
+					log.Println("failed to parse packet")
 				} else {
-					log.Println("[D] status packet read OK for " + dev.ArduinoPro.address.String())
+					err = dev.ArduinoPro.ReadStatusPacket(packet)
+					if err != nil {
+						log.Println("[E] failed to read status packet for " + dev.ArduinoPro.address.String())
+					} else {
+						log.Println("[D] status packet read OK for " + dev.ArduinoPro.address.String())
+					}
 				}
 			}
 		}
