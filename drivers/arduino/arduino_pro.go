@@ -108,11 +108,11 @@ func (a *ArduinoPro) ConfigPacket() Packet {
 func (a *ArduinoPro) ReadStatusPacket(packet Packet) error {
 	// status packet data: in count (1)+ out count (1) + input states + output states
 	if packet.tag != PACKET_TYPE_ARDUINOPRO_STATUS {
-		return errors.New("incorrect packet type (tag)")
+		return errors.New("incorrect packet type (tag), expected: " + PACKET_TYPE_ARDUINOPRO_STATUS.String() + ", got: " + packet.tag.String())
 	}
 
 	if len(packet.Data()) < 2 {
-		return errors.New("packet too short")
+		return fmt.Errorf("packet too short, length is: %d", len(packet.Data()))
 	}
 
 	inLen := int(packet.Data()[0])

@@ -2,6 +2,7 @@ package arduino
 
 import (
 	"errors"
+	"fmt"
 	"hash/crc32"
 )
 
@@ -12,11 +13,12 @@ type PacketType byte
 
 const (
 	PACKET_TYPE_NONE                PacketType = 0x00
-	PACKET_TYPE_ARDUINOPRO_CONFIG              = 'C'
-	PACKET_TYPE_ARDUINOPRO_STATUS              = 'S'
-	PACKET_TYPE_ARDUINOPRO_COMMAND             = 'D'
-	PACKET_TYPE_ARDUINOPRO_RESPONSE            = 'R'
-	PACKET_TYPE_ARDUINOPRO_NOTREADY            = 'N'
+	PACKET_TYPE_ARDUINOPRO_CONFIG   PacketType = 'C'
+	PACKET_TYPE_ARDUINOPRO_STATUS   PacketType = 'S'
+	PACKET_TYPE_ARDUINOPRO_COMMAND  PacketType = 'D'
+	PACKET_TYPE_ARDUINOPRO_RESPONSE PacketType = 'R'
+	PACKET_TYPE_ARDUINOPRO_NOTREADY PacketType = 'N'
+	PACKET_TYPE_RPIXEL_SET          PacketType = 'P'
 )
 
 func (pt PacketType) String() string {
@@ -29,8 +31,14 @@ func (pt PacketType) String() string {
 		return "PACKET_TYPE_ARDUINOPRO_STATUS"
 	case PACKET_TYPE_ARDUINOPRO_COMMAND:
 		return "PACKET_TYPE_ARDUINOPRO_COMMAND"
+	case PACKET_TYPE_ARDUINOPRO_RESPONSE:
+		return "PACKET_TYPE_ARDUINOPRO_RESPONSE"
+	case PACKET_TYPE_ARDUINOPRO_NOTREADY:
+		return "PACKET_TYPE_ARDUINOPRO_NOTREADY"
+	case PACKET_TYPE_RPIXEL_SET:
+		return "PACKET_TYPE_RPIXEL_SET"
 	default:
-		return "PACKET_TYPE_UNKNOWN"
+		return "PACKET_TYPE_UNKNOWN(" + string(pt) + ")"
 	}
 }
 
@@ -85,7 +93,7 @@ func ParsePacket(rawData []byte) (Packet, error) {
 	packetLength = uint16(rawData[0])<<8 | uint16(rawData[1])
 
 	if len(rawData) != int(packetLength) {
-		return Packet{}, errors.New("packet length mismatch")
+		return Packet{}, fmt.Errorf("packet length mismatch, received packet length: %d, actual packet length: %d", packetLength, len(rawData))
 	}
 
 	var packetTag byte
