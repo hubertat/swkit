@@ -2,6 +2,9 @@ package drivers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 )
 
 type PushEvent uint16
@@ -16,6 +19,8 @@ const (
 type IoType uint16
 
 const (
+	ioTypeUndefined = 0
+
 	ioTypeDigitalOutput = 0x01 << iota
 	ioTypeDigitalInput
 	ioTypePushEventEmitter
@@ -24,6 +29,60 @@ const (
 	ioTypeRgbwOutput
 	ioTypeRgbwInput
 )
+
+func allIoTypes() []IoType {
+	return []IoType{
+		ioTypeDigitalOutput,
+		ioTypeDigitalInput,
+		ioTypePushEventEmitter,
+		ioTypeAnalogOutput,
+		ioTypeAnalogInput,
+		ioTypeRgbwOutput,
+		ioTypeRgbwInput,
+	}
+}
+
+func (iot IoType) IdString() string {
+	switch iot {
+	case ioTypeDigitalInput:
+		return "d_in"
+	case ioTypeDigitalOutput:
+		return "d_out"
+	case ioTypePushEventEmitter:
+		return "push_event"
+	case ioTypeAnalogOutput:
+		return "a_out"
+	case ioTypeAnalogInput:
+		return "a_in"
+	case ioTypeRgbwOutput:
+		return "rgbw_out"
+	case ioTypeRgbwInput:
+		return "rgbw_in"
+	default:
+		return "n/a"
+	}
+}
+
+func (iot IoType) String() string {
+	switch iot {
+	case ioTypeDigitalOutput:
+		return "DigitalOutput"
+	case ioTypeDigitalInput:
+		return "DigitalInput"
+	case ioTypePushEventEmitter:
+		return "PushEventEmitter"
+	case ioTypeAnalogOutput:
+		return "AnalogOutput"
+	case ioTypeAnalogInput:
+		return "AnalogInput"
+	case ioTypeRgbwOutput:
+		return "RgbwOutput"
+	case ioTypeRgbwInput:
+		return "RgbwInput"
+	default:
+		return "Unknown"
+	}
+}
 
 type IoDriver interface {
 	Setup(ctx context.Context, ios []string) error
@@ -90,4 +149,30 @@ type RgbwOutput interface {
 	GetState() (uint8, uint8, uint8, uint8, error)
 	Set(uint8, uint8, uint8, uint8) error
 	String() string
+}
+
+func resolveIoId(ioIdSlice []string) (driver string, ioType IoType, name string, err error) {
+	if len(ioIdSlice) != 3 {
+		err = errors.New("invalid io id format, expected 3 parts separated by '|'")
+		return
+	}
+
+	driver = ioIdSlice[0]
+
+	for _, t := range allIoTypes() {
+		if strings.EqualFold(t.IdString(), ioIdSlice[1]) {
+			ioType = t
+		}
+	}
+	if ioType == ioTypeUndefined {
+		err = fmt.Errorf("invalid io type, couldn't match io type from id string: %s", ioIdSlice[1])
+		return
+	}
+
+	name = ioIdSlice[2]
+	return
+}
+
+func getIoIdSlice(driver string, ioType IoType, name string) []string {
+	return []string{driver, ioType.IdString(), name}
 }

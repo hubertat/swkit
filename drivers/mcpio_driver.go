@@ -41,6 +41,10 @@ type McpOutput struct {
 	device *mcp23017.Device
 }
 
+func (min *McpInput) String() string {
+	return fmt.Sprintf("mcp_digital_in:%2d", min.pin)
+}
+
 func (min *McpInput) GetState() (state bool, err error) {
 	rawState, err := min.device.DigitalRead(min.pin)
 	if err != nil {
@@ -67,6 +71,10 @@ func (mout *McpOutput) GetState() (state bool, err error) {
 		state = bool(rawState)
 	}
 	return
+}
+
+func (mout *McpOutput) String() string {
+	return fmt.Sprintf("mcp_digital_out:%2d", mout.pin)
 }
 
 func (mout *McpOutput) Set(state bool) (err error) {
@@ -156,7 +164,7 @@ func (mcp *McpIO) SetMqtt(publisher mqtt.Publisher) (h []mqtt.MqttHandler) {
 	return
 }
 
-func (mcp *McpIO) GetInput(id string) (input DigitalInput, err error) {
+func (mcp *McpIO) GetDigitalInput(id string) (input DigitalInput, err error) {
 	pin, err := strconv.Atoi(id)
 	if err != nil {
 		err = errors.Join(err, errors.New("failed to convert input id to int"))
@@ -176,7 +184,7 @@ func (mcp *McpIO) GetInput(id string) (input DigitalInput, err error) {
 	return
 }
 
-func (mcp *McpIO) GetOutput(id string) (output DigitalOutput, err error) {
+func (mcp *McpIO) GetDigitalOutput(id string) (output DigitalOutput, err error) {
 	pin, err := strconv.Atoi(id)
 	if err != nil {
 		err = errors.Join(err, errors.New("failed to convert output id to int"))
@@ -206,11 +214,8 @@ func (mcp *McpIO) GetAnalogOutput(id string) (output AnalogOutput, err error) {
 		err = errors.New("output pin out of range (mcpio takes uint8 pin id)")
 		return
 	}
-	for _, out := range mcp.outputs {
-		if out.pin == uint8(pin) {
-			return &out, nil
-		}
-	}
+	err = errors.New("mcp io analog outputs not implemented")
+	return
 
 	err = fmt.Errorf("input (id: %d) not found", id)
 	return
