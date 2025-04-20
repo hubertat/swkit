@@ -43,10 +43,10 @@ type ShellyIO struct {
 	unhealthyCount int
 }
 
-func (she *ShellyIO) Setup(ctx context.Context, inputs []string, outputs []string) (err error) {
+func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 	she.isReady = false
 	logger := log.NewWithOptions(os.Stderr, log.Options{
-		Prefix: "shell 🐢",
+		Prefix: "she🐢y",
 		Level:  log.GetLevel(),
 	})
 
@@ -241,11 +241,11 @@ func (she *ShellyIO) IsReady() bool {
 	return she.isReady
 }
 
-func (she *ShellyIO) GetInput(id string) (DigitalInput, error) {
+func (she *ShellyIO) GetDigitalInput(id string) (DigitalInput, error) {
 	return nil, errors.New("inputs not implemented")
 }
 
-func (she *ShellyIO) GetOutput(id string) (DigitalOutput, error) {
+func (she *ShellyIO) GetDigitalOutput(id string) (DigitalOutput, error) {
 	for _, out := range she.outputs {
 		if strings.EqualFold(out.getStringId(), id) {
 			return &out, nil
@@ -253,6 +253,16 @@ func (she *ShellyIO) GetOutput(id string) (DigitalOutput, error) {
 	}
 
 	return nil, fmt.Errorf("shelly output pin = %d not found", id)
+}
+
+func (she *ShellyIO) GetAnalogOutput(id string) (AnalogOutput, error) {
+	// TODO
+	return nil, fmt.Errorf("analog output not implemented")
+}
+
+func (she *ShellyIO) GetRgbwOutput(id string) (RgbwOutput, error) {
+	// TODO
+	return nil, fmt.Errorf("rgbw output not implemented")
 }
 
 func (she *ShellyIO) GetAllIo() (inputs []string, outputs []string) {

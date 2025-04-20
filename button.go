@@ -1,99 +1,82 @@
 package swkit
 
 import (
-	"errors"
 	"fmt"
 	"hash/fnv"
-	"strings"
 
 	"github.com/brutella/hap/accessory"
+	"github.com/brutella/hap/characteristic"
 	"github.com/brutella/hap/service"
 	drivers "github.com/hubertat/swkit/drivers"
 )
 
-type Button struct {
-	Name       string
-	State      bool
-	DriverName string
-	IoName     string
-
+type ButtonConfig struct {
+	Name           string
+	DigitalInName  string
 	DisableHomekit bool
+}
+
+type Button struct {
+	name           string
+	disableHomekit bool
+
+	lastState bool
 
 	toggleThis []ClickableDevice
-	input      drivers.DigitalInput
-	driver     drivers.IoDriver
 
-	hk *accessory.A
-	ss *service.StatelessProgrammableSwitch
+	emitter drivers.PushEventEmitter
+
+	hk    *accessory.A
+	fault *characteristic.StatusFault
+	ss    *service.StatelessProgrammableSwitch
 }
 
 type ClickableDevice interface {
 	Toggle()
 }
 
-func (bu *Button) GetDriverName() string {
-	return bu.DriverName
-}
-
 func (bu *Button) GetUniqueId() uint64 {
 	hash := fnv.New64()
-	hash.Write([]byte("Button_" + bu.Name))
+	hash.Write([]byte("Button_" + bu.name))
 	return hash.Sum64()
 }
 
-func (bu *Button) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.String(), bu.DriverName) {
-		return fmt.Errorf("Init failed, mismatched or incorrect driver")
+func (bu *Button) InitHk() *accessory.A {
+	if bu.disableHomekit {
+		return nil
 	}
 
-	if !driver.IsReady() {
-		return fmt.Errorf("Init failed, driver not ready")
-	}
+	bu.hk = accessory.New(accessory.Info{
+		Name:         bu.name,
+		SerialNumber: fmt.Sprintf("button:%s", bu.emitter.String()),
+	}, accessory.TypeProgrammableSwitch)
 
-	var err error
+	bu.ss = service.NewStatelessProgrammableSwitch()
+	bu.fault = characteristic.NewStatusFault()
+	bu.fault.SetValue(characteristic.StatusFaultNoFault)
 
-	bu.driver = driver
-	bu.input, err = driver.GetInput(bu.IoName)
-	if err != nil {
-		return errors.Join(errors.New("Init failed on getting input"), err)
-	}
+	bu.ss.AddC(bu.fault.C)
+	bu.hk.AddS(bu.ss.S)
 
-	err = bu.input.SubscribeToPushEvent(bu)
-	if err != nil {
-		return errors.Join(errors.New("failed to subsribe to push event"), err)
-	}
+	return bu.hk
+}
 
-	if !bu.DisableHomekit {
-		bu.hk = accessory.New(accessory.Info{
-			Name: bu.Name,
-		}, accessory.TypeProgrammableSwitch)
-
-		bu.ss = service.NewStatelessProgrammableSwitch()
-		bu.hk.AddS(bu.ss.S)
+// Is Sync required for a stateless switch? Maybe only for error checking
+// TODO to consider
+func (bu *Button) Sync() (err error) {
+	if bu.disableHomekit {
+		return nil
 	}
 
 	return nil
 }
 
-func (bu *Button) Sync() (err error) {
+// func (bu *Button) Set(value bool) {
 
-	return
-}
+// }
 
-func (bu *Button) GetHk() *accessory.A {
-	return bu.hk
-}
+// func (bu *Button) GetValue() bool {
 
-func (bu *Button) Set(value bool) {
-
-}
-
-func (bu *Button) GetValue() bool {
-
-	state, _ := bu.input.GetState()
-	return state
-}
-
-func (bu *Button) FireEvent(event drivers.PushEvent) {
-	bu.ss.ProgrammableSwitchEvent.SetValue(int(event))
-}
+// 	state, _ := bu.input.GetState()
+// 	return state
+// }
