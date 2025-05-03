@@ -105,6 +105,11 @@ func (gro *GrentonOutput) parseId(id string) error {
 	return nil
 }
 
+func (gro *GrentonOutput) String() string {
+	// TODO
+	return "ID HERE TODO"
+}
+
 type GrentonIO struct {
 	GateAddress string
 

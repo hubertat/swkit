@@ -68,3 +68,11 @@ func (pi Pin) String() string {
 
 	return fmt.Sprintf("pin [no: %2d] [%s] %s", pi.number, dirString, pi.state.String())
 }
+
+func mapPins(pins []Pin) map[byte]Pin {
+	out := make(map[byte]Pin)
+	for _, p := range pins {
+		out[p.number] = p
+	}
+	return out
+}

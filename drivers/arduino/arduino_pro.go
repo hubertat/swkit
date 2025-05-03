@@ -161,6 +161,113 @@ func (a *ArduinoPro) ReadStatusPacket(packet Packet) error {
 	return nil
 }
 
+// ReadConfigPacket(packet Packet, override bool) error reads config packet, compares it with internal config
+// when it is a match, returns nil, otherwise returns error or (if override is set to true) replaces internal config
+func (a *ArduinoPro) ReadConfigPacket(packet Packet, override bool) error {
+	if packet.tag != PACKET_TYPE_ARDUINOPRO_CONFIG_NOTICE {
+		return errors.New("incorrect packet type (tag), expected: " + PACKET_TYPE_ARDUINOPRO_CONFIG_NOTICE.String() + ", got: " + packet.tag.String())
+	}
+
+	if packet.Len() < 3*3 {
+		return errors.New("incorrect packet length")
+	}
+
+	type config struct {
+		InPins       []Pin
+		OutPins      []Pin
+		CheckInputs  bool
+		CheckOutputs bool
+		CheckPullups bool
+	}
+	cfg := config{}
+
+	data := packet.Data()
+	blockPos := 0
+	for blockPos+2 < packet.Len() {
+		blockID := string([]byte{data[blockPos], data[blockPos+1], 0x00})
+		blockLen := int(data[blockPos+2])
+		if blockPos+2+blockLen >= packet.Len() {
+			return fmt.Errorf("unexpected packet length when reading block: %s, read len=%d", blockID, blockLen)
+		}
+
+		switch blockID {
+		case "IN":
+			inB := data[blockPos+2 : blockPos+2+blockLen]
+			inPins := make([]Pin, blockLen)
+			for ix, b := range inB {
+				inPins[ix] = Pin{
+					number:  b,
+					isInput: true,
+				}
+			}
+			cfg.InPins = inPins
+			cfg.CheckInputs = true
+		case "OU":
+			outB := data[blockPos+2 : blockPos+2+blockLen]
+			outPins := make([]Pin, blockLen)
+			for ix, b := range outB {
+				outPins[ix] = Pin{
+					number: b,
+				}
+			}
+			cfg.OutPins = outPins
+			cfg.CheckOutputs = true
+		case "PU":
+			pullB := data[blockPos+2 : blockPos+2+blockLen]
+			inPins := cfg.InPins
+			for _, b := range pullB {
+				for ix, inPin := range inPins {
+					if inPin.number == b {
+						inPin.pullup = true
+						inPins[ix] = inPin
+					}
+				}
+			}
+			cfg.InPins = inPins
+			cfg.CheckPullups = true
+		default:
+			// unexpected block type/id
+			// error?
+		}
+		blockPos = blockPos + 3 + blockLen
+	}
+
+	if !cfg.CheckInputs || !cfg.CheckOutputs || !cfg.CheckPullups {
+		return fmt.Errorf("finished reading config with missing blocks, blocks checked out: [input, output, pullup] : %v", []bool{cfg.CheckInputs, cfg.CheckOutputs, cfg.CheckPullups})
+	}
+
+	mismatch := false
+
+	internalPins := mapPins(append(a.inPins, a.outPins...))
+	cfgPins := mapPins(append(cfg.InPins, cfg.OutPins...))
+
+	for pinNo, pin := range internalPins {
+		cfgPin, found := cfgPins[pinNo]
+		if found {
+			if !pin.ConfigEquals(cfgPin) {
+				mismatch = true
+				break
+			}
+		} else {
+			mismatch = true
+			break
+		}
+	}
+
+	if !mismatch {
+		return nil
+	}
+
+	if !override {
+		return errors.New("received config does not match internal config, and override is not set")
+	}
+
+	a.inPins = cfg.InPins
+	a.outPins = cfg.OutPins
+
+	return nil
+}
+
 // String() returns a verbose and nice string representation of the ArduinoPro
 func (a *ArduinoPro) String() string {
 	inPins := a.GetInputPins()
