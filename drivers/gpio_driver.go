@@ -2,11 +2,13 @@ package drivers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/hubertat/swkit/mqtt"
-	"github.com/pkg/errors"
+
 	"github.com/stianeikeland/go-rpio/v4"
 )
 
@@ -41,8 +43,8 @@ func (gpi *GpInput) GetState() (state bool, err error) {
 	return
 }
 
-func (gpi *GpInput) SubscribeToPushEvent(listener EventListener) error {
-	return errors.New("SubscribeToPushEvent not implemented")
+func (gpi *GpInput) String() string {
+	return fmt.Sprintf("gpio_in:%2d", gpi.pin)
 }
 
 func (gpo *GpOutput) Set(state bool) error {
@@ -69,36 +71,54 @@ func (gpo *GpOutput) GetState() (state bool, err error) {
 	return
 }
 
-func (gp *GpIO) Setup(ctx context.Context, inputs []string, outputs []string) error {
+func (gpo *GpOutput) String() string {
+	return fmt.Sprintf("gpio_out:%2d", gpo.pin)
+}
+
+func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
 	err := rpio.Open()
 	if err != nil {
-		return errors.Wrapf(err, "failed to Setup gpio driver for pins: %v, %v; ", inputs, outputs)
+		return errors.Join(err, fmt.Errorf("failed to Setup gpio driver: failed to open rpio"))
 	}
-	for _, input := range inputs {
-		inPin, err := strconv.Atoi(input)
-		if err != nil {
-			return errors.Wrap(err, "failed to convert input pin to int")
+	for _, io := range ios {
+		ioIdSlice := strings.Split(io, "|")
+		if len(ioIdSlice) != 3 {
+			return errors.New("invalid io id format, expected 3 parts separated by '|'")
 		}
-		if inPin > 255 || inPin < 0 {
-			return errors.Errorf("inpin out of range (gpio takes uint8 pin)")
-		}
-		pin := rpio.Pin(inPin)
-		pin.Input()
-		pin.PullUp()
-		gp.inputs = append(gp.inputs, GpInput{pin: uint8(inPin), invert: gp.InvertInputs})
-	}
 
-	for _, output := range outputs {
-		outPin, err := strconv.Atoi(output)
-		if err != nil {
-			return errors.Wrap(err, "failed to convert output pin to int")
+		if !strings.EqualFold(ioIdSlice[0], gp.String()) {
+			return errors.New("invalid io, driver name mismatch")
 		}
-		if outPin > 255 || outPin < 0 {
-			return errors.Errorf("outpin out of range (gpio takes uint8 pin)")
+
+		switch ioIdSlice[1] {
+		case "d_in":
+			pin, err := strconv.Atoi(ioIdSlice[2])
+			if err != nil {
+				return errors.Join(err, errors.New("failed to convert input pin to int"))
+			}
+			if pin > 255 || pin < 0 {
+				return errors.Join(err, errors.New("input pin out of range (gpio takes uint8 pin id)"))
+			}
+			gpioPin := rpio.Pin(pin)
+			gpioPin.Input()
+			gpioPin.PullUp()
+			gp.inputs = append(gp.inputs, GpInput{pin: uint8(pin), invert: gp.InvertInputs})
+
+		case "d_out":
+			pin, err := strconv.Atoi(ioIdSlice[2])
+			if err != nil {
+				return errors.Join(err, errors.New("failed to convert output pin to int"))
+			}
+			if pin > 255 || pin < 0 {
+				return errors.Join(err, errors.New("output pin out of range (gpio takes uint8 pin id)"))
+			}
+
+			gpioPin := rpio.Pin(pin)
+			gpioPin.Output()
+			gp.outputs = append(gp.outputs, GpOutput{pin: uint8(pin), invert: gp.InvertOutputs})
+		default:
+			return errors.New("unknown io type: " + ioIdSlice[1])
 		}
-		pin := rpio.Pin(outPin)
-		pin.Output()
-		gp.outputs = append(gp.outputs, GpOutput{pin: uint8(outPin), invert: gp.InvertOutputs})
 	}
 
 	gp.isReady = true
@@ -125,14 +145,14 @@ func (gp *GpIO) Close() error {
 	return rpio.Close()
 }
 
-func (gp *GpIO) GetInput(id string) (input DigitalInput, err error) {
+func (gp *GpIO) GetDigitalInput(id string) (input DigitalInput, err error) {
 	pin, err := strconv.Atoi(id)
 	if err != nil {
-		err = errors.Wrap(err, "failed to convert output pin to int")
+		err = errors.Join(err, errors.New("failed to convert output pin to int"))
 		return
 	}
 	if pin < 0 || pin > 255 {
-		err = errors.Errorf("pin id out (%d) of range gpio takes uint8 pin", pin)
+		err = fmt.Errorf("pin id out (%d) of range gpio takes uint8 pin", pin)
 		return
 	}
 	for _, in := range gp.inputs {
@@ -146,14 +166,14 @@ func (gp *GpIO) GetInput(id string) (input DigitalInput, err error) {
 	return
 }
 
-func (gp *GpIO) GetOutput(id string) (output DigitalOutput, err error) {
+func (gp *GpIO) GetDigitalOutput(id string) (output DigitalOutput, err error) {
 	pin, err := strconv.Atoi(id)
 	if err != nil {
-		err = errors.Wrap(err, "failed to convert output pin to int")
+		err = errors.Join(err, errors.New("failed to convert output pin to int"))
 		return
 	}
 	if pin > 255 || pin < 0 {
-		err = errors.Errorf("pin id out (%d) of range gpio takes uint8 pin", pin)
+		err = fmt.Errorf("pin id out (%d) of range gpio takes uint8 pin", pin)
 		return
 	}
 	for _, out := range gp.outputs {
@@ -177,4 +197,12 @@ func (gp *GpIO) GetAllIo() (inputs []string, outputs []string) {
 	}
 
 	return
+}
+
+func (gp *GpIO) GetAnalogOutput(id string) (AnalogOutput, error) {
+	return nil, errors.New("analog ouput not implemented in GPIO driver")
+}
+
+func (gp *GpIO) GetRgbwOutput(id string) (RgbwOutput, error) {
+	return nil, errors.New("rgbw ouput not implemented in GPIO driver")
 }

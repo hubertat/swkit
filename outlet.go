@@ -3,7 +3,6 @@ package swkit
 import (
 	"fmt"
 	"hash/fnv"
-	"strings"
 	"sync"
 
 	"github.com/brutella/hap/accessory"
@@ -12,18 +11,20 @@ import (
 	"github.com/pkg/errors"
 )
 
-type Outlet struct {
+type OutletConfig struct {
 	Name           string
-	State          bool
-	DriverName     string
-	IoName         string
+	DigitalOutName string
 	DisableHomekit bool
-	IsFaulty       bool
+}
 
+type Outlet struct {
 	ControlBy []ControllingDevice
 
+	name           string
+	disableHomekit bool
+	isFaulty       bool
+
 	output drivers.DigitalOutput
-	driver drivers.IoDriver
 
 	hk    *accessory.Outlet
 	fault *characteristic.StatusFault
@@ -31,39 +32,30 @@ type Outlet struct {
 	lock sync.Mutex
 }
 
-func (ou *Outlet) GetDriverName() string {
-	return ou.DriverName
+func NewOutlet(config OutletConfig, dOut drivers.DigitalOutput) *Outlet {
+	return &Outlet{
+		name:           config.Name,
+		disableHomekit: config.DisableHomekit,
+		output:         dOut,
+		lock:           sync.Mutex{},
+	}
 }
 
 func (ou *Outlet) GetUniqueId() uint64 {
 	hash := fnv.New64()
-	hash.Write([]byte("Outlet_" + ou.Name))
+	hash.Write([]byte("Outlet_" + ou.name))
 	return hash.Sum64()
 }
 
-func (ou *Outlet) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.String(), ou.DriverName) {
-		return fmt.Errorf("Init failed, mismatched or incorrect driver")
-	}
+func (ou *Outlet) InitHk() *accessory.A {
 
-	if !driver.IsReady() {
-		return fmt.Errorf("Init failed, driver not ready")
-	}
-	ou.lock = sync.Mutex{}
-	var err error
-
-	ou.driver = driver
-	ou.output, err = driver.GetOutput(ou.IoName)
-	if err != nil {
-		return errors.Wrap(err, "Init failed")
-	}
-
-	if ou.DisableHomekit {
+	if ou.disableHomekit {
 		return nil
 	}
+
 	info := accessory.Info{
-		Name:         ou.Name,
-		SerialNumber: fmt.Sprintf("outlet:%s:%s", ou.DriverName, ou.IoName),
+		Name:         ou.name,
+		SerialNumber: fmt.Sprintf("outlet:%s", ou.output.String()),
 	}
 	ou.hk = accessory.NewOutlet(info)
 
@@ -72,33 +64,30 @@ func (ou *Outlet) Init(driver drivers.IoDriver) error {
 	ou.hk.Outlet.AddC(ou.fault.C)
 
 	ou.hk.Outlet.On.OnValueRemoteUpdate(ou.SetValue)
-	return nil
+
+	return ou.hk.A
 }
 
 func (ou *Outlet) Sync() error {
+	if ou.disableHomekit {
+		return nil
+	}
+
 	ou.lock.Lock()
 	defer ou.lock.Unlock()
-	var err error
 
-	oldState := ou.State
-	ou.State, err = ou.output.GetState()
-
-	if ou.hk != nil {
-		if err != nil {
-			ou.fault.SetValue(characteristic.StatusFaultGeneralFault)
-			ou.IsFaulty = true
-		} else {
-			ou.fault.SetValue(characteristic.StatusFaultNoFault)
-			ou.IsFaulty = false
-		}
-	}
-
+	onState, err := ou.output.GetState()
 	if err != nil {
-		return errors.Wrap(err, "Sync failed")
+		ou.fault.SetValue(characteristic.StatusFaultGeneralFault)
+		ou.isFaulty = true
+		return errors.Wrap(err, "Sync failed for Outlet, GetState failed")
 	}
 
-	if oldState != ou.State && ou.hk != nil {
-		ou.hk.Outlet.On.SetValue(ou.State)
+	ou.fault.SetValue(characteristic.StatusFaultNoFault)
+	ou.isFaulty = false
+
+	if onState != ou.hk.Outlet.On.Value() {
+		ou.hk.Outlet.On.SetValue(onState)
 	}
 
 	return nil
@@ -108,18 +97,14 @@ func (ou *Outlet) GetControllers() []ControllingDevice {
 	return ou.ControlBy
 }
 
-func (ou *Outlet) GetHk() *accessory.A {
-	if ou.hk == nil {
-		return nil
-	}
-	return ou.hk.A
-}
-
 func (ou *Outlet) SetValue(state bool) {
-	ou.State = state
-	ou.output.Set(ou.State)
+	ou.output.Set(state)
 }
 
 func (ou *Outlet) Toggle() {
-	ou.SetValue(!ou.State)
+	oldState, err := ou.output.GetState()
+	if err != nil {
+		return
+	}
+	ou.SetValue(!oldState)
 }

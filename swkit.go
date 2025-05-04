@@ -29,11 +29,15 @@ const homeKitBridgeAuthor = "github.com/hubertat"
 type SwKit struct {
 	Name string
 
-	Lights        []*Light
-	Buttons       []*Button
-	Switches      []*Switch
-	Outlets       []*Outlet
-	MotionSensors []*MotionSensor
+	Lights      []LightConfig
+	ColorLights []ColorLightConfig
+
+	lights      []*Light
+	colorLights []*ColorLight
+	// Buttons       []*Button
+	// Switches      []*Switch
+	// Outlets       []*Outlet
+	// MotionSensors []*MotionSensor
 
 	HkPin       string
 	HkDirectory string
@@ -51,14 +55,12 @@ type SwKit struct {
 	ticker     *time.Ticker
 }
 
-type IO interface {
-	Init(driver drivers.IoDriver) error
-	GetDriverName() string
+type Device interface {
 	Sync() error
 }
 
 type HkThing interface {
-	GetHk() *accessory.A
+	InitHk() *accessory.A
 	GetUniqueId() uint64
 	Sync() error
 }
@@ -76,87 +78,72 @@ type Controllable interface {
 	Toggle()
 }
 
-func (sw *SwKit) getInPins(driverName string) (pins []string) {
-	for _, io := range sw.Buttons {
-		if strings.EqualFold(io.DriverName, driverName) {
-			pins = append(pins, io.IoName)
-		}
-	}
-	for _, io := range sw.Switches {
-		if strings.EqualFold(io.DriverName, driverName) {
-			pins = append(pins, io.IoName)
-		}
-	}
-	for _, io := range sw.MotionSensors {
-		if strings.EqualFold(io.DriverName, driverName) {
-			pins = append(pins, io.IoName)
-		}
-	}
-
-	return
-}
-
-func (sw *SwKit) getOutPins(driverName string) (pins []string) {
-	for _, io := range sw.Lights {
-		if strings.EqualFold(io.DriverName, driverName) {
-			pins = append(pins, io.IoName)
-		}
-	}
-	for _, io := range sw.Outlets {
-		if strings.EqualFold(io.DriverName, driverName) {
-			pins = append(pins, io.IoName)
-		}
-	}
-
-	return
-}
-
-func (sw *SwKit) getIos() []IO {
-	ios := []IO{}
-	for _, li := range sw.Lights {
-		ios = append(ios, li)
-	}
-	for _, li := range sw.Buttons {
-		ios = append(ios, li)
-	}
-	for _, li := range sw.Switches {
-		ios = append(ios, li)
-	}
-	for _, li := range sw.Outlets {
-		ios = append(ios, li)
-	}
-	for _, mosens := range sw.MotionSensors {
-		ios = append(ios, mosens)
-	}
-	for _, but := range sw.Buttons {
-		ios = append(ios, but)
-	}
-
-	return ios
-}
-
 func (sw *SwKit) getHkThings() (things []HkThing) {
-	for _, th := range sw.Lights {
+	for _, th := range sw.lights {
 		things = append(things, th)
 	}
-	for _, th := range sw.Buttons {
+
+	for _, th := range sw.colorLights {
 		things = append(things, th)
 	}
-	for _, th := range sw.Switches {
-		things = append(things, th)
+
+	// for _, th := range sw.Buttons {
+	// 	things = append(things, th)
+	// }
+	// for _, th := range sw.Switches {
+	// 	things = append(things, th)
+	// }
+	// for _, th := range sw.Outlets {
+	// 	things = append(things, th)
+	// }
+	// for _, th := range sw.MotionSensors {
+	// 	things = append(things, th)
+	// }
+
+	return
+}
+
+func (sw *SwKit) getDevices() (devices []Device) {
+	for _, li := range sw.lights {
+		devices = append(devices, li)
 	}
-	for _, th := range sw.Outlets {
-		things = append(things, th)
-	}
-	for _, th := range sw.MotionSensors {
-		things = append(things, th)
+
+	for _, cl := range sw.colorLights {
+		devices = append(devices, cl)
 	}
 
 	return
 }
 
-func (sw *SwKit) InitDrivers(ctx context.Context) error {
+func (sw *SwKit) getAllIoIds() []string {
+	allIds := []string{}
+
+	for _, liConf := range sw.Lights {
+		allIds = append(allIds, liConf.DigitalOutName)
+	}
+
+	for _, clConf := range sw.ColorLights {
+		allIds = append(allIds, clConf.DigitalOutName)
+		allIds = append(allIds, clConf.RgbwOutName)
+	}
+}
+
+func (sw *SwKit) getDriverForIo(ioId string) (driver, error) {
+	ioIdSlice := strings.Split(ioId, "|")
+	if len(ioIdSlice) != 3 {
+		return nil, errors.Errorf("got invalid io id: %s", ioId)
+	}
+	driverId := ioIdSlice[0]
+	driver, driverPresent := sw.ioDrivers[driverId]
+	if !driverPresent {
+		return nil, errors.Errorf("driver not found for id: %s", driverId)
+	}
+	return driver, nil
+}
+
+func (sw *SwKit) Setup(ctx context.Context) error {
 	sw.ioDrivers = make(map[string]drivers.IoDriver)
+	ioSlice := map[string][]string{}
 
 	if sw.Gpio != nil {
 		sw.ioDrivers[sw.Gpio.String()] = sw.Gpio
@@ -179,109 +166,72 @@ func (sw *SwKit) InitDrivers(ctx context.Context) error {
 	}
 
 	for _, driver := range sw.ioDrivers {
-		err := driver.Setup(ctx, sw.getInPins(driver.String()), sw.getOutPins(driver.String()))
+		ioSlice[driver.String()] = []string{}
+	}
+
+	for _, ioId := range sw.getAllIoIds() {
+		ioIdSlice := strings.Split(ioId, "|")
+		if len(ioIdSlice) != 3 {
+			return errors.Errorf("got invalid io id: %s", ioId)
+		}
+		driverId := ioIdSlice[0]
+		ios, driverPresent := ioSlice[driverId]
+		if !driverPresent {
+			return errors.Errorf("failed during swkit Setup: found io id: %s, but driver (%s) is not present/configured", driverId, ioId)
+		}
+		ioSlice[driverId] = append(ios, ioId)
+	}
+
+	for _, driver := range sw.ioDrivers {
+		ioSlice, present := ioSlice[driver.String()]
+		if !present {
+			return errors.Errorf("failed during swkit Setup: io slice for driver (%s) is not present", driver.String())
+		}
+		err := driver.Setup(ctx, ioSlice)
 		if err != nil {
 			return errors.Wrapf(err, "failed to setup %s driver", driver)
 		}
 	}
 
-	for _, io := range sw.getIos() {
-		_, driverFound := sw.ioDrivers[io.GetDriverName()]
-		if !driverFound {
-			return errors.Errorf("driver %s not set up", io.GetDriverName())
-		}
-	}
-
-	return nil
-}
-
-func (sw *SwKit) InitIos() error {
-	for _, io := range sw.getIos() {
-		err := io.Init(sw.ioDrivers[io.GetDriverName()])
+	for _, light := range sw.Lights {
+		driver, err := sw.getDriverForIo(light.DigitalOutName)
 		if err != nil {
-			return errors.Wrapf(err, "failed to init io")
+			return errors.Wrapf(err, "failed to get driver for light %s", light.Name)
 		}
+
+		dOut, err := driver.GetDigitalOutput(light.DigitalOutName)
+		if err != nil {
+			return errors.Wrapf(err, "failed to get digital output for light %s", light.Name)
+		}
+
+		sw.lights = append(sw.lights, NewLight(light, dOut))
+	}
+
+	for _, coloLight := range sw.ColorLights {
+		dOutDriver, err := sw.getDriverForIo(coloLight.DigitalOutName)
+		if err != nil {
+			return errors.Wrapf(err, "failed to get driver for color light %s", coloLight.Name)
+		}
+
+		dOut, err := dOutDriver.GetDigitalOutput(coloLight.DigitalOutName)
+		if err != nil {
+			return errors.Wrapf(err, "failed to get digital output for color light %s", coloLight.Name)
+		}
+
+		rgbwDriver, err := sw.getDriverForIo(coloLight.RgbwOutName)
+		if err != nil {
+			return errors.Wrapf(err, "failed to get driver for color light %s", coloLight.Name)
+		}
+
+		rgbw, err := rgbwDriver.GetRgbw(coloLight.RgbwOutName)
+		if err != nil {
+			return errors.Wrapf(err, "failed to get rgbw for color light %s", coloLight.Name)
+		}
+
+		sw.colorLights = append(sw.colorLights, NewColorLight(coloLight, dOut, rgbw))
 	}
 
 	return nil
-}
-
-func (sw *SwKit) findSwitch(ioName string, driverName string) *Switch {
-	for _, swb := range sw.Switches {
-		if strings.EqualFold(swb.IoName, ioName) && strings.EqualFold(swb.DriverName, driverName) {
-			return swb
-		}
-	}
-
-	return nil
-}
-
-func (sw *SwKit) findButton(pinNo string, driverName string) *Button {
-	for _, but := range sw.Buttons {
-		if strings.EqualFold(but.IoName, pinNo) && strings.EqualFold(but.DriverName, driverName) {
-			return but
-		}
-	}
-
-	return nil
-}
-
-func (sw *SwKit) MatchControllers() error {
-	controllables := []Controllable{}
-
-	for _, li := range sw.Lights {
-		controllables = append(controllables, li)
-	}
-
-	for _, ou := range sw.Outlets {
-		controllables = append(controllables, ou)
-	}
-
-	for _, controllable := range controllables {
-		driverName := controllable.GetDriverName()
-		for _, controller := range controllable.GetControllers() {
-			if len(controller.DriverName) > 0 {
-				driverName = controller.DriverName
-			}
-			_, driverReady := sw.ioDrivers[driverName]
-			if !driverReady {
-				return errors.Errorf("matching controlled failed, driver (%s) not present or not ready", driverName)
-			}
-
-			swb := sw.findSwitch(controller.IoName, driverName)
-			but := sw.findButton(controller.IoName, driverName)
-			if swb == nil && but == nil {
-				return errors.Errorf("matching controlled failed, no button or switch found with io = %s and driver %s", controller.IoName, driverName)
-			}
-
-			if swb != nil {
-				swb.switchThis = append(swb.switchThis, controllable)
-			}
-
-			if but != nil {
-				but.toggleThis = append(but.toggleThis, controllable)
-			}
-		}
-	}
-
-	return nil
-}
-
-func (sw *SwKit) GetHkAccessories(firmwareVersion string) (acc []*accessory.A) {
-	acc = []*accessory.A{}
-
-	for _, th := range sw.getHkThings() {
-		accessory := th.GetHk()
-		if accessory != nil {
-			if accessory.Info != nil && accessory.Info.FirmwareRevision != nil {
-				accessory.Info.FirmwareRevision.SetValue(firmwareVersion)
-			}
-			accessory.Id = th.GetUniqueId()
-			acc = append(acc, accessory)
-		}
-	}
-
-	return
 }
 
 func (sw *SwKit) StartTicker(interval time.Duration) {
@@ -292,7 +242,7 @@ func (sw *SwKit) StartTicker(interval time.Duration) {
 		select {
 		case <-sw.ticker.C:
 			{
-				for _, io := range sw.getIos() {
+				for _, io := range sw.getDevices() {
 					err := io.Sync()
 					if err != nil {
 						log.Printf("Received error(s) from syncing io:\n%v", err)
@@ -322,15 +272,7 @@ func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 	for driverName, driver := range sw.ioDrivers {
 		fmt.Fprintln(writer, "________")
 		fmt.Fprintf(writer, "| driver: %s\n", driverName)
-		inputs, outputs := driver.GetAllIo()
-		fmt.Fprintf(writer, "| in pins: ")
-		for _, inpin := range inputs {
-			fmt.Fprintf(writer, "%d, ", inpin)
-		}
-		fmt.Fprintf(writer, "\n| out pins: ")
-		for _, outpin := range outputs {
-			fmt.Fprintf(writer, "%d, ", outpin)
-		}
+
 		fmt.Fprintln(writer)
 		fmt.Fprintln(writer, "--------")
 	}
@@ -350,12 +292,22 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 	})
 
 	var store hap.Store
+	acc := []*accessory.A{}
+
+	for _, th := range sw.getHkThings() {
+		accessory := th.InitHk()
+		if accessory != nil {
+			accessory.Id = th.GetUniqueId()
+			acc = append(acc, accessory)
+		}
+	}
+
 	if len(sw.HkDirectory) > 1 {
 		store = hap.NewFsStore(sw.HkDirectory)
 	} else {
 		store = hap.NewFsStore(defaultHomeKitDirectory)
 	}
-	hkServer, err := hap.NewServer(store, bridge.A, sw.GetHkAccessories(firmwareVersion)...)
+	hkServer, err := hap.NewServer(store, bridge.A, acc...)
 	if err != nil {
 		return errors.Wrap(err, "failed to create HomeKit server")
 	}

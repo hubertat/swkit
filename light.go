@@ -3,10 +3,7 @@ package swkit
 import (
 	"fmt"
 	"hash/fnv"
-	"strings"
 	"sync"
-
-	"github.com/charmbracelet/log"
 
 	"github.com/brutella/hap/accessory"
 	"github.com/brutella/hap/characteristic"
@@ -14,59 +11,50 @@ import (
 	"github.com/pkg/errors"
 )
 
-type Light struct {
+type LightConfig struct {
 	Name           string
-	State          bool
-	DriverName     string
-	IoName         string
+	DigitalOutName string
 	DisableHomekit bool
-	IsFaulty       bool
-
-	ControlBy []ControllingDevice
-
-	output drivers.DigitalOutput
-	driver drivers.IoDriver
-	hk     *accessory.Lightbulb
-	fault  *characteristic.StatusFault
-	lock   sync.Mutex
 }
 
-func (li *Light) GetDriverName() string {
-	return li.DriverName
+type Light struct {
+	ControlBy []ControllingDevice
+
+	name           string
+	disableHomekit bool
+	isFaulty       bool
+
+	output drivers.DigitalOutput
+
+	hk    *accessory.Lightbulb
+	fault *characteristic.StatusFault
+	lock  sync.Mutex
+}
+
+func NewLight(config LightConfig, dOut drivers.DigitalOutput) *Light {
+	return &Light{
+		name:           config.Name,
+		disableHomekit: config.DisableHomekit,
+
+		output: dOut,
+		lock:   sync.Mutex{},
+	}
 }
 
 func (li *Light) GetUniqueId() uint64 {
 	hash := fnv.New64()
-	hash.Write([]byte("Light_" + li.Name))
+	hash.Write([]byte("Light_" + li.name))
 	return hash.Sum64()
 }
 
-func (li *Light) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.String(), li.DriverName) {
-		return fmt.Errorf("Init failed, mismatched or incorrect driver")
-	}
-
-	if !driver.IsReady() {
-		return fmt.Errorf("Init failed, driver not ready")
-	}
-
-	li.lock = sync.Mutex{}
-
-	var err error
-
-	li.driver = driver
-	li.output, err = driver.GetOutput(li.IoName)
-	if err != nil {
-		return errors.Wrap(err, "Init failed")
-	}
-
-	if li.DisableHomekit {
+func (li *Light) InitHk() *accessory.A {
+	if li.disableHomekit {
 		return nil
 	}
 
 	info := accessory.Info{
-		Name:         li.Name,
-		SerialNumber: fmt.Sprintf("light:%s:%s", li.DriverName, li.IoName),
+		Name:         li.name,
+		SerialNumber: fmt.Sprintf("light:%s", li.output.String()),
 	}
 	li.hk = accessory.NewLightbulb(info)
 
@@ -76,33 +64,33 @@ func (li *Light) Init(driver drivers.IoDriver) error {
 
 	li.hk.Lightbulb.On.OnValueRemoteUpdate(li.SetValue)
 
-	return nil
+	return li.hk.A
 }
 
+// Sync() is called periodically by swkit managing server to sync from drivers io
+// If subscribe model is available and used this should be skipped
+// If there is no homekit, there is no internal state - skip
 func (li *Light) Sync() (err error) {
+	if li.disableHomekit {
+		return nil
+	}
+
 	li.lock.Lock()
 	defer li.lock.Unlock()
 
-	oldState := li.State
-	_, err = li.output.GetState()
-
-	if li.hk != nil {
-		if err != nil {
-			li.fault.SetValue(characteristic.StatusFaultGeneralFault)
-			li.IsFaulty = true
-		} else {
-			li.fault.SetValue(characteristic.StatusFaultNoFault)
-			li.IsFaulty = false
-		}
-	}
+	onState, err := li.output.GetState()
 
 	if err != nil {
+		li.fault.SetValue(characteristic.StatusFaultGeneralFault)
+		li.isFaulty = true
 		return errors.Wrap(err, "Sync failed on output.GetState()")
 	}
 
-	if li.State != oldState && li.hk != nil {
-		log.Info("Light.Sync() state changed li.State", li.State, "oldState", oldState, "err: ", err)
-		li.hk.Lightbulb.On.SetValue(li.State)
+	li.fault.SetValue(characteristic.StatusFaultNoFault)
+	li.isFaulty = false
+
+	if onState != li.hk.Lightbulb.On.Value() {
+		li.hk.Lightbulb.On.SetValue(onState)
 	}
 
 	return nil
@@ -112,18 +100,13 @@ func (li *Light) GetControllers() []ControllingDevice {
 	return li.ControlBy
 }
 
-func (li *Light) GetHk() *accessory.A {
-	if li.hk == nil {
-		return nil
-	}
-	return li.hk.A
-}
-
 func (li *Light) SetValue(state bool) {
-	li.State = state
-	li.output.Set(li.State)
+	li.output.Set(state)
 }
 
 func (li *Light) Toggle() {
-	li.SetValue(!li.State)
+	oldState, err := li.output.GetState()
+	if err == nil {
+		li.SetValue(!oldState)
+	}
 }

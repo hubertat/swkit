@@ -12,13 +12,14 @@ const PacketOverhead uint = 4 + 2 + 1
 type PacketType byte
 
 const (
-	PACKET_TYPE_NONE                PacketType = 0x00
-	PACKET_TYPE_ARDUINOPRO_CONFIG   PacketType = 'C'
-	PACKET_TYPE_ARDUINOPRO_STATUS   PacketType = 'S'
-	PACKET_TYPE_ARDUINOPRO_COMMAND  PacketType = 'D'
-	PACKET_TYPE_ARDUINOPRO_RESPONSE PacketType = 'R'
-	PACKET_TYPE_ARDUINOPRO_NOTREADY PacketType = 'N'
-	PACKET_TYPE_RPIXEL_SET          PacketType = 'P'
+	PACKET_TYPE_NONE                     PacketType = 0x00
+	PACKET_TYPE_ARDUINOPRO_CONFIG        PacketType = 'C'
+	PACKET_TYPE_ARDUINOPRO_CONFIG_NOTICE PacketType = 'c'
+	PACKET_TYPE_ARDUINOPRO_STATUS        PacketType = 'S'
+	PACKET_TYPE_ARDUINOPRO_COMMAND       PacketType = 'D'
+	PACKET_TYPE_ARDUINOPRO_RESPONSE      PacketType = 'R'
+	PACKET_TYPE_ARDUINOPRO_NOTREADY      PacketType = 'N'
+	PACKET_TYPE_RPIXEL_SET               PacketType = 'P'
 )
 
 func (pt PacketType) String() string {
