@@ -78,7 +78,7 @@ func mockGrentonIo() *httptest.Server {
 func TestGrentonHelperFunctions(t *testing.T) {
 	grenton := GrentonIO{}
 
-	cluId := 0x0d1cf087
+	// cluId := 0x0d1cf087
 
 	type CluObject struct {
 		Clu  string
@@ -143,7 +143,9 @@ func TestGrentonioSetup(t *testing.T) {
 		t.Error("expected error from grenton io setup (inputs in setup - should be unsupported)")
 	}
 
-	err = grenton.Setup(ctx, []uint16{}, []uint16{302})
+	err = grenton.Setup(ctx, []string{}, []string{
+		"302:1",
+	})
 	if err == nil {
 		t.Error("expected error from grenton io setup (wrong clu id provided)")
 	}

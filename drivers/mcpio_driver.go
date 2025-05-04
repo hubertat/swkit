@@ -163,7 +163,7 @@ func (mcp *McpIO) GetInput(id string) (input DigitalInput, err error) {
 		}
 	}
 
-	err = fmt.Errorf("input (id: %d) not found", id)
+	err = fmt.Errorf("input (id: %s) not found", id)
 	return
 }
 
@@ -183,7 +183,7 @@ func (mcp *McpIO) GetOutput(id string) (output DigitalOutput, err error) {
 		}
 	}
 
-	err = fmt.Errorf("input (id: %d) not found", id)
+	err = fmt.Errorf("input (id: %s) not found", id)
 	return
 }
 

@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 
- _ "embed"
+	_ "embed"
 
 	"github.com/charmbracelet/log"
 	"github.com/hubertat/swkit/mqtt"
@@ -17,7 +18,6 @@ var shellyGetConfigResp []byte
 
 //go:embed shelly_rpc/getstatus_resp.json
 var shellyGetStatusResp []byte
-
 
 const publishRequestTopicSuffix = "/rpc"
 const responseTopicSuffix = "/rpc"
@@ -78,33 +78,32 @@ func (fs *FakeShellyMqttRpc) processRequest(topic string, payload []byte) {
 		return
 	}
 
-
 	fs.l.Info("unmarshaled payload", "request", req)
 	response := []byte{}
 	switch req.Method {
-		case "Shelly.GetConfig":
-			fs.l.Debug("responding to GetConfig request")
-			response = shellyGetConfigResp
-		case "Shelly.GetStatus":
-			fs.l.Debug("responding to GetStatus request")
-			response = shellyGetStatusResp
+	case "Shelly.GetConfig":
+		fs.l.Debug("responding to GetConfig request")
+		response = shellyGetConfigResp
+	case "Shelly.GetStatus":
+		fs.l.Debug("responding to GetStatus request")
+		response = shellyGetStatusResp
 
-		default:
+	default:
 		fs.l.Info("unrecognized rpc method", "method", req.Method)
 		return
 	}
 
 	fs.l.Debug("publishing response", "response", string(response))
 	for _, h := range fs.handlers {
-		h.Publish(topic + responseTopicSuffix, response)
+		h.Publish(topic+responseTopicSuffix, response)
 	}
 }
 
 func NewFakeShellyMqttRpc(clientId string) *FakeShellyMqttRpc {
 	return &FakeShellyMqttRpc{
 		clientId: clientId,
-		l: log.NewWithOptions(log.Options{
-			log.WithPrefix("fake mqtt rpc 🥸")
+		l: log.NewWithOptions(os.Stderr, log.Options{
+			Prefix: "fake mqtt rpc 🥸",
 		}),
 	}
 }

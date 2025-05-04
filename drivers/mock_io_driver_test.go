@@ -77,11 +77,13 @@ func TestMockOutputSetState(t *testing.T) {
 func TestMockIoSetup(t *testing.T) {
 	md := MockIoDriver{}
 
+	ctx := context.Background()
+
 	want := false
 	got := md.IsReady()
 	assertBools(t, got, want)
 
-	md.Setup([]uint16{1, 3, 5}, []uint16{2, 4})
+	md.Setup(ctx, []string{"1", "3", "5"}, []string{"2", "4"})
 	want = true
 	got = md.IsReady()
 	assertBools(t, got, want)

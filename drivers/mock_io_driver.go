@@ -87,7 +87,7 @@ func (md *MockIoDriver) GetInput(id string) (DigitalInput, error) {
 			return input, nil
 		}
 	}
-	return nil, fmt.Errorf("mock input %d not found", id)
+	return nil, fmt.Errorf("mock input %s not found", id)
 }
 
 func (md *MockIoDriver) GetOutput(id string) (DigitalOutput, error) {
@@ -96,7 +96,7 @@ func (md *MockIoDriver) GetOutput(id string) (DigitalOutput, error) {
 			return output, nil
 		}
 	}
-	return nil, fmt.Errorf("mock output %d not found", id)
+	return nil, fmt.Errorf("mock output %s not found", id)
 }
 
 func (md *MockIoDriver) GetAllIo() (inputs []string, outputs []string) {
