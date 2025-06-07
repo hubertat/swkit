@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -30,6 +31,10 @@ func (mo *MockOutput) Set(state bool) error {
 
 func (mo *MockOutput) String() string {
 	return fmt.Sprintf("mock_output:%s", mo.id)
+}
+
+func (mo *MockOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
+	return errors.New("SetOnStateUpdate not supported")
 }
 
 type MockInput struct {

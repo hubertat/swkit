@@ -109,6 +109,10 @@ func (gro *GrentonOutput) String() string {
 	return fmt.Sprintf("grenton_output:%d:%d", gro.cluId, gro.id)
 }
 
+func (gro *GrentonOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
+	return errors.New("SetOnStateUpdate not supported")
+}
+
 type GrentonIO struct {
 	GateAddress string
 

@@ -64,6 +64,10 @@ func (li *Light) InitHk() *accessory.A {
 
 	li.hk.Lightbulb.On.OnValueRemoteUpdate(li.SetValue)
 
+	// set callback to update on remote value change
+	// TODO consider altering sync method if digital output gives this option (check error)
+	li.output.SetOnStateUpdate(li.hk.Lightbulb.On.SetValue)
+
 	return li.hk.A
 }
 

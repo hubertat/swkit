@@ -357,6 +357,23 @@ func (she *ShellyIO) HandleRpcStatus(online bool, topic string) bool {
 }
 
 func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
+	outStates := map[string]bool{}
+	for _, o := range she.outputs {
+		outStates[o.String()], _ = o.dev.GetOutputState(o.switchNo)
+	}
+
+	defer func(she *ShellyIO) {
+		for _, o := range she.outputs {
+			oldState, present := outStates[o.String()]
+			if present && o.onStateUpdate != nil {
+				state, _ := o.dev.GetOutputState(o.switchNo)
+				if state != oldState {
+					o.onStateUpdate(state)
+				}
+			}
+		}
+	}(she)
+
 	dev := she.getDevice(msg.Src)
 	if dev == nil {
 		log.Warn("handling rpc message, device not found", "device", msg.Src)
@@ -419,7 +436,17 @@ type ShellyOutput struct {
 	switchNo int
 	deviceId string
 
+	onStateUpdate func(bool)
+
 	dev *shelly.ShellyDevice
+}
+
+func (sout *ShellyOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
+	if onStateUpdate == nil {
+		return errors.New("onStateUpdate function cannot be nil")
+	}
+	sout.onStateUpdate = onStateUpdate
+	return nil
 }
 
 func (sout *ShellyOutput) GetState() (bool, error) {

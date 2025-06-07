@@ -128,6 +128,7 @@ type DigitalOutput interface {
 	GetState() (bool, error)
 	Set(bool) error
 	String() string
+	SetOnStateUpdate(func(bool)) error
 }
 
 // AnalogOutput represents an output that could take int value from defined minimum and maximum

@@ -27,6 +27,7 @@ func rgbwToRgb(r, g, b, w uint8) (uint8, uint8, uint8) {
 	if w > 0 {
 		return w, w, w
 	}
+	return r, g, b
 }
 
 // convertIntRange converts input value with provided range to new range

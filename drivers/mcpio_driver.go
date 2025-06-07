@@ -90,6 +90,10 @@ func (mout *McpOutput) Set(state bool) (err error) {
 	return
 }
 
+func (mout *McpOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
+	return errors.New("SetOnStateUpdate not supported")
+}
+
 func (mcpio *McpIO) String() string {
 	return mcpioDriverName
 }
