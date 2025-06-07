@@ -42,7 +42,7 @@ type McpOutput struct {
 }
 
 func (min *McpInput) String() string {
-	return fmt.Sprintf("mcp_digital_in:%2d", min.pin)
+	return getIoIdString(mcpioDriverName, ioTypeDigitalInput, fmt.Sprintf("%d", min.pin))
 }
 
 func (min *McpInput) GetState() (state bool, err error) {
@@ -74,7 +74,7 @@ func (mout *McpOutput) GetState() (state bool, err error) {
 }
 
 func (mout *McpOutput) String() string {
-	return fmt.Sprintf("mcp_digital_out:%2d", mout.pin)
+	return getIoIdString(mcpioDriverName, ioTypeDigitalOutput, fmt.Sprintf("%d", mout.pin))
 }
 
 func (mout *McpOutput) Set(state bool) (err error) {
@@ -106,18 +106,18 @@ func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
 	}
 
 	for _, io := range ios {
-		ioIdSlice := strings.Split(io, "|")
-		if len(ioIdSlice) != 3 {
-			return errors.New("invalid io id format, expected 3 parts separated by '|'")
+		driver, ioType, ioId, err := resolveIoIdString(io)
+		if err != nil {
+			return errors.Join(err, errors.New("invalid io id format, expected 3 parts separated by '|'"))
 		}
 
-		if !strings.EqualFold(ioIdSlice[0], mcp.String()) {
+		if !strings.EqualFold(driver, mcp.String()) {
 			return errors.New("invalid io, driver name mismatch")
 		}
 
-		switch ioIdSlice[1] {
-		case "d_in":
-			pin, err := strconv.Atoi(ioIdSlice[2])
+		switch ioType {
+		case ioTypeDigitalInput:
+			pin, err := strconv.Atoi(ioId)
 			if err != nil {
 				return errors.Join(err, errors.New("failed to convert input pin to int"))
 			}
@@ -135,8 +135,8 @@ func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
 			}
 			mcp.inputs = append(mcp.inputs, McpInput{pin: uint8(pin), invert: mcp.InvertInputs, device: mcp.device})
 
-		case "d_out":
-			pin, err := strconv.Atoi(ioIdSlice[2])
+		case ioTypeDigitalOutput:
+			pin, err := strconv.Atoi(ioId)
 			if err != nil {
 				return errors.Join(err, errors.New("failed to convert output pin to int"))
 			}
@@ -151,7 +151,7 @@ func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
 			mcp.outputs = append(mcp.outputs, McpOutput{pin: uint8(pin), device: mcp.device})
 
 		default:
-			return errors.New("unknown io type: " + ioIdSlice[1])
+			return errors.New("unsupported io type: " + ioType.String())
 		}
 	}
 
@@ -216,8 +216,10 @@ func (mcp *McpIO) GetAnalogOutput(id string) (output AnalogOutput, err error) {
 	}
 	err = errors.New("mcp io analog outputs not implemented")
 	return
+}
 
-	err = fmt.Errorf("input (id: %d) not found", id)
+func (mcp *McpIO) GetRgbwOutput(id string) (output RgbwOutput, err error) {
+	err = errors.New("mcp io rgbw outputs not implemented")
 	return
 }
 

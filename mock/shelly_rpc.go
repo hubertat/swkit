@@ -72,7 +72,7 @@ func (fs *FakeShellyMqttRpc) processRequest(topic string, payload []byte) {
 	fs.l.Debug("processing request", "topic", topic, "payload", string(payload))
 
 	var req rpcRequest
-	err = json.Unmarshal(payload, &req)
+	err := json.Unmarshal(payload, &req)
 	if err != nil {
 		fs.l.Error("failed to unmarshal payload", "payload", string(payload))
 		return
@@ -95,7 +95,7 @@ func (fs *FakeShellyMqttRpc) processRequest(topic string, payload []byte) {
 
 	fs.l.Debug("publishing response", "response", string(response))
 	for _, h := range fs.handlers {
-		h.Publish(topic+responseTopicSuffix, response)
+		h.HandleMqttMessage(topic+responseTopicSuffix, response)
 	}
 }
 

@@ -17,13 +17,37 @@ import (
 	"github.com/hubertat/swkit/mqtt"
 )
 
-const idSeparator byte = '|'
-
+const idSeparator = ":"
 const shellyDriverName string = "shelly"
 
-const setupDevicesTimeout = 15 * time.Second
-const healthCheckInterval = 2 * time.Second
+const setupDevicesTimeout = 45 * time.Second
+const healthCheckInterval = 5 * time.Second
 const unhealthyCountLimit = 5
+
+func parseShellyIoId(ioId string) (string, int, error) {
+	if len(ioId) == 0 {
+		return "", 0, errors.New("empty io id")
+	}
+
+	split := strings.Split(ioId, idSeparator)
+	if len(split) != 2 {
+		return "", 0, errors.New("invalid io id format, expected 2 parts separated by '" + string(idSeparator) + "'")
+	}
+
+	deviceId := split[0]
+	inputNoStr := split[1]
+
+	inputNo, err := strconv.Atoi(inputNoStr)
+	if err != nil {
+		return "", 0, errors.New("invalid input number")
+	}
+
+	return deviceId, inputNo, nil
+}
+
+func getShellyIoId(deviceId string, inputNo int) string {
+	return fmt.Sprintf("%s%s%d", deviceId, idSeparator, inputNo)
+}
 
 type ShellyIO struct {
 	MqttBroker   string
@@ -51,28 +75,34 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 	})
 
 	devicesMap := make(map[string]bool)
-	for _, output := range outputs {
-		deviceId, ioNo, parsErr := she.parseIoId(output)
-		if parsErr != nil {
-			logger.Info("failed to parse device", "output id", output, "error", parsErr)
-			parsErr = errors.Join(parsErr, errors.New("failed to parse output id: "+output))
-			err = errors.Join(err, parsErr)
-		} else {
-			devicesMap[deviceId] = true
-			she.outputs = append(she.outputs, ShellyOutput{deviceId: deviceId, switchNo: ioNo})
+	for _, io := range ios {
+		driver, ioType, ioId, err := resolveIoIdString(io)
+		if err != nil {
+			return errors.Join(err, errors.New("invalid io id format, expected 3 parts separated by '|'"))
 		}
-	}
 
-	for _, input := range inputs {
-		deviceId, ioNo, parsErr := she.parseIoId(input)
-		if parsErr != nil {
-			logger.Info("failed to parse device", "input id", input, "error", parsErr)
-			parsErr = errors.Join(parsErr, errors.New("failed to parse input id: "+input))
-			err = errors.Join(err, parsErr)
-		} else {
-			devicesMap[deviceId] = true
-			she.inputs = append(she.inputs, ShellyInput{deviceId: deviceId, inputNo: ioNo})
+		if !strings.EqualFold(driver, she.String()) {
+			return errors.New("invalid io, driver name mismatch")
 		}
+
+		actualDeviceId, ioNo, err := parseShellyIoId(ioId)
+		if err != nil {
+			return errors.Join(err, errors.New("invalid shelly io id format, expected 2 parts separated by '"+string(idSeparator)+"'"))
+		}
+
+		switch ioType {
+		case ioTypeDigitalInput:
+			devicesMap[actualDeviceId] = true
+			she.inputs = append(she.inputs, ShellyInput{deviceId: actualDeviceId, inputNo: ioNo})
+
+		case ioTypeDigitalOutput:
+			devicesMap[actualDeviceId] = true
+			she.outputs = append(she.outputs, ShellyOutput{deviceId: actualDeviceId, switchNo: ioNo})
+
+		default:
+			return errors.New("unsupported io type: " + ioType.String())
+		}
+
 	}
 
 	logger.Debug("mapped devices", "deviceIds", devicesMap)
@@ -106,13 +136,40 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 		}
 		she.devices = append(she.devices, dev)
 	}
+	she.messenger.UpdateTopicRoots()
+
+	logger.Debug("getting devices status")
+	for _, dev := range she.devices {
+		err = dev.GetStatus()
+		if err != nil {
+			return errors.Join(errors.New("failed to send GetStatus request for device "+dev.Id), err)
+		}
+	}
 
 	logger.Debug("trying to match devices")
-	matchErr := she.tryToMatchDevices(10)
+
+	matchTickDuration := 5 * time.Second
+	matchTickCount := int(setupDevicesTimeout / matchTickDuration)
+	matchErr := she.tryToMatchDevices(matchTickCount, matchTickDuration)
+
 	if matchErr != nil {
-		err = errors.Join(err, matchErr)
+		err = errors.Join(err, matchErr, errors.New("failed on matching devices"))
 		return
 	}
+
+	go func() {
+		for {
+			select {
+			case <-she.done:
+				return
+			case <-she.healthTicker.C:
+				for _, d := range she.devices {
+					d.GetStatus()
+				}
+			}
+		}
+	}()
+	she.healthTicker = time.NewTicker(healthCheckInterval)
 
 	// go she.startHealthCheck(ctx)
 
@@ -166,12 +223,10 @@ func (she *ShellyIO) matchDevices() error {
 // tryToMatchDevices(maxTries int) will try to match devices
 // if it fails, it will retry until maxTries is reached
 // considering total setupDevicesTimeout
-func (she *ShellyIO) tryToMatchDevices(maxTries int) error {
+func (she *ShellyIO) tryToMatchDevices(maxTries int, matchTickPeriod time.Duration) error {
 	if maxTries <= 1 {
 		return she.matchDevices()
 	}
-
-	matchTickPeriod := setupDevicesTimeout / time.Duration(maxTries)
 
 	ticker := time.NewTicker(matchTickPeriod)
 	defer ticker.Stop()
@@ -326,6 +381,9 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			}
 
 			return true
+		case "Switch.Set":
+			log.Info("resp to handle", "method", msg.Method)
+			return true
 		default:
 			log.Warn("handling response, unknown method", "method", msg.Method)
 			return false
@@ -383,10 +441,14 @@ func (sout *ShellyOutput) Set(state bool) error {
 	return nil
 }
 
+func (sout *ShellyOutput) String() string {
+	return fmt.Sprintf("shelly_output:%s:%d", sout.deviceId, sout.switchNo)
+}
+
 // getStringId() string
 // return string representation of shelly output
 func (sout *ShellyOutput) getStringId() string {
-	return fmt.Sprintf("%s%c%d", sout.deviceId, idSeparator, sout.switchNo)
+	return fmt.Sprintf("%s%s%d", sout.deviceId, idSeparator, sout.switchNo)
 }
 
 type ShellyInput struct {
@@ -402,4 +464,18 @@ func (sin *ShellyInput) GetState() (bool, error) {
 	}
 
 	return sin.dev.GetInputState(sin.inputNo)
+}
+
+func (sin *ShellyInput) String() string {
+	return fmt.Sprintf("shelly_input:%s:%d", sin.deviceId, sin.inputNo)
+}
+
+// PrintStatus() string prints status of device and its io in a readable way
+func (sio *ShellyIO) PrintStatus() string {
+	s := ""
+	for _, dev := range sio.devices {
+		s += fmt.Sprintf("%s\n", dev.String())
+	}
+
+	return s
 }

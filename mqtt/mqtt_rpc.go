@@ -46,6 +46,23 @@ func NewJsonRpcMessenger(ctx context.Context, mqttClient *MqttClient, handler Mq
 	return jrm, nil
 }
 
+// UpdateTopicRoots() checks handler for topic roots and updates them if necessary
+func (jrm *JsonRpcMessenger) UpdateTopicRoots() {
+	for _, newTopic := range jrm.handler.MqttTopicRoots() {
+		exist := false
+		for _, t := range jrm.topicRoots {
+			if strings.EqualFold(newTopic, t) {
+				exist = true
+				break
+			}
+		}
+		if !exist {
+			jrm.topicRoots = append(jrm.topicRoots, newTopic)
+		}
+	}
+
+}
+
 // MqttSubscribeTopics() []string returns the topics to subscribe to
 func (jrm *JsonRpcMessenger) MqttSubscribeTopics() []string {
 	topics := []string{
@@ -129,7 +146,7 @@ func (jrm *JsonRpcMessenger) SendRequest(topicRoot string, req RpcRequest) error
 
 	topic := topicRoot + publishRequestTopicSuffix
 	if !jrm.checkForTopic(topic) {
-		return errors.New("request topic not found in the list of topics")
+		return errors.New("request topic (" + topic + ") not found in the list of topics")
 	}
 
 	nextId := jrm.queue.getNextId()

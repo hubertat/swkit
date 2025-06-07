@@ -151,7 +151,8 @@ type RgbwOutput interface {
 	String() string
 }
 
-func resolveIoId(ioIdSlice []string) (driver string, ioType IoType, name string, err error) {
+func resolveIoIdString(ioId string) (driver string, ioType IoType, name string, err error) {
+	ioIdSlice := strings.Split(ioId, "|")
 	if len(ioIdSlice) != 3 {
 		err = errors.New("invalid io id format, expected 3 parts separated by '|'")
 		return
@@ -173,6 +174,6 @@ func resolveIoId(ioIdSlice []string) (driver string, ioType IoType, name string,
 	return
 }
 
-func getIoIdSlice(driver string, ioType IoType, name string) []string {
-	return []string{driver, ioType.IdString(), name}
+func getIoIdString(driver string, ioType IoType, id string) string {
+	return fmt.Sprintf("%s|%s|%s", driver, ioType.IdString(), id)
 }

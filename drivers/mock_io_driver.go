@@ -6,8 +6,6 @@ import (
 	"io"
 	"strings"
 
-	"errors"
-
 	"github.com/hubertat/swkit/mqtt"
 )
 
@@ -30,6 +28,10 @@ func (mo *MockOutput) Set(state bool) error {
 	return nil
 }
 
+func (mo *MockOutput) String() string {
+	return fmt.Sprintf("mock_output:%s", mo.id)
+}
+
 type MockInput struct {
 	State bool
 	id    string
@@ -39,8 +41,8 @@ func (mi *MockInput) GetState() (bool, error) {
 	return mi.State, nil
 }
 
-func (mi *MockInput) SubscribeToPushEvent(listener EventListener) error {
-	return errors.New("SubscribeToPushEvent not implemented")
+func (mi *MockInput) String() string {
+	return fmt.Sprintf("mock_input:%s", mi.id)
 }
 
 type MockIoDriver struct {
@@ -49,12 +51,11 @@ type MockIoDriver struct {
 	ready   bool
 }
 
-func (md *MockIoDriver) Setup(ctx context.Context, inputs []string, outputs []string) (err error) {
-	for _, input := range inputs {
-		md.inputs = append(md.inputs, &MockInput{id: input})
-	}
-	for _, output := range outputs {
-		md.outputs = append(md.outputs, &MockOutput{id: output})
+func (md *MockIoDriver) Setup(ctx context.Context, ios []string) (err error) {
+	// For mock driver, treat all ios as both inputs and outputs for testing
+	for _, io := range ios {
+		md.inputs = append(md.inputs, &MockInput{id: io})
+		md.outputs = append(md.outputs, &MockOutput{id: io})
 	}
 	md.ready = true
 	return nil
@@ -81,7 +82,7 @@ func (md *MockIoDriver) IsReady() bool {
 	return md.ready
 }
 
-func (md *MockIoDriver) GetInput(id string) (DigitalInput, error) {
+func (md *MockIoDriver) GetDigitalInput(id string) (DigitalInput, error) {
 	for _, input := range md.inputs {
 		if strings.EqualFold(id, input.id) {
 			return input, nil
@@ -90,13 +91,21 @@ func (md *MockIoDriver) GetInput(id string) (DigitalInput, error) {
 	return nil, fmt.Errorf("mock input %s not found", id)
 }
 
-func (md *MockIoDriver) GetOutput(id string) (DigitalOutput, error) {
+func (md *MockIoDriver) GetDigitalOutput(id string) (DigitalOutput, error) {
 	for _, output := range md.outputs {
 		if strings.EqualFold(id, output.id) {
 			return output, nil
 		}
 	}
 	return nil, fmt.Errorf("mock output %s not found", id)
+}
+
+func (md *MockIoDriver) GetAnalogOutput(id string) (AnalogOutput, error) {
+	return nil, fmt.Errorf("analog output not implemented in mock driver")
+}
+
+func (md *MockIoDriver) GetRgbwOutput(id string) (RgbwOutput, error) {
+	return nil, fmt.Errorf("rgbw output not implemented in mock driver")
 }
 
 func (md *MockIoDriver) GetAllIo() (inputs []string, outputs []string) {

@@ -217,3 +217,11 @@ func (sd *ShellyDevice) UpdateFromStatus(status GetStatus) error {
 func (sd *ShellyDevice) Close() {
 	sd.done <- true
 }
+
+func (sd *ShellyDevice) GetStatus() error {
+	req := mqtt.RpcRequest{
+		Method: "Shelly.GetStatus",
+		Dst:    sd.Id,
+	}
+	return sd.messenger.SendRequest(sd.Id, req)
+}

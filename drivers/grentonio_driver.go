@@ -106,8 +106,7 @@ func (gro *GrentonOutput) parseId(id string) error {
 }
 
 func (gro *GrentonOutput) String() string {
-	// TODO
-	return "ID HERE TODO"
+	return fmt.Sprintf("grenton_output:%d:%d", gro.cluId, gro.id)
 }
 
 type GrentonIO struct {
@@ -265,7 +264,7 @@ func (gio *GrentonIO) setState(state bool, output *GrentonOutput) (err error) {
 	return
 }
 
-func (gio *GrentonIO) Setup(ctx context.Context, inputs []string, outputs []string) (err error) {
+func (gio *GrentonIO) Setup(ctx context.Context, ios []string) (err error) {
 	gio.ready = false
 	gio.gateLock = &sync.Mutex{}
 
@@ -294,24 +293,30 @@ func (gio *GrentonIO) Setup(ctx context.Context, inputs []string, outputs []stri
 		return
 	}
 
-	if len(inputs) > 0 {
-		err = errors.Errorf("received inputs slice, grenton io not supports inputs")
-		return
-	}
-
-	if len(outputs) == 0 {
-		err = errors.Errorf("received 0 length output slice, nothing to setup")
+	if len(ios) == 0 {
+		err = errors.Errorf("received 0 length io slice, nothing to setup")
 		return
 	}
 
 	gio.outputs = []*GrentonOutput{}
 
-	for _, output := range outputs {
-		out := GrentonOutput{}
-		if out.parseId(output) == nil {
-			gio.outputs = append(gio.outputs, &out)
+	for _, io := range ios {
+		ioIdSlice := strings.Split(io, "|")
+		if len(ioIdSlice) != 3 {
+			continue // Skip invalid format
 		}
 
+		if !strings.EqualFold(ioIdSlice[0], gio.String()) {
+			continue // Skip non-grenton IOs
+		}
+
+		if ioIdSlice[1] == "d_out" {
+			out := GrentonOutput{Grenton: gio}
+			if out.parseId(ioIdSlice[2]) == nil {
+				gio.outputs = append(gio.outputs, &out)
+			}
+		}
+		// Grenton doesn't support inputs, so we skip d_in
 	}
 
 	err = gio.updateState()
@@ -337,11 +342,11 @@ func (gio *GrentonIO) IsReady() bool {
 	return gio.ready
 }
 
-func (gio *GrentonIO) GetInput(id string) (DigitalInput, error) {
+func (gio *GrentonIO) GetDigitalInput(id string) (DigitalInput, error) {
 	return nil, errors.Errorf("grenton io not supports inputs")
 }
 
-func (gio *GrentonIO) GetOutput(id string) (DigitalOutput, error) {
+func (gio *GrentonIO) GetDigitalOutput(id string) (DigitalOutput, error) {
 	outputQuery := GrentonOutput{}
 	err := outputQuery.parseId(id)
 	if err != nil {
@@ -353,6 +358,14 @@ func (gio *GrentonIO) GetOutput(id string) (DigitalOutput, error) {
 		}
 	}
 	return nil, errors.Errorf("output id=%s not found", id)
+}
+
+func (gio *GrentonIO) GetAnalogOutput(id string) (AnalogOutput, error) {
+	return nil, errors.Errorf("grenton io analog outputs not implemented")
+}
+
+func (gio *GrentonIO) GetRgbwOutput(id string) (RgbwOutput, error) {
+	return nil, errors.Errorf("grenton io rgbw outputs not implemented")
 }
 
 func (gio *GrentonIO) GetAllIo() (inputs []string, outputs []string) {

@@ -44,7 +44,7 @@ func (gpi *GpInput) GetState() (state bool, err error) {
 }
 
 func (gpi *GpInput) String() string {
-	return fmt.Sprintf("gpio_in:%2d", gpi.pin)
+	return getIoIdString(gpioDriverName, ioTypeDigitalInput, strconv.Itoa(int(gpi.pin)))
 }
 
 func (gpo *GpOutput) Set(state bool) error {
@@ -72,7 +72,7 @@ func (gpo *GpOutput) GetState() (state bool, err error) {
 }
 
 func (gpo *GpOutput) String() string {
-	return fmt.Sprintf("gpio_out:%2d", gpo.pin)
+	return getIoIdString(gpioDriverName, ioTypeDigitalOutput, strconv.Itoa(int(gpo.pin)))
 }
 
 func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
@@ -81,18 +81,18 @@ func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
 		return errors.Join(err, fmt.Errorf("failed to Setup gpio driver: failed to open rpio"))
 	}
 	for _, io := range ios {
-		ioIdSlice := strings.Split(io, "|")
-		if len(ioIdSlice) != 3 {
-			return errors.New("invalid io id format, expected 3 parts separated by '|'")
+		driver, ioType, ioId, err := resolveIoIdString(io)
+		if err != nil {
+			return errors.Join(errors.New("invalid io id format, expected 3 parts separated by '|'"), err)
 		}
 
-		if !strings.EqualFold(ioIdSlice[0], gp.String()) {
+		if !strings.EqualFold(driver, gp.String()) {
 			return errors.New("invalid io, driver name mismatch")
 		}
 
-		switch ioIdSlice[1] {
-		case "d_in":
-			pin, err := strconv.Atoi(ioIdSlice[2])
+		switch ioType {
+		case ioTypeDigitalInput:
+			pin, err := strconv.Atoi(ioId)
 			if err != nil {
 				return errors.Join(err, errors.New("failed to convert input pin to int"))
 			}
@@ -104,8 +104,8 @@ func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
 			gpioPin.PullUp()
 			gp.inputs = append(gp.inputs, GpInput{pin: uint8(pin), invert: gp.InvertInputs})
 
-		case "d_out":
-			pin, err := strconv.Atoi(ioIdSlice[2])
+		case ioTypeDigitalOutput:
+			pin, err := strconv.Atoi(ioId)
 			if err != nil {
 				return errors.Join(err, errors.New("failed to convert output pin to int"))
 			}
@@ -117,7 +117,7 @@ func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
 			gpioPin.Output()
 			gp.outputs = append(gp.outputs, GpOutput{pin: uint8(pin), invert: gp.InvertOutputs})
 		default:
-			return errors.New("unknown io type: " + ioIdSlice[1])
+			return errors.New("unsupported io type: " + ioType.String())
 		}
 	}
 
