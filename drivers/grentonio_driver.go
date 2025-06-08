@@ -113,6 +113,12 @@ func (gro *GrentonOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
 	return errors.New("SetOnStateUpdate not supported")
 }
 
+// IsHealthy checks if device is set up and if data is up to date
+func (gro *GrentonOutput) IsHealthy() bool {
+	sinceRefreshed, _ := gro.checkFreshness()
+	return gro.Grenton.ready && sinceRefreshed < 2*grentonObjectFreshness
+}
+
 type GrentonIO struct {
 	GateAddress string
 

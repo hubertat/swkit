@@ -37,6 +37,16 @@ func (mo *MockOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
 	return errors.New("SetOnStateUpdate not supported")
 }
 
+// IsHealthy returns always true (mock)
+func (mo *MockOutput) IsHealthy() bool {
+	return true
+}
+
+// IsHealthy returns always true (mock)
+func (mi *MockInput) IsHealthy() bool {
+	return true
+}
+
 type MockInput struct {
 	State bool
 	id    string

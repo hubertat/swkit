@@ -147,6 +147,9 @@ func (sd *ShellyDevice) GetInputState(id int) (bool, error) {
 }
 
 func (sd *ShellyDevice) GetOutputState(id int) (bool, error) {
+	if sd == nil {
+		return false, errors.New("shelly device is nil!")
+	}
 	if len(sd.Switches) <= id {
 		return false, errors.New("switch id out of range")
 	}

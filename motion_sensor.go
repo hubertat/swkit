@@ -48,7 +48,7 @@ func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
 	var err error
 
 	ms.driver = driver
-	ms.input, err = driver.GetInput(ms.IoName)
+	ms.input, err = driver.GetDigitalInput(ms.IoName)
 	if err != nil {
 		return errors.Wrap(err, "Init failed on getting input")
 	}

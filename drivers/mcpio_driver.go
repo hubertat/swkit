@@ -42,7 +42,7 @@ type McpOutput struct {
 }
 
 func (min *McpInput) String() string {
-	return getIoIdString(mcpioDriverName, ioTypeDigitalInput, fmt.Sprintf("%d", min.pin))
+	return GetIoIdString(mcpioDriverName, IoTypeDigitalInput, fmt.Sprintf("%d", min.pin))
 }
 
 func (min *McpInput) GetState() (state bool, err error) {
@@ -57,6 +57,11 @@ func (min *McpInput) GetState() (state bool, err error) {
 		state = bool(rawState)
 	}
 	return
+}
+
+// IsHealthy returns healthy/ready state
+func (min *McpInput) IsHealthy() bool {
+	return min.device.IsPresent()
 }
 
 func (mout *McpOutput) GetState() (state bool, err error) {
@@ -74,7 +79,7 @@ func (mout *McpOutput) GetState() (state bool, err error) {
 }
 
 func (mout *McpOutput) String() string {
-	return getIoIdString(mcpioDriverName, ioTypeDigitalOutput, fmt.Sprintf("%d", mout.pin))
+	return GetIoIdString(mcpioDriverName, IoTypeDigitalOutput, fmt.Sprintf("%d", mout.pin))
 }
 
 func (mout *McpOutput) Set(state bool) (err error) {
@@ -94,6 +99,11 @@ func (mout *McpOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
 	return errors.New("SetOnStateUpdate not supported")
 }
 
+// IsHealthy returns healthy/ready state
+func (mout *McpOutput) IsHealthy() bool {
+	return mout.device.IsPresent()
+}
+
 func (mcpio *McpIO) String() string {
 	return mcpioDriverName
 }
@@ -110,7 +120,7 @@ func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
 	}
 
 	for _, io := range ios {
-		driver, ioType, ioId, err := resolveIoIdString(io)
+		driver, ioType, ioId, err := ResolveIoIdString(io)
 		if err != nil {
 			return errors.Join(err, errors.New("invalid io id format, expected 3 parts separated by '|'"))
 		}
@@ -120,7 +130,7 @@ func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
 		}
 
 		switch ioType {
-		case ioTypeDigitalInput:
+		case IoTypeDigitalInput:
 			pin, err := strconv.Atoi(ioId)
 			if err != nil {
 				return errors.Join(err, errors.New("failed to convert input pin to int"))
@@ -139,7 +149,7 @@ func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
 			}
 			mcp.inputs = append(mcp.inputs, McpInput{pin: uint8(pin), invert: mcp.InvertInputs, device: mcp.device})
 
-		case ioTypeDigitalOutput:
+		case IoTypeDigitalOutput:
 			pin, err := strconv.Atoi(ioId)
 			if err != nil {
 				return errors.Join(err, errors.New("failed to convert output pin to int"))

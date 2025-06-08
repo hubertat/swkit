@@ -2,11 +2,11 @@ package swkit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -16,7 +16,6 @@ import (
 	"github.com/brutella/hap"
 	"github.com/brutella/hap/accessory"
 	hklog "github.com/brutella/hap/log"
-	"github.com/pkg/errors"
 
 	"github.com/hubertat/swkit/drivers"
 	"github.com/hubertat/swkit/mqtt"
@@ -53,16 +52,17 @@ type SwKit struct {
 	ioDrivers  map[string]drivers.IoDriver
 	mqttClient *mqtt.MqttClient
 	ticker     *time.Ticker
+	logger     *log.Logger
 }
 
 type Device interface {
-	Sync() error
+	Sync(bool) error
 }
 
 type HkThing interface {
 	InitHk() *accessory.A
 	GetUniqueId() uint64
-	Sync() error
+	Sync(bool) error
 }
 
 type ControllingDevice struct {
@@ -126,22 +126,12 @@ func (sw *SwKit) getAllIoIds() []string {
 		allIds = append(allIds, clConf.DigitalOutName)
 		allIds = append(allIds, clConf.RgbwOutName)
 	}
+
+	return allIds
 }
 
-func (sw *SwKit) getDriverForIo(ioId string) (driver, error) {
-	ioIdSlice := strings.Split(ioId, "|")
-	if len(ioIdSlice) != 3 {
-		return nil, errors.Errorf("got invalid io id: %s", ioId)
-	}
-	driverId := ioIdSlice[0]
-	driver, driverPresent := sw.ioDrivers[driverId]
-	if !driverPresent {
-		return nil, errors.Errorf("driver not found for id: %s", driverId)
-	}
-	return driver, nil
-}
-
-func (sw *SwKit) Setup(ctx context.Context) error {
+func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
+	sw.logger = logger
 	sw.ioDrivers = make(map[string]drivers.IoDriver)
 	ioSlice := map[string][]string{}
 
@@ -170,62 +160,63 @@ func (sw *SwKit) Setup(ctx context.Context) error {
 	}
 
 	for _, ioId := range sw.getAllIoIds() {
-		ioIdSlice := strings.Split(ioId, "|")
-		if len(ioIdSlice) != 3 {
-			return errors.Errorf("got invalid io id: %s", ioId)
+		driverId, _, _, e := drivers.ResolveIoIdString(ioId)
+		if e != nil {
+			return errors.Join(e, fmt.Errorf("got invalid io id: %s", ioId))
 		}
-		driverId := ioIdSlice[0]
 		ios, driverPresent := ioSlice[driverId]
 		if !driverPresent {
-			return errors.Errorf("failed during swkit Setup: found io id: %s, but driver (%s) is not present/configured", driverId, ioId)
+			return fmt.Errorf("failed during swkit Setup: found io id: %s, but driver (%s) is not present/configured", driverId, ioId)
 		}
 		ioSlice[driverId] = append(ios, ioId)
 	}
 
 	for _, driver := range sw.ioDrivers {
 		ioSlice, present := ioSlice[driver.String()]
+		logger.Debug("looking for driver", "driver", driver.String(), "present", present)
 		if !present {
-			return errors.Errorf("failed during swkit Setup: io slice for driver (%s) is not present", driver.String())
+			return fmt.Errorf("failed during swkit Setup: io slice for driver (%s) is not present", driver.String())
 		}
 		err := driver.Setup(ctx, ioSlice)
+		logger.Debug("setup the driver", "driver", driver.String(), "err", err)
 		if err != nil {
-			return errors.Wrapf(err, "failed to setup %s driver", driver)
+			return errors.Join(err, fmt.Errorf("failed to setup %s driver", driver.String()))
 		}
 	}
 
 	for _, light := range sw.Lights {
-		driver, err := sw.getDriverForIo(light.DigitalOutName)
+		ioName, driver, err := sw.getDriverAndNameForIo(light.DigitalOutName, drivers.IoTypeDigitalOutput)
 		if err != nil {
-			return errors.Wrapf(err, "failed to get driver for light %s", light.Name)
+			return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", light.DigitalOutName))
 		}
 
-		dOut, err := driver.GetDigitalOutput(light.DigitalOutName)
+		dOut, err := driver.GetDigitalOutput(ioName)
 		if err != nil {
-			return errors.Wrapf(err, "failed to get digital output for light %s", light.Name)
+			return errors.Join(err, fmt.Errorf("failed to get digital output for light %s", light.Name))
 		}
 
 		sw.lights = append(sw.lights, NewLight(light, dOut))
 	}
 
 	for _, coloLight := range sw.ColorLights {
-		dOutDriver, err := sw.getDriverForIo(coloLight.DigitalOutName)
+		ioName, driver, err := sw.getDriverAndNameForIo(coloLight.DigitalOutName, drivers.IoTypeDigitalOutput)
 		if err != nil {
-			return errors.Wrapf(err, "failed to get driver for color light %s", coloLight.Name)
+			return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", coloLight.DigitalOutName))
 		}
 
-		dOut, err := dOutDriver.GetDigitalOutput(coloLight.DigitalOutName)
+		dOut, err := driver.GetDigitalOutput(ioName)
 		if err != nil {
-			return errors.Wrapf(err, "failed to get digital output for color light %s", coloLight.Name)
+			return errors.Join(err, fmt.Errorf("failed to get digital output for color light %s", coloLight.Name))
 		}
 
-		rgbwDriver, err := sw.getDriverForIo(coloLight.RgbwOutName)
+		ioName, driver, err = sw.getDriverAndNameForIo(coloLight.RgbwOutName, drivers.IoTypeRgbwOutput)
 		if err != nil {
-			return errors.Wrapf(err, "failed to get driver for color light %s", coloLight.Name)
+			return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", coloLight.RgbwOutName))
 		}
 
-		rgbw, err := rgbwDriver.GetRgbw(coloLight.RgbwOutName)
+		rgbw, err := driver.GetRgbwOutput(ioName)
 		if err != nil {
-			return errors.Wrapf(err, "failed to get rgbw for color light %s", coloLight.Name)
+			return errors.Join(err, fmt.Errorf("failed to get rgbw for color light %s", coloLight.Name))
 		}
 
 		sw.colorLights = append(sw.colorLights, NewColorLight(coloLight, dOut, rgbw))
@@ -234,21 +225,42 @@ func (sw *SwKit) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (sw *SwKit) StartTicker(interval time.Duration) {
+func (sw *SwKit) getDriverAndNameForIo(ioIdString string, expectedType drivers.IoType) (string, drivers.IoDriver, error) {
+	driverName, outType, ioName, err := drivers.ResolveIoIdString(ioIdString)
+	if err != nil {
+		return "", nil, errors.Join(errors.New("failed to resolve io id string: "+ioIdString), err)
+	}
 
+	if outType != expectedType {
+		return "", nil, fmt.Errorf("invalid io type for digital output: %s, wanted: %d, got: %s", ioIdString, expectedType.String(), outType.String())
+	}
+
+	driver, driverPresent := sw.ioDrivers[driverName]
+	if !driverPresent {
+		return "", nil, fmt.Errorf("driver not found in ioDrivers slice for id: %s", driverName)
+	}
+
+	return ioName, driver, nil
+}
+
+func (sw *SwKit) StartTicker(interval time.Duration, forceEachCount int) {
+
+	counter := 0
 	sw.ticker = time.NewTicker(interval)
 
 	for {
 		select {
 		case <-sw.ticker.C:
+			force := counter%forceEachCount == 0
 			{
 				for _, io := range sw.getDevices() {
-					err := io.Sync()
+					err := io.Sync(force)
 					if err != nil {
 						log.Printf("Received error(s) from syncing io:\n%v", err)
 					}
 				}
 			}
+			counter++
 		}
 	}
 }
@@ -258,7 +270,7 @@ func (sw *SwKit) Close() (err error) {
 		if driver != nil {
 			closeErr := driver.Close()
 			if closeErr != nil {
-				err = errors.Wrap(err, closeErr.Error())
+				err = errors.Join(err, closeErr)
 			}
 		}
 	}
@@ -269,10 +281,10 @@ func (sw *SwKit) Close() (err error) {
 func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, "=== active io drivers ===")
-	for driverName, driver := range sw.ioDrivers {
+	for driverName, _ := range sw.ioDrivers {
 		fmt.Fprintln(writer, "________")
 		fmt.Fprintf(writer, "| driver: %s\n", driverName)
-
+		// TODO print status of the driver
 		fmt.Fprintln(writer)
 		fmt.Fprintln(writer, "--------")
 	}
@@ -309,7 +321,7 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 	}
 	hkServer, err := hap.NewServer(store, bridge.A, acc...)
 	if err != nil {
-		return errors.Wrap(err, "failed to create HomeKit server")
+		return errors.Join(err, errors.New("failed to create HomeKit server"))
 	}
 	hkServer.Pin = sw.HkPin
 	if len(sw.HkAddress) > 0 {

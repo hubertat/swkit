@@ -37,12 +37,18 @@ var (
 )
 
 func main() {
-	log.Info("swkit started", "version", Version)
 	flag.Parse()
-
 	if *debug {
 		log.SetLevel(log.DebugLevel)
-		log.Info("debug mode enabled")
+	}
+	logger := log.NewWithOptions(os.Stderr, log.Options{
+		Prefix: "swkit 🏚️",
+		Level:  log.GetLevel(),
+	})
+	logger.Info("swkit started", "version", Version)
+
+	if *debug {
+		logger.Warn("debug mode enabled")
 	}
 
 	if *flagInstall {
@@ -50,7 +56,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		} else {
-			log.Info("service installed, will exit")
+			logger.Info("service installed, will exit")
 			return
 		}
 	}
@@ -68,54 +74,41 @@ func main() {
 	if err == nil {
 		cBuff, err := io.ReadAll(configFile)
 		if err != nil {
-			log.Fatal("failed reading config file", "error", err)
+			logger.Fatal("failed reading config file", "error", err)
 		}
 
 		err = json.Unmarshal(cBuff, sk)
 		if err != nil {
-			log.Fatal("failed unmarshalling json config", "error", err)
+			logger.Fatal("failed unmarshalling json config", "error", err)
 		}
 	} else {
-		log.Fatal("can't find/open config file, will terminate.", "file", *config, "error", err)
+		logger.Fatal("can't find/open config file, will terminate.", "file", *config, "error", err)
 	}
-	log.Info("will init swkit drivers...")
-	err = sk.InitDrivers(ctx)
+	logger.Info("will setup SwKit...")
+	err = sk.Setup(ctx, logger)
 	defer sk.Close()
 	if err != nil {
-		panic(err)
+		logger.Fatal("failed to setup swkit", "err", err)
 	}
-	log.Info("will init swkit IOs...")
-	err = sk.InitIos()
-	if err != nil {
-		panic(err)
-	}
-
-	log.Info("drivers OK!")
-	log.Info("will try to MatchControllers...")
-	err = sk.MatchControllers()
-	if err != nil {
-		log.Error("Matching Controllers returned error", "error", err)
-	} else {
-		log.Info("controllers matched OK")
-	}
+	logger.Debug("swkit done OK")
 
 	sk.PrintIoStatus(os.Stdout)
 
 	if len(sk.HkPin) == 8 {
-		log.Info("HomeKit configured, starting", "pin", sk.HkPin)
+		logger.Info("HomeKit configured, starting", "pin", sk.HkPin)
 
-		log.Info("starting sync ticker", "interval", syncDuration)
-		go sk.StartTicker(syncDuration)
+		logger.Info("starting sync ticker", "interval", syncDuration)
+		go sk.StartTicker(syncDuration, 30)
 
 		if sk.StartHomeKit(context.Background(), Version) == nil {
-			log.Info("homekit terminated ok")
+			logger.Info("homekit terminated ok")
 		} else {
-			log.Error("homekit terminated with error")
+			logger.Error("homekit terminated with error")
 		}
 
 	} else {
-		log.Info("starting sync ticker", "interval", syncDuration)
-		sk.StartTicker(syncDuration)
+		logger.Info("starting sync ticker", "interval", syncDuration)
+		sk.StartTicker(syncDuration, 30)
 	}
 
 }

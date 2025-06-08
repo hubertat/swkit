@@ -24,7 +24,8 @@ type Outlet struct {
 	disableHomekit bool
 	isFaulty       bool
 
-	output drivers.DigitalOutput
+	output       drivers.DigitalOutput
+	withCallback bool
 
 	hk    *accessory.Outlet
 	fault *characteristic.StatusFault
@@ -65,11 +66,24 @@ func (ou *Outlet) InitHk() *accessory.A {
 
 	ou.hk.Outlet.On.OnValueRemoteUpdate(ou.SetValue)
 
+	ou.withCallback = ou.output.SetOnStateUpdate(ou.hk.Outlet.On.SetValue) == nil
+
 	return ou.hk.A
 }
 
 func (ou *Outlet) Sync() error {
 	if ou.disableHomekit {
+		return nil
+	}
+
+	if ou.withCallback {
+		if ou.output.IsHealthy() {
+			ou.isFaulty = false
+			ou.fault.SetValue(characteristic.StatusFaultNoFault)
+		} else {
+			ou.isFaulty = true
+			ou.fault.SetValue(characteristic.StatusFaultGeneralFault)
+		}
 		return nil
 	}
 

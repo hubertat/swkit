@@ -54,7 +54,7 @@ func (swb *Switch) Init(driver drivers.IoDriver) error {
 	var err error
 
 	swb.driver = driver
-	swb.input, err = driver.GetInput(swb.IoName)
+	swb.input, err = driver.GetDigitalInput(swb.IoName)
 	if err != nil {
 		return errors.Wrap(err, "Init failed")
 	}

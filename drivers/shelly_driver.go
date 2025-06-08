@@ -20,7 +20,7 @@ import (
 const idSeparator = ":"
 const shellyDriverName string = "shelly"
 
-const setupDevicesTimeout = 45 * time.Second
+const setupDevicesTimeout = 30 * time.Second
 const healthCheckInterval = 5 * time.Second
 const unhealthyCountLimit = 5
 
@@ -53,8 +53,8 @@ type ShellyIO struct {
 	MqttBroker   string
 	MqttClientId string
 
-	outputs []ShellyOutput
-	inputs  []ShellyInput
+	outputs []*ShellyOutput
+	inputs  []*ShellyInput
 
 	devices []*shelly.ShellyDevice
 
@@ -76,7 +76,7 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 
 	devicesMap := make(map[string]bool)
 	for _, io := range ios {
-		driver, ioType, ioId, err := resolveIoIdString(io)
+		driver, ioType, ioId, err := ResolveIoIdString(io)
 		if err != nil {
 			return errors.Join(err, errors.New("invalid io id format, expected 3 parts separated by '|'"))
 		}
@@ -90,14 +90,18 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 			return errors.Join(err, errors.New("invalid shelly io id format, expected 2 parts separated by '"+string(idSeparator)+"'"))
 		}
 
-		switch ioType {
-		case ioTypeDigitalInput:
-			devicesMap[actualDeviceId] = true
-			she.inputs = append(she.inputs, ShellyInput{deviceId: actualDeviceId, inputNo: ioNo})
+		logger.Debug("will process io", "id", ioId, "type", ioType.String())
 
-		case ioTypeDigitalOutput:
+		switch ioType {
+		case IoTypeDigitalInput:
 			devicesMap[actualDeviceId] = true
-			she.outputs = append(she.outputs, ShellyOutput{deviceId: actualDeviceId, switchNo: ioNo})
+			she.inputs = append(she.inputs, &ShellyInput{deviceId: actualDeviceId, inputNo: ioNo})
+			logger.Debug("adding d_in", "dev id:", actualDeviceId, "io no:", ioNo)
+
+		case IoTypeDigitalOutput:
+			devicesMap[actualDeviceId] = true
+			she.outputs = append(she.outputs, &ShellyOutput{deviceId: actualDeviceId, switchNo: ioNo})
+			logger.Debug("adding d_out", "dev id:", actualDeviceId, "io no:", ioNo)
 
 		default:
 			return errors.New("unsupported io type: " + ioType.String())
@@ -138,25 +142,29 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 	}
 	she.messenger.UpdateTopicRoots()
 
-	logger.Debug("getting devices status")
+	logger.Info("getting devices status")
 	for _, dev := range she.devices {
 		err = dev.GetStatus()
+		logger.Debug("device status request sent", "device", dev.Id, "err", err)
 		if err != nil {
 			return errors.Join(errors.New("failed to send GetStatus request for device "+dev.Id), err)
 		}
 	}
 
-	logger.Debug("trying to match devices")
+	logger.Info("trying to match devices")
 
 	matchTickDuration := 5 * time.Second
 	matchTickCount := int(setupDevicesTimeout / matchTickDuration)
-	matchErr := she.tryToMatchDevices(matchTickCount, matchTickDuration)
+	matchErr := she.tryToMatchDevices(matchTickCount, matchTickDuration, logger)
+
+	logger.Debug("devices match done", "err", err)
 
 	if matchErr != nil {
 		err = errors.Join(err, matchErr, errors.New("failed on matching devices"))
 		return
 	}
 
+	she.healthTicker = time.NewTicker(healthCheckInterval)
 	go func() {
 		for {
 			select {
@@ -169,7 +177,6 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 			}
 		}
 	}()
-	she.healthTicker = time.NewTicker(healthCheckInterval)
 
 	// go she.startHealthCheck(ctx)
 
@@ -223,7 +230,8 @@ func (she *ShellyIO) matchDevices() error {
 // tryToMatchDevices(maxTries int) will try to match devices
 // if it fails, it will retry until maxTries is reached
 // considering total setupDevicesTimeout
-func (she *ShellyIO) tryToMatchDevices(maxTries int, matchTickPeriod time.Duration) error {
+func (she *ShellyIO) tryToMatchDevices(maxTries int, matchTickPeriod time.Duration, logger *log.Logger) error {
+	logger.Debug("tryToMatchDevices", "tick period", matchTickPeriod, "max tries", maxTries)
 	if maxTries <= 1 {
 		return she.matchDevices()
 	}
@@ -237,6 +245,7 @@ func (she *ShellyIO) tryToMatchDevices(maxTries int, matchTickPeriod time.Durati
 		select {
 		case <-ticker.C:
 			matchErr = she.matchDevices()
+			logger.Debug("tried to match", "err", matchErr)
 			if matchErr == nil {
 				return nil
 			}
@@ -303,11 +312,11 @@ func (she *ShellyIO) GetDigitalInput(id string) (DigitalInput, error) {
 func (she *ShellyIO) GetDigitalOutput(id string) (DigitalOutput, error) {
 	for _, out := range she.outputs {
 		if strings.EqualFold(out.getStringId(), id) {
-			return &out, nil
+			return out, nil
 		}
 	}
 
-	return nil, fmt.Errorf("shelly output pin = %d not found", id)
+	return nil, fmt.Errorf("shelly output: %s not found", id)
 }
 
 func (she *ShellyIO) GetAnalogOutput(id string) (AnalogOutput, error) {
@@ -478,6 +487,10 @@ func (sout *ShellyOutput) getStringId() string {
 	return fmt.Sprintf("%s%s%d", sout.deviceId, idSeparator, sout.switchNo)
 }
 
+func (sout *ShellyOutput) IsHealthy() bool {
+	return sout.dev.HealthCheck() == nil
+}
+
 type ShellyInput struct {
 	inputNo  int
 	deviceId string
@@ -495,6 +508,10 @@ func (sin *ShellyInput) GetState() (bool, error) {
 
 func (sin *ShellyInput) String() string {
 	return fmt.Sprintf("shelly_input:%s:%d", sin.deviceId, sin.inputNo)
+}
+
+func (sin *ShellyInput) IsHealthy() bool {
+	return sin.dev.HealthCheck() == nil
 }
 
 // PrintStatus() string prints status of device and its io in a readable way

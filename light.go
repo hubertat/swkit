@@ -24,7 +24,8 @@ type Light struct {
 	disableHomekit bool
 	isFaulty       bool
 
-	output drivers.DigitalOutput
+	output       drivers.DigitalOutput
+	withCallback bool
 
 	hk    *accessory.Lightbulb
 	fault *characteristic.StatusFault
@@ -66,7 +67,12 @@ func (li *Light) InitHk() *accessory.A {
 
 	// set callback to update on remote value change
 	// TODO consider altering sync method if digital output gives this option (check error)
-	li.output.SetOnStateUpdate(li.hk.Lightbulb.On.SetValue)
+	li.withCallback = li.output.SetOnStateUpdate(li.hk.Lightbulb.On.SetValue) == nil
+
+	state, err := li.output.GetState()
+	if err != nil {
+		li.hk.Lightbulb.On.SetValue(state)
+	}
 
 	return li.hk.A
 }
@@ -74,8 +80,19 @@ func (li *Light) InitHk() *accessory.A {
 // Sync() is called periodically by swkit managing server to sync from drivers io
 // If subscribe model is available and used this should be skipped
 // If there is no homekit, there is no internal state - skip
-func (li *Light) Sync() (err error) {
+func (li *Light) Sync(force bool) (err error) {
 	if li.disableHomekit {
+		return nil
+	}
+
+	if li.withCallback && !force {
+		if li.output.IsHealthy() {
+			li.fault.SetValue(characteristic.StatusFaultNoFault)
+			li.isFaulty = false
+		} else {
+			li.fault.SetValue(characteristic.StatusFaultGeneralFault)
+			li.isFaulty = true
+		}
 		return nil
 	}
 

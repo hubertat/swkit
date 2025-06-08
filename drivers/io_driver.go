@@ -19,44 +19,44 @@ const (
 type IoType uint16
 
 const (
-	ioTypeUndefined = 0
+	IoTypeUndefined = 0
 
-	ioTypeDigitalOutput = 0x01 << iota
-	ioTypeDigitalInput
-	ioTypePushEventEmitter
-	ioTypeAnalogOutput
-	ioTypeAnalogInput
-	ioTypeRgbwOutput
-	ioTypeRgbwInput
+	IoTypeDigitalOutput = 0x01 << iota
+	IoTypeDigitalInput
+	IoTypePushEventEmitter
+	IoTypeAnalogOutput
+	IoTypeAnalogInput
+	IoTypeRgbwOutput
+	IoTypeRgbwInput
 )
 
 func allIoTypes() []IoType {
 	return []IoType{
-		ioTypeDigitalOutput,
-		ioTypeDigitalInput,
-		ioTypePushEventEmitter,
-		ioTypeAnalogOutput,
-		ioTypeAnalogInput,
-		ioTypeRgbwOutput,
-		ioTypeRgbwInput,
+		IoTypeDigitalOutput,
+		IoTypeDigitalInput,
+		IoTypePushEventEmitter,
+		IoTypeAnalogOutput,
+		IoTypeAnalogInput,
+		IoTypeRgbwOutput,
+		IoTypeRgbwInput,
 	}
 }
 
 func (iot IoType) IdString() string {
 	switch iot {
-	case ioTypeDigitalInput:
+	case IoTypeDigitalInput:
 		return "d_in"
-	case ioTypeDigitalOutput:
+	case IoTypeDigitalOutput:
 		return "d_out"
-	case ioTypePushEventEmitter:
+	case IoTypePushEventEmitter:
 		return "push_event"
-	case ioTypeAnalogOutput:
+	case IoTypeAnalogOutput:
 		return "a_out"
-	case ioTypeAnalogInput:
+	case IoTypeAnalogInput:
 		return "a_in"
-	case ioTypeRgbwOutput:
+	case IoTypeRgbwOutput:
 		return "rgbw_out"
-	case ioTypeRgbwInput:
+	case IoTypeRgbwInput:
 		return "rgbw_in"
 	default:
 		return "n/a"
@@ -65,19 +65,19 @@ func (iot IoType) IdString() string {
 
 func (iot IoType) String() string {
 	switch iot {
-	case ioTypeDigitalOutput:
+	case IoTypeDigitalOutput:
 		return "DigitalOutput"
-	case ioTypeDigitalInput:
+	case IoTypeDigitalInput:
 		return "DigitalInput"
-	case ioTypePushEventEmitter:
+	case IoTypePushEventEmitter:
 		return "PushEventEmitter"
-	case ioTypeAnalogOutput:
+	case IoTypeAnalogOutput:
 		return "AnalogOutput"
-	case ioTypeAnalogInput:
+	case IoTypeAnalogInput:
 		return "AnalogInput"
-	case ioTypeRgbwOutput:
+	case IoTypeRgbwOutput:
 		return "RgbwOutput"
-	case ioTypeRgbwInput:
+	case IoTypeRgbwInput:
 		return "RgbwInput"
 	default:
 		return "Unknown"
@@ -113,6 +113,7 @@ func MapAllIoDrivers() map[string]IoDriver {
 
 type AnyIO interface {
 	String() string
+	IsHealthy() bool
 }
 
 // DigitalInput represents simple two state digital input
@@ -121,6 +122,7 @@ type AnyIO interface {
 type DigitalInput interface {
 	GetState() (bool, error)
 	String() string
+	IsHealthy() bool
 }
 
 // DigitalOutput represents two state output
@@ -129,6 +131,7 @@ type DigitalOutput interface {
 	Set(bool) error
 	String() string
 	SetOnStateUpdate(func(bool)) error
+	IsHealthy() bool
 }
 
 // AnalogOutput represents an output that could take int value from defined minimum and maximum
@@ -138,21 +141,24 @@ type AnalogOutput interface {
 	GetState() (int, error)
 	Set(int) error
 	String() string
+	IsHealthy() bool
 }
 
 // PushEventEmitter represents an input that emits events, as in PushEvent type
 type PushEventEmitter interface {
 	Subscribe(eventTypes PushEvent, handler func(PushEvent)) error
 	String() string
+	IsHealthy() bool
 }
 
 type RgbwOutput interface {
 	GetState() (uint8, uint8, uint8, uint8, error)
 	Set(uint8, uint8, uint8, uint8) error
 	String() string
+	IsHealthy() bool
 }
 
-func resolveIoIdString(ioId string) (driver string, ioType IoType, name string, err error) {
+func ResolveIoIdString(ioId string) (driver string, ioType IoType, name string, err error) {
 	ioIdSlice := strings.Split(ioId, "|")
 	if len(ioIdSlice) != 3 {
 		err = errors.New("invalid io id format, expected 3 parts separated by '|'")
@@ -166,7 +172,7 @@ func resolveIoIdString(ioId string) (driver string, ioType IoType, name string, 
 			ioType = t
 		}
 	}
-	if ioType == ioTypeUndefined {
+	if ioType == IoTypeUndefined {
 		err = fmt.Errorf("invalid io type, couldn't match io type from id string: %s", ioIdSlice[1])
 		return
 	}
@@ -175,6 +181,6 @@ func resolveIoIdString(ioId string) (driver string, ioType IoType, name string, 
 	return
 }
 
-func getIoIdString(driver string, ioType IoType, id string) string {
+func GetIoIdString(driver string, ioType IoType, id string) string {
 	return fmt.Sprintf("%s|%s|%s", driver, ioType.IdString(), id)
 }

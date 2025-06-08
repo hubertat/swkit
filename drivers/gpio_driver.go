@@ -44,7 +44,11 @@ func (gpi *GpInput) GetState() (state bool, err error) {
 }
 
 func (gpi *GpInput) String() string {
-	return getIoIdString(gpioDriverName, ioTypeDigitalInput, strconv.Itoa(int(gpi.pin)))
+	return GetIoIdString(gpioDriverName, IoTypeDigitalInput, strconv.Itoa(int(gpi.pin)))
+}
+
+func (gpi *GpInput) IsHealthy() bool {
+	return true
 }
 
 func (gpo *GpOutput) Set(state bool) error {
@@ -72,11 +76,15 @@ func (gpo *GpOutput) GetState() (state bool, err error) {
 }
 
 func (gpo *GpOutput) String() string {
-	return getIoIdString(gpioDriverName, ioTypeDigitalOutput, strconv.Itoa(int(gpo.pin)))
+	return GetIoIdString(gpioDriverName, IoTypeDigitalOutput, strconv.Itoa(int(gpo.pin)))
 }
 
 func (gpo *GpOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
 	return errors.New("SetOnStateUpdate not supported")
+}
+
+func (gpo *GpOutput) IsHealthy() bool {
+	return true
 }
 
 func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
@@ -85,7 +93,7 @@ func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
 		return errors.Join(err, fmt.Errorf("failed to Setup gpio driver: failed to open rpio"))
 	}
 	for _, io := range ios {
-		driver, ioType, ioId, err := resolveIoIdString(io)
+		driver, ioType, ioId, err := ResolveIoIdString(io)
 		if err != nil {
 			return errors.Join(errors.New("invalid io id format, expected 3 parts separated by '|'"), err)
 		}
@@ -95,7 +103,7 @@ func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
 		}
 
 		switch ioType {
-		case ioTypeDigitalInput:
+		case IoTypeDigitalInput:
 			pin, err := strconv.Atoi(ioId)
 			if err != nil {
 				return errors.Join(err, errors.New("failed to convert input pin to int"))
@@ -108,7 +116,7 @@ func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
 			gpioPin.PullUp()
 			gp.inputs = append(gp.inputs, GpInput{pin: uint8(pin), invert: gp.InvertInputs})
 
-		case ioTypeDigitalOutput:
+		case IoTypeDigitalOutput:
 			pin, err := strconv.Atoi(ioId)
 			if err != nil {
 				return errors.Join(err, errors.New("failed to convert output pin to int"))

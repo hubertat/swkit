@@ -118,7 +118,7 @@ func (cl *ColorLight) updateSaturation(newSaturation float64) {
 // Sync() is called periodically by swkit managing server to sync from drivers io
 // If subscribe model is available and used this should be skipped
 // If there is no homekit, there is no internal state - skip
-func (cl *ColorLight) Sync() (err error) {
+func (cl *ColorLight) Sync(force bool) (err error) {
 	if cl.hk == nil {
 		return nil
 	}
