@@ -15,6 +15,7 @@ import (
 
 const defaultSyncInterval = "330ms"
 const defaultSensorsSyncInterval = "10s"
+const defaultForceSyncEveryCycle = 100
 
 var (
 	Version string
@@ -23,6 +24,7 @@ var (
 	config              = flag.String("config", "config.json", "path of the configuration file")
 	flagInstall         = flag.Bool("install", false, "Install service in os")
 	syncInterval        = flag.String("sync", defaultSyncInterval, "sync interval (time.Duration)")
+	forceSyncEveryCycle = flag.Int("force-sync-every", defaultForceSyncEveryCycle, "force sync every n cycles")
 	sensorsSyncInterval = flag.String("sensors-sync", defaultSensorsSyncInterval, "sensors sync interval (time.Duration)")
 	debug               = flag.Bool("debug", false, "debug mode")
 
@@ -98,7 +100,7 @@ func main() {
 		logger.Info("HomeKit configured, starting", "pin", sk.HkPin)
 
 		logger.Info("starting sync ticker", "interval", syncDuration)
-		go sk.StartTicker(syncDuration, 30)
+		go sk.StartTicker(syncDuration, *forceSyncEveryCycle)
 
 		if sk.StartHomeKit(context.Background(), Version) == nil {
 			logger.Info("homekit terminated ok")
@@ -108,7 +110,7 @@ func main() {
 
 	} else {
 		logger.Info("starting sync ticker", "interval", syncDuration)
-		sk.StartTicker(syncDuration, 30)
+		sk.StartTicker(syncDuration, *forceSyncEveryCycle)
 	}
 
 }

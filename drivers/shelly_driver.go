@@ -22,6 +22,7 @@ const shellyDriverName string = "shelly"
 
 const setupDevicesTimeout = 30 * time.Second
 const healthCheckInterval = 5 * time.Second
+const stateUpToDateDuration = 5 * time.Minute
 const unhealthyCountLimit = 5
 
 func parseShellyIoId(ioId string) (string, int, error) {
@@ -172,7 +173,9 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 				return
 			case <-she.healthTicker.C:
 				for _, d := range she.devices {
-					d.GetStatus()
+					if d.SinceLastRefreshed() > stateUpToDateDuration {
+						d.GetStatus()
+					}
 				}
 			}
 		}

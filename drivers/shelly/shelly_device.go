@@ -11,7 +11,6 @@ import (
 )
 
 const maxTimeSinceRefresh = 15 * time.Minute
-const defaultShellyTopic = "shellypro4.0/events/rpc"
 
 type ShellyDevice struct {
 	Id   string
@@ -227,4 +226,8 @@ func (sd *ShellyDevice) GetStatus() error {
 		Dst:    sd.Id,
 	}
 	return sd.messenger.SendRequest(sd.Id, req)
+}
+
+func (sd *ShellyDevice) SinceLastRefreshed() time.Duration {
+	return time.Since(sd.lastRefreshed)
 }

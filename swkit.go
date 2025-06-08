@@ -308,7 +308,6 @@ func (sw *SwKit) PrintIoStatus(writer io.Writer) {
 	for driverName, _ := range sw.ioDrivers {
 		fmt.Fprintln(writer, "________")
 		fmt.Fprintf(writer, "| driver: %s\n", driverName)
-		// TODO print status of the driver
 		fmt.Fprintln(writer)
 		fmt.Fprintln(writer, "--------")
 	}
