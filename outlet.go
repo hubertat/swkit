@@ -71,12 +71,12 @@ func (ou *Outlet) InitHk() *accessory.A {
 	return ou.hk.A
 }
 
-func (ou *Outlet) Sync() error {
+func (ou *Outlet) Sync(force bool) error {
 	if ou.disableHomekit {
 		return nil
 	}
 
-	if ou.withCallback {
+	if ou.withCallback && !force {
 		if ou.output.IsHealthy() {
 			ou.isFaulty = false
 			ou.fault.SetValue(characteristic.StatusFaultNoFault)

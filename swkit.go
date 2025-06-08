@@ -30,12 +30,13 @@ type SwKit struct {
 
 	Lights      []LightConfig
 	ColorLights []ColorLightConfig
+	Outlets     []OutletConfig
 
 	lights      []*Light
 	colorLights []*ColorLight
+	outlets     []*Outlet
 	// Buttons       []*Button
 	// Switches      []*Switch
-	// Outlets       []*Outlet
 	// MotionSensors []*MotionSensor
 
 	HkPin       string
@@ -87,13 +88,14 @@ func (sw *SwKit) getHkThings() (things []HkThing) {
 		things = append(things, th)
 	}
 
+	for _, th := range sw.outlets {
+		things = append(things, th)
+	}
+
 	// for _, th := range sw.Buttons {
 	// 	things = append(things, th)
 	// }
 	// for _, th := range sw.Switches {
-	// 	things = append(things, th)
-	// }
-	// for _, th := range sw.Outlets {
 	// 	things = append(things, th)
 	// }
 	// for _, th := range sw.MotionSensors {
@@ -112,6 +114,10 @@ func (sw *SwKit) getDevices() (devices []Device) {
 		devices = append(devices, cl)
 	}
 
+	for _, d := range sw.outlets {
+		devices = append(devices, d)
+	}
+
 	return
 }
 
@@ -125,6 +131,10 @@ func (sw *SwKit) getAllIoIds() []string {
 	for _, clConf := range sw.ColorLights {
 		allIds = append(allIds, clConf.DigitalOutName)
 		allIds = append(allIds, clConf.RgbwOutName)
+	}
+
+	for _, d := range sw.Outlets {
+		allIds = append(allIds, d.DigitalOutName)
 	}
 
 	return allIds
@@ -196,6 +206,20 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		}
 
 		sw.lights = append(sw.lights, NewLight(light, dOut))
+	}
+
+	for _, outlet := range sw.Outlets {
+		ioName, driver, err := sw.getDriverAndNameForIo(outlet.DigitalOutName, drivers.IoTypeDigitalOutput)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", outlet.DigitalOutName))
+		}
+
+		dOut, err := driver.GetDigitalOutput(ioName)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to get digital output for outlet %s", outlet.Name))
+		}
+
+		sw.outlets = append(sw.outlets, NewOutlet(outlet, dOut))
 	}
 
 	for _, coloLight := range sw.ColorLights {
