@@ -10,11 +10,26 @@ import (
 type PushEvent uint16
 
 const (
-	PushEventSinglePress = 0x02 << iota
+	PushEventSinglePress = PushEvent(0x02 << iota)
 	PushEventDoublePress
 	PushEventTriplePress
 	PushEventLongPress
 )
+
+func (pe PushEvent) String() string {
+	switch pe {
+	case PushEventSinglePress:
+		return "SinglePress"
+	case PushEventDoublePress:
+		return "DoublePress"
+	case PushEventTriplePress:
+		return "TriplePress"
+	case PushEventLongPress:
+		return "LongPress"
+	default:
+		return "Unknown"
+	}
+}
 
 type IoType uint16
 

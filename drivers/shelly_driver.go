@@ -14,6 +14,8 @@ import (
 	"github.com/charmbracelet/log"
 
 	"github.com/hubertat/swkit/drivers/shelly"
+	"github.com/hubertat/swkit/drivers/shelly/components"
+	"github.com/hubertat/swkit/drivers/shelly/events"
 	"github.com/hubertat/swkit/mqtt"
 )
 
@@ -141,7 +143,12 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 		}
 		she.devices = append(she.devices, dev)
 	}
-	she.messenger.UpdateTopicRoots()
+
+	err = she.messenger.ConnectMqttClient(ctx)
+	if err != nil {
+		err = errors.Join(err, errors.New("failed to connect mqtt client"))
+		return err
+	}
 
 	logger.Info("getting devices status")
 	for _, dev := range she.devices {
@@ -332,6 +339,16 @@ func (she *ShellyIO) GetRgbwOutput(id string) (RgbwOutput, error) {
 	return nil, fmt.Errorf("rgbw output not implemented")
 }
 
+func (she *ShellyIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
+	for _, in := range she.inputs {
+		if strings.EqualFold(in.getStringId(), id) {
+			return in, nil
+		}
+	}
+
+	return nil, fmt.Errorf("shelly event emitter: %s not found", id)
+}
+
 func (she *ShellyIO) GetAllIo() (inputs []string, outputs []string) {
 	for _, out := range she.outputs {
 		outputs = append(outputs, out.getStringId())
@@ -380,6 +397,7 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			if present && o.onStateUpdate != nil {
 				state, _ := o.dev.GetOutputState(o.switchNo)
 				if state != oldState {
+					log.Debug("State change detected", "output", o.String(), "old", oldState, "new", state, "msgType", msg.MsgType, "method", msg.Method)
 					o.onStateUpdate(state)
 				}
 			}
@@ -430,6 +448,39 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			err = dev.UpdateFromStatus(status)
 			if err != nil {
 				log.Error("failed to update device from status", "device", dev.Id, "error", err)
+				return false
+			}
+
+			return true
+		case "NotifyEvent":
+			raw := shelly.RawEvents{}
+			err := msg.UnmarshalParams(&raw)
+			if err != nil {
+				log.Error("failed to unmarshal NotifyEvent params", "device", dev.Id, "error", err)
+				return false
+			}
+
+			evs, err := raw.GetEvents()
+			if err != nil {
+				log.Error("failed to get events from raw", "device", dev.Id, "error", err)
+				return false
+			}
+
+			for _, e := range evs {
+				switch e.ComponentType {
+				case components.ComponentTypeInput:
+					for _, in := range she.inputs {
+						if uint(in.inputNo) == e.ComponentId {
+							in.findAndFireEvent(e.EventType)
+						}
+					}
+				default:
+					log.Debug("unsupported component type", "device", dev.Id, "componentType", e.ComponentType)
+				}
+			}
+
+			if err != nil {
+				log.Error("failed to parse events", "device", dev.Id, "error", err)
 				return false
 			}
 
@@ -499,6 +550,64 @@ type ShellyInput struct {
 	deviceId string
 
 	dev *shelly.ShellyDevice
+
+	subscriptions []struct {
+		shellyEvent events.ShellyEventType
+		swkitEvent  PushEvent
+		handler     func(PushEvent)
+	}
+}
+
+func (sin *ShellyInput) getStringId() string {
+	return fmt.Sprintf("%s%s%d", sin.deviceId, idSeparator, sin.inputNo)
+}
+
+func (sin *ShellyInput) Subscribe(eventType PushEvent, handler func(PushEvent)) error {
+	if sin.dev == nil {
+		return errors.New("shelly input internal InputStatus/Device nil error")
+	}
+
+	var shellE events.ShellyEventType
+	switch eventType {
+	case PushEventSinglePress:
+		shellE = events.ShellyEventSinglePush
+
+	case PushEventDoublePress:
+		shellE = events.ShellyEventDoublePush
+
+	case PushEventTriplePress:
+		shellE = events.ShellyEventTriplePush
+
+	case PushEventLongPress:
+		shellE = events.ShellyEventLongPush
+
+	default:
+		return errors.New("unsupported event type for shelly input: " + eventType.String())
+	}
+
+	sin.subscriptions = append(sin.subscriptions, struct {
+		shellyEvent events.ShellyEventType
+		swkitEvent  PushEvent
+		handler     func(PushEvent)
+	}{
+		shellyEvent: shellE,
+		swkitEvent:  eventType,
+		handler:     handler,
+	})
+
+	return nil
+}
+
+func (sin *ShellyInput) findAndFireEvent(shellyEventType events.ShellyEventType) bool {
+	fired := false
+	for _, sub := range sin.subscriptions {
+		if sub.shellyEvent == shellyEventType {
+			sub.handler(sub.swkitEvent)
+			fired = true
+		}
+	}
+
+	return fired
 }
 
 func (sin *ShellyInput) GetState() (bool, error) {

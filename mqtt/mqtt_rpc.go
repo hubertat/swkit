@@ -19,7 +19,6 @@ type JsonRpcMessenger struct {
 
 	handler MqttRpcHandler
 
-	topicRoots []string
 	mqttClient *MqttClient
 }
 
@@ -35,32 +34,18 @@ func NewJsonRpcMessenger(ctx context.Context, mqttClient *MqttClient, handler Mq
 		handler:    handler,
 		mqttClient: mqttClient,
 		queue:      newRequestQueue(),
-		topicRoots: handler.MqttTopicRoots(),
-	}
-
-	err := mqttClient.Connect(ctx, []MqttHandler{jrm})
-	if err != nil {
-		return nil, errors.Join(err, errors.New("failed to connect to mqtt broker"))
 	}
 
 	return jrm, nil
 }
 
-// UpdateTopicRoots() checks handler for topic roots and updates them if necessary
-func (jrm *JsonRpcMessenger) UpdateTopicRoots() {
-	for _, newTopic := range jrm.handler.MqttTopicRoots() {
-		exist := false
-		for _, t := range jrm.topicRoots {
-			if strings.EqualFold(newTopic, t) {
-				exist = true
-				break
-			}
-		}
-		if !exist {
-			jrm.topicRoots = append(jrm.topicRoots, newTopic)
-		}
+func (jrm *JsonRpcMessenger) ConnectMqttClient(ctx context.Context) error {
+	err := jrm.mqttClient.Connect(ctx, []MqttHandler{jrm})
+	if err != nil {
+		return errors.Join(err, errors.New("JsonRpcMessneger failed to connect to mqtt broker"))
 	}
 
+	return nil
 }
 
 // MqttSubscribeTopics() []string returns the topics to subscribe to
@@ -68,7 +53,7 @@ func (jrm *JsonRpcMessenger) MqttSubscribeTopics() []string {
 	topics := []string{
 		jrm.mqttClient.ClientId() + responseTopicSuffix,
 	}
-	for _, topic := range jrm.topicRoots {
+	for _, topic := range jrm.handler.MqttTopicRoots() {
 		topics = append(topics, topic+publishRequestTopicSuffix)
 		topics = append(topics, topic+notificationTopicSuffix)
 		topics = append(topics, topic+onlineStatusTopicSuffix)
@@ -174,7 +159,7 @@ func (jrm *JsonRpcMessenger) SendRequest(topicRoot string, req RpcRequest) error
 
 // checkForTopic(topic string) bool checks if the topic is in the list of topics
 func (jrm *JsonRpcMessenger) checkForTopic(topic string) bool {
-	for _, t := range jrm.topicRoots {
+	for _, t := range jrm.handler.MqttTopicRoots() {
 		if topic == t+publishRequestTopicSuffix {
 			return true
 		}

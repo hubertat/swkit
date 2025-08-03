@@ -30,10 +30,11 @@ func (gs *GetStatus) rawInputSlice() [][]byte {
 }
 
 func (gs *GetStatus) GetSwitches() (switches []components.SwitchStatus) {
-	for _, rawSwitch := range gs.rawSwitchSlice() {
+	for swId, rawSwitch := range gs.rawSwitchSlice() {
 		if len(rawSwitch) > 0 {
-			var sw components.SwitchStatus
+			sw := components.SwitchStatus{}
 			if json.Unmarshal(rawSwitch, &sw) == nil {
+				sw.ID = swId
 				switches = append(switches, sw)
 			}
 		}
@@ -43,10 +44,11 @@ func (gs *GetStatus) GetSwitches() (switches []components.SwitchStatus) {
 }
 
 func (gs *GetStatus) GetInputs() (inputs []components.InputStatus) {
-	for _, rawInput := range gs.rawInputSlice() {
+	for inId, rawInput := range gs.rawInputSlice() {
 		if len(rawInput) > 0 {
 			var in components.InputStatus
 			if json.Unmarshal(rawInput, &in) == nil {
+				in.ID = inId
 				inputs = append(inputs, in)
 			}
 		}
