@@ -16,18 +16,27 @@ const (
 	PushEventLongPress
 )
 
+func AllPushEvents() []PushEvent {
+	return []PushEvent{
+		PushEventSinglePress,
+		PushEventDoublePress,
+		PushEventTriplePress,
+		PushEventLongPress,
+	}
+}
+
 func (pe PushEvent) String() string {
 	switch pe {
 	case PushEventSinglePress:
-		return "SinglePress"
+		return "single_press"
 	case PushEventDoublePress:
-		return "DoublePress"
+		return "double_press"
 	case PushEventTriplePress:
-		return "TriplePress"
+		return "triple_press"
 	case PushEventLongPress:
-		return "LongPress"
+		return "long_press"
 	default:
-		return "Unknown"
+		return "unknown"
 	}
 }
 
@@ -108,6 +117,7 @@ type IoDriver interface {
 	GetDigitalOutput(id string) (DigitalOutput, error)
 	GetAnalogOutput(id string) (AnalogOutput, error)
 	GetRgbwOutput(id string) (RgbwOutput, error)
+	GetPushEventEmitter(id string) (PushEventEmitter, error)
 }
 
 func MapAllIoDrivers() map[string]IoDriver {

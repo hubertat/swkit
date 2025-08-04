@@ -218,3 +218,8 @@ func (gp *GpIO) GetAnalogOutput(id string) (AnalogOutput, error) {
 func (gp *GpIO) GetRgbwOutput(id string) (RgbwOutput, error) {
 	return nil, errors.New("rgbw ouput not implemented in GPIO driver")
 }
+
+// GetPushEventEmitter returns a PushEventEmitter for the given pin.
+func (gp *GpIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
+	return nil, errors.New("push event emitter not implemented in GPIO driver")
+}

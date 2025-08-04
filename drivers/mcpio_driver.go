@@ -237,6 +237,11 @@ func (mcp *McpIO) GetRgbwOutput(id string) (output RgbwOutput, err error) {
 	return
 }
 
+// GetPushEventEmitter returns a PushEventEmitter for the given pin.
+func (mcp *McpIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
+	return nil, errors.New("push event emitter not implemented in MCPIO driver")
+}
+
 func (mcp *McpIO) Close() error {
 	mcp.isReady = false
 	for _, output := range mcp.outputs {

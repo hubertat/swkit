@@ -31,11 +31,12 @@ type SwKit struct {
 	Lights      []LightConfig
 	ColorLights []ColorLightConfig
 	Outlets     []OutletConfig
+	Buttons     []ButtonConfig
 
 	lights      []*Light
 	colorLights []*ColorLight
 	outlets     []*Outlet
-	// Buttons       []*Button
+	buttons     []*Button
 	// Switches      []*Switch
 	// MotionSensors []*MotionSensor
 
@@ -58,6 +59,7 @@ type SwKit struct {
 
 type Device interface {
 	Sync(bool) error
+	Name() string
 }
 
 type HkThing interface {
@@ -66,17 +68,10 @@ type HkThing interface {
 	Sync(bool) error
 }
 
-type ControllingDevice struct {
-	Enable     bool
-	IoName     string
-	DriverName string
-}
-
 type Controllable interface {
-	GetControllers() []ControllingDevice
-	GetDriverName() string
 	SetValue(value bool)
 	Toggle()
+	Name() string
 }
 
 func (sw *SwKit) getHkThings() (things []HkThing) {
@@ -89,6 +84,10 @@ func (sw *SwKit) getHkThings() (things []HkThing) {
 	}
 
 	for _, th := range sw.outlets {
+		things = append(things, th)
+	}
+
+	for _, th := range sw.buttons {
 		things = append(things, th)
 	}
 
@@ -118,6 +117,10 @@ func (sw *SwKit) getDevices() (devices []Device) {
 		devices = append(devices, d)
 	}
 
+	for _, d := range sw.buttons {
+		devices = append(devices, d)
+	}
+
 	return
 }
 
@@ -137,7 +140,30 @@ func (sw *SwKit) getAllIoIds() []string {
 		allIds = append(allIds, d.DigitalOutName)
 	}
 
+	for _, b := range sw.Buttons {
+		allIds = append(allIds, b.EventInputName)
+	}
+
 	return allIds
+}
+
+// getControllableDevices returns a slice of all controllable devices.
+func (sw *SwKit) getControllableDevices() []Controllable {
+	devices := []Controllable{}
+
+	for _, li := range sw.lights {
+		devices = append(devices, li)
+	}
+
+	for _, cl := range sw.colorLights {
+		devices = append(devices, cl)
+	}
+
+	for _, d := range sw.outlets {
+		devices = append(devices, d)
+	}
+
+	return devices
 }
 
 func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
@@ -244,6 +270,45 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		}
 
 		sw.colorLights = append(sw.colorLights, NewColorLight(coloLight, dOut, rgbw))
+	}
+
+	for _, button := range sw.Buttons {
+		ioName, driver, err := sw.getDriverAndNameForIo(button.EventInputName, drivers.IoTypePushEventEmitter)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", button.EventInputName))
+		}
+
+		eventEmitter, err := driver.GetPushEventEmitter(ioName)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to get push event emitter for button %s", button.Name))
+		}
+
+		ctrlDevs := []ControlDevice{}
+
+		for _, ctrlDevId := range button.ControlDevices {
+			e, action, devName, err := ParseControlDeviceString(ctrlDevId)
+			if err != nil {
+				return errors.Join(err, fmt.Errorf("failed to parse control device string for button %s", button.Name))
+			}
+
+			ctrlDevFound := false
+			for _, ctrlDev := range sw.getControllableDevices() {
+				if ctrlDev.Name() == devName {
+					ctrlDevs = append(ctrlDevs, ControlDevice{
+						dev:    ctrlDev,
+						e:      e,
+						action: action,
+					})
+					ctrlDevFound = true
+					break
+				}
+			}
+			if !ctrlDevFound {
+				return fmt.Errorf("control device (%s) not found", devName)
+			}
+		}
+
+		sw.buttons = append(sw.buttons, NewButton(button, eventEmitter, ctrlDevs))
 	}
 
 	return nil

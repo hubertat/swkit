@@ -123,6 +123,10 @@ func (md *MockIoDriver) GetRgbwOutput(id string) (RgbwOutput, error) {
 	return nil, fmt.Errorf("rgbw output not implemented in mock driver")
 }
 
+func (md *MockIoDriver) GetPushEventEmitter(id string) (PushEventEmitter, error) {
+	return nil, fmt.Errorf("push event emitter not implemented in mock driver")
+}
+
 func (md *MockIoDriver) GetAllIo() (inputs []string, outputs []string) {
 	for _, input := range md.inputs {
 		inputs = append(inputs, input.id)

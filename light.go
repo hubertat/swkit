@@ -18,8 +18,6 @@ type LightConfig struct {
 }
 
 type Light struct {
-	ControlBy []ControllingDevice
-
 	name           string
 	disableHomekit bool
 	isFaulty       bool
@@ -77,6 +75,11 @@ func (li *Light) InitHk() *accessory.A {
 	return li.hk.A
 }
 
+// Name() returns an objects name
+func (li *Light) Name() string {
+	return li.name
+}
+
 // Sync() is called periodically by swkit managing server to sync from drivers io
 // If subscribe model is available and used this should be skipped
 // If there is no homekit, there is no internal state - skip
@@ -115,10 +118,6 @@ func (li *Light) Sync(force bool) (err error) {
 	}
 
 	return nil
-}
-
-func (li *Light) GetControllers() []ControllingDevice {
-	return li.ControlBy
 }
 
 func (li *Light) SetValue(state bool) {

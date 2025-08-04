@@ -378,6 +378,11 @@ func (gio *GrentonIO) GetRgbwOutput(id string) (RgbwOutput, error) {
 	return nil, errors.Errorf("grenton io rgbw outputs not implemented")
 }
 
+// GetPushEventEmitter returns a PushEventEmitter for the given pin.
+func (gio *GrentonIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
+	return nil, errors.New("push event emitter not implemented in GrentonIO driver")
+}
+
 func (gio *GrentonIO) GetAllIo() (inputs []string, outputs []string) {
 	for _, out := range gio.outputs {
 		outputs = append(outputs, fmt.Sprintf("%d:%d", out.cluId, out.id))

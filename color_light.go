@@ -19,8 +19,6 @@ type ColorLightConfig struct {
 }
 
 type ColorLight struct {
-	ControlBy []ControllingDevice
-
 	name           string
 	disableHomekit bool
 	isFaulty       bool
@@ -53,6 +51,11 @@ func NewColorLight(config ColorLightConfig, dOut drivers.DigitalOutput, rgbwOut 
 		onDigitalOut: dOut,
 		rgbwOut:      rgbwOut,
 	}
+}
+
+// Name returns the name of the color light object
+func (cl *ColorLight) Name() string {
+	return cl.name
 }
 
 func (cl *ColorLight) GetUniqueId() uint64 {
@@ -151,10 +154,6 @@ func (cl *ColorLight) Sync(force bool) (err error) {
 	cl.hk.Lightbulb.Brightness.SetValue(v)
 
 	return nil
-}
-
-func (cl *ColorLight) GetControllers() []ControllingDevice {
-	return cl.ControlBy
 }
 
 func (cl *ColorLight) SetValue(state bool) {

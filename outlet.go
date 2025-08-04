@@ -18,8 +18,6 @@ type OutletConfig struct {
 }
 
 type Outlet struct {
-	ControlBy []ControllingDevice
-
 	name           string
 	disableHomekit bool
 	isFaulty       bool
@@ -40,6 +38,11 @@ func NewOutlet(config OutletConfig, dOut drivers.DigitalOutput) *Outlet {
 		output:         dOut,
 		lock:           sync.Mutex{},
 	}
+}
+
+// Name returns the name of the outlet object
+func (ou *Outlet) Name() string {
+	return ou.name
 }
 
 func (ou *Outlet) GetUniqueId() uint64 {
@@ -105,10 +108,6 @@ func (ou *Outlet) Sync(force bool) error {
 	}
 
 	return nil
-}
-
-func (ou *Outlet) GetControllers() []ControllingDevice {
-	return ou.ControlBy
 }
 
 func (ou *Outlet) SetValue(state bool) {
