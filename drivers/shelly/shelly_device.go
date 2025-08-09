@@ -92,7 +92,7 @@ func (sd *ShellyDevice) String() string {
 	str.WriteString("## Switches:\n")
 	for _, sw := range sd.Switches {
 		stateString := "[ ] off"
-		if sw.Status.Output {
+		if sw.Status.Output != nil && *sw.Status.Output {
 			stateString = "[x]  on"
 		}
 		str.WriteString(fmt.Sprintf("## Switch:%d %s\t", sw.Status.ID, stateString))
@@ -152,14 +152,21 @@ func (sd *ShellyDevice) GetOutputState(id int) (bool, error) {
 	if len(sd.Switches) <= id {
 		return false, errors.New("switch id out of range")
 	}
-	state := sd.Switches[id].Status.Output
+	state := *sd.Switches[id].Status.Output
 	return state, sd.HealthCheck()
 }
 
 func (sd *ShellyDevice) FillStatus(status GetStatus) error {
 	switches := status.GetSwitches()
+	if len(sd.Switches) > len(switches) {
+		return fmt.Errorf("FillStatus failed: tried to fill %d switched from GetStatus into existing Switches array len = %d", len(switches), len(sd.Switches))
+	}
+
 	sd.Switches = make([]components.Switch, len(switches))
 	for _, sw := range switches {
+		if len(sd.Switches) <= sw.ID {
+			return fmt.Errorf("FillStatus failed: switch id %d out of range", sw.ID)
+		}
 		sd.Switches[sw.ID] = components.Switch{
 			Status: sw,
 		}
@@ -168,6 +175,9 @@ func (sd *ShellyDevice) FillStatus(status GetStatus) error {
 	inputs := status.GetInputs()
 	sd.Inputs = make([]components.Input, len(inputs))
 	for _, in := range inputs {
+		if len(sd.Inputs) <= in.ID {
+			return fmt.Errorf("FillStatus failed: input id %d out of range", in.ID)
+		}
 		sd.Inputs[in.ID] = components.Input{
 			Status: in,
 		}
@@ -194,7 +204,7 @@ func (sd *ShellyDevice) UpdateFromStatus(status GetStatus) error {
 		if sw.ID >= len(sd.Switches) {
 			return errors.New("update from status failed, switch id out of range")
 		}
-		sd.Switches[sw.ID].Status = sw
+		sd.Switches[sw.ID].Status.Update(sw)
 	}
 
 	for _, in := range status.GetInputs() {

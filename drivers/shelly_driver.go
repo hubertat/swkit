@@ -22,7 +22,8 @@ import (
 const idSeparator = ":"
 const shellyDriverName string = "shelly"
 
-const setupDevicesTimeout = 30 * time.Second
+const firstMatchDelay = 2 * time.Second
+const periodicMatchInterval = 300 * time.Second
 const healthCheckInterval = 5 * time.Second
 const stateUpToDateDuration = 5 * time.Minute
 const unhealthyCountLimit = 5
@@ -63,8 +64,10 @@ type ShellyIO struct {
 
 	messenger *mqtt.JsonRpcMessenger
 
+	healthTicker *time.Ticker
+	matchTicker  *time.Ticker
+
 	isReady        bool
-	healthTicker   *time.Ticker
 	done           chan bool
 	originUrl      *url.URL
 	unhealthyCount int
@@ -160,27 +163,45 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 	}
 
 	logger.Info("trying to match devices")
-
-	matchTickDuration := 5 * time.Second
-	matchTickCount := int(setupDevicesTimeout / matchTickDuration)
-	matchErr := she.tryToMatchDevices(matchTickCount, matchTickDuration, logger)
-
-	logger.Debug("devices match done", "err", err)
-
+	time.Sleep(firstMatchDelay)
+	matchErr := she.matchDevices()
 	if matchErr != nil {
-		err = errors.Join(err, matchErr, errors.New("failed on matching devices"))
-		return
+		logger.Warn("first match fo shelly devices failed", "err", matchErr)
+		go func() {
+			logger.Info("trying to match devices again")
+			time.Sleep(firstMatchDelay)
+			matchErr = she.matchDevices()
+			if matchErr != nil {
+				logger.Warn("failed to match devices (2nd match)", "err", matchErr)
+			}
+		}()
 	}
 
+	logger.Info("periodic matching set", "interval", periodicMatchInterval)
+
+	she.matchTicker = time.NewTicker(periodicMatchInterval)
 	she.healthTicker = time.NewTicker(healthCheckInterval)
 	go func() {
 		for {
 			select {
 			case <-she.done:
 				return
+			case <-she.matchTicker.C:
+				for _, d := range she.devices {
+					if !d.IsReady() {
+						log.Info("healthTicker: found unititialized device, will try to match", "id", d.Id)
+
+						matchErr = she.matchDevices()
+						if matchErr != nil {
+							logger.Warn("failed to match devices", "err", matchErr)
+						}
+					}
+				}
+
 			case <-she.healthTicker.C:
 				for _, d := range she.devices {
-					if d.SinceLastRefreshed() > stateUpToDateDuration {
+					if d.IsReady() && d.SinceLastRefreshed() > stateUpToDateDuration {
+						log.Debug("healthTicker: refreshing device", "id", d.Id)
 						d.GetStatus()
 					}
 				}
@@ -190,6 +211,7 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 
 	// go she.startHealthCheck(ctx)
 
+	logger.Info("shelly driver setup finished")
 	she.isReady = true
 
 	return
@@ -198,72 +220,48 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 // matchDevices() will match defined ios with actual devices
 // return error when device is not present and healthy or does not have specified io channel
 func (she *ShellyIO) matchDevices() error {
+	var err error
 	for ix, output := range she.outputs {
-		dev := she.getDevice(output.deviceId)
-		if dev == nil {
-			return fmt.Errorf("device %s not found", output.deviceId)
+		if output.dev == nil {
+			dev := she.getDevice(output.deviceId)
+			if dev == nil {
+				err = errors.Join(err, fmt.Errorf("device %s not found", output.deviceId))
+			} else {
+				if !dev.IsReady() {
+					err = errors.Join(err, fmt.Errorf("device %s is not ready", output.deviceId))
+				} else {
+					if len(dev.Switches) <= output.switchNo {
+						err = errors.Join(err, fmt.Errorf("device %s does not have switch %d", output.deviceId, output.switchNo))
+					} else {
+						output.dev = dev
+						she.outputs[ix] = output
+					}
+				}
+			}
 		}
-
-		if !dev.IsReady() {
-			return fmt.Errorf("device %s is not ready", output.deviceId)
-		}
-
-		if len(dev.Switches) <= output.switchNo {
-			return fmt.Errorf("device %s does not have switch %d", output.deviceId, output.switchNo)
-		}
-
-		output.dev = dev
-		she.outputs[ix] = output
 	}
 
 	for ix, input := range she.inputs {
-		dev := she.getDevice(input.deviceId)
-		if dev == nil {
-			return fmt.Errorf("device %s not found", input.deviceId)
-		}
-
-		if !dev.IsReady() {
-			return fmt.Errorf("device %s is not ready", input.deviceId)
-		}
-
-		if len(dev.Switches) <= input.inputNo {
-			return fmt.Errorf("device %s does not have input %d", input.deviceId, input.inputNo)
-		}
-
-		input.dev = dev
-		she.inputs[ix] = input
-	}
-
-	return nil
-}
-
-// tryToMatchDevices(maxTries int) will try to match devices
-// if it fails, it will retry until maxTries is reached
-// considering total setupDevicesTimeout
-func (she *ShellyIO) tryToMatchDevices(maxTries int, matchTickPeriod time.Duration, logger *log.Logger) error {
-	logger.Debug("tryToMatchDevices", "tick period", matchTickPeriod, "max tries", maxTries)
-	if maxTries <= 1 {
-		return she.matchDevices()
-	}
-
-	ticker := time.NewTicker(matchTickPeriod)
-	defer ticker.Stop()
-
-	var matchErr error
-
-	for ix := 0; ix < maxTries; ix++ {
-		select {
-		case <-ticker.C:
-			matchErr = she.matchDevices()
-			logger.Debug("tried to match", "err", matchErr)
-			if matchErr == nil {
-				return nil
+		if input.dev == nil {
+			dev := she.getDevice(input.deviceId)
+			if dev == nil {
+				err = errors.Join(err, fmt.Errorf("device %s not found", input.deviceId))
+			} else {
+				if !dev.IsReady() {
+					err = errors.Join(err, fmt.Errorf("device %s is not ready", input.deviceId))
+				} else {
+					if len(dev.Switches) <= input.inputNo {
+						err = errors.Join(err, fmt.Errorf("device %s does not have input %d", input.deviceId, input.inputNo))
+					} else {
+						input.dev = dev
+						she.inputs[ix] = input
+					}
+				}
 			}
-
 		}
 	}
 
-	return matchErr
+	return err
 }
 
 func (she *ShellyIO) getDevice(id string) *shelly.ShellyDevice {
@@ -406,13 +404,14 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			// Capture state before updating to detect changes
 			outStates := she.captureOutputStates(dev.Id)
 
+			log.Debug("will fill from status", "switches", status.GetSwitches())
 			err = dev.FillStatus(status)
 			if err != nil {
 				log.Error("failed to fill device with status", "device", dev.Id, "error", err)
 				return false
 			}
 
-			she.notifyStateChanges(outStates, "GetStatus", msg.Method)
+			she.notifyStateChanges(outStates, msg.MsgType.String(), msg.Method)
 
 			return true
 		case "Switch.Set":
@@ -421,7 +420,7 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			outStates := she.captureOutputStates(dev.Id)
 			go func() {
 				time.Sleep(50 * time.Millisecond) // Brief delay for state to settle
-				she.notifyStateChanges(outStates, "Switch.Set", msg.Method)
+				she.notifyStateChanges(outStates, msg.MsgType.String(), msg.Method)
 			}()
 			log.Info("resp to handle", "method", msg.Method)
 			return true
@@ -442,13 +441,14 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			// Capture state before updating to detect changes
 			outStates := she.captureOutputStates(dev.Id)
 
+			log.Debug("will update from status", "switches", status.GetSwitches())
 			err = dev.UpdateFromStatus(status)
 			if err != nil {
 				log.Error("failed to update device from status", "device", dev.Id, "error", err)
 				return false
 			}
 
-			she.notifyStateChanges(outStates, "NotifyStatus", msg.Method)
+			she.notifyStateChanges(outStates, msg.MsgType.String(), msg.Method)
 
 			return true
 		case "NotifyEvent":
@@ -512,7 +512,7 @@ func (she *ShellyIO) notifyStateChanges(oldStates map[string]bool, msgType, meth
 	for _, o := range she.outputs {
 		if oldState, present := oldStates[o.String()]; present && o.onStateUpdate != nil {
 			if state, err := o.dev.GetOutputState(o.switchNo); err == nil && state != oldState {
-				log.Debug("State change detected", "output", o.String(), "old", oldState, "new", state, "msgType", msgType, "method", method)
+				log.Info("State change detected", "output", o.String(), "old", oldState, "new", state, "msgType", msgType, "method", method)
 				o.onStateUpdate(state)
 			}
 		}
@@ -538,7 +538,7 @@ func (sout *ShellyOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
 
 func (sout *ShellyOutput) GetState() (bool, error) {
 	if sout.dev == nil {
-		return false, errors.New("shelly output internal Switch/Device nil error")
+		return false, fmt.Errorf("shelly device (%s) internal dev nil error", sout.deviceId)
 	}
 
 	return sout.dev.GetOutputState(sout.switchNo)
@@ -566,6 +566,9 @@ func (sout *ShellyOutput) getStringId() string {
 }
 
 func (sout *ShellyOutput) IsHealthy() bool {
+	if sout.dev == nil {
+		return false
+	}
 	return sout.dev.HealthCheck() == nil
 }
 
@@ -587,9 +590,10 @@ func (sin *ShellyInput) getStringId() string {
 }
 
 func (sin *ShellyInput) Subscribe(eventType PushEvent, handler func(PushEvent)) error {
-	if sin.dev == nil {
-		return errors.New("shelly input internal InputStatus/Device nil error")
-	}
+	// TODO: make sure its not required and delete
+	// if sin.dev == nil {
+	// 	return errors.New("shelly input internal InputStatus/Device nil error")
+	// }
 
 	var shellE events.ShellyEventType
 	switch eventType {
@@ -636,7 +640,7 @@ func (sin *ShellyInput) findAndFireEvent(shellyEventType events.ShellyEventType)
 
 func (sin *ShellyInput) GetState() (bool, error) {
 	if sin.dev == nil {
-		return false, errors.New("shelly input internal InputStatus/Device nil error")
+		return false, fmt.Errorf("shelly device (%s) internal dev nil error", sin.deviceId)
 	}
 
 	return sin.dev.GetInputState(sin.inputNo)
@@ -647,6 +651,9 @@ func (sin *ShellyInput) String() string {
 }
 
 func (sin *ShellyInput) IsHealthy() bool {
+	if sin.dev == nil {
+		return false
+	}
 	return sin.dev.HealthCheck() == nil
 }
 

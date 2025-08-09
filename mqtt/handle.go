@@ -23,6 +23,19 @@ const (
 	RpcNotificationType
 )
 
+func (rmt RpcMessageType) String() string {
+	switch rmt {
+	case RpcRequestType:
+		return "RpcRequestType"
+	case RpcResponseType:
+		return "RpcResponseType"
+	case RpcNotificationType:
+		return "RpcNotificationType"
+	default:
+		return "RpcUnknown"
+	}
+}
+
 type MqttRpcHandler interface {
 	HandleRpcStatus(online bool, topic string) bool
 	HandleRpcMessage(msg *RpcMessage, topic string) bool

@@ -15,7 +15,7 @@ import (
 
 const defaultSyncInterval = "330ms"
 const defaultSensorsSyncInterval = "10s"
-const defaultForceSyncEveryCycle = 100
+const defaultForceSyncEveryCycle = 1000
 
 var (
 	Version string
