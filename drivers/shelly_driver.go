@@ -386,24 +386,6 @@ func (she *ShellyIO) HandleRpcStatus(online bool, topic string) bool {
 }
 
 func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
-	outStates := map[string]bool{}
-	for _, o := range she.outputs {
-		outStates[o.String()], _ = o.dev.GetOutputState(o.switchNo)
-	}
-
-	defer func(she *ShellyIO) {
-		for _, o := range she.outputs {
-			oldState, present := outStates[o.String()]
-			if present && o.onStateUpdate != nil {
-				state, _ := o.dev.GetOutputState(o.switchNo)
-				if state != oldState {
-					log.Debug("State change detected", "output", o.String(), "old", oldState, "new", state, "msgType", msg.MsgType, "method", msg.Method)
-					o.onStateUpdate(state)
-				}
-			}
-		}
-	}(she)
-
 	dev := she.getDevice(msg.Src)
 	if dev == nil {
 		log.Warn("handling rpc message, device not found", "device", msg.Src)
@@ -421,14 +403,26 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 				return false
 			}
 
+			// Capture state before updating to detect changes
+			outStates := she.captureOutputStates(dev.Id)
+
 			err = dev.FillStatus(status)
 			if err != nil {
 				log.Error("failed to fill device with status", "device", dev.Id, "error", err)
 				return false
 			}
 
+			she.notifyStateChanges(outStates, "GetStatus", msg.Method)
+
 			return true
 		case "Switch.Set":
+			// For Switch.Set responses, capture current state and check after a brief delay
+			// to allow for any device state synchronization
+			outStates := she.captureOutputStates(dev.Id)
+			go func() {
+				time.Sleep(50 * time.Millisecond) // Brief delay for state to settle
+				she.notifyStateChanges(outStates, "Switch.Set", msg.Method)
+			}()
 			log.Info("resp to handle", "method", msg.Method)
 			return true
 		default:
@@ -445,11 +439,16 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 				return false
 			}
 
+			// Capture state before updating to detect changes
+			outStates := she.captureOutputStates(dev.Id)
+
 			err = dev.UpdateFromStatus(status)
 			if err != nil {
 				log.Error("failed to update device from status", "device", dev.Id, "error", err)
 				return false
 			}
+
+			she.notifyStateChanges(outStates, "NotifyStatus", msg.Method)
 
 			return true
 		case "NotifyEvent":
@@ -495,6 +494,31 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 	}
 }
 
+// captureOutputStates captures current states for outputs belonging to a specific device
+func (she *ShellyIO) captureOutputStates(deviceId string) map[string]bool {
+	outStates := map[string]bool{}
+	for _, o := range she.outputs {
+		if o.deviceId == deviceId {
+			if state, err := o.dev.GetOutputState(o.switchNo); err == nil {
+				outStates[o.String()] = state
+			}
+		}
+	}
+	return outStates
+}
+
+// notifyStateChanges compares current states with captured states and notifies callbacks
+func (she *ShellyIO) notifyStateChanges(oldStates map[string]bool, msgType, method string) {
+	for _, o := range she.outputs {
+		if oldState, present := oldStates[o.String()]; present && o.onStateUpdate != nil {
+			if state, err := o.dev.GetOutputState(o.switchNo); err == nil && state != oldState {
+				log.Debug("State change detected", "output", o.String(), "old", oldState, "new", state, "msgType", msgType, "method", method)
+				o.onStateUpdate(state)
+			}
+		}
+	}
+}
+
 type ShellyOutput struct {
 	switchNo int
 	deviceId string
@@ -532,7 +556,7 @@ func (sout *ShellyOutput) Set(state bool) error {
 }
 
 func (sout *ShellyOutput) String() string {
-	return fmt.Sprintf("shelly_output:%s:%d", sout.deviceId, sout.switchNo)
+	return fmt.Sprintf("shelly:%s:switch%d", sout.deviceId, sout.switchNo)
 }
 
 // getStringId() string
@@ -619,7 +643,7 @@ func (sin *ShellyInput) GetState() (bool, error) {
 }
 
 func (sin *ShellyInput) String() string {
-	return fmt.Sprintf("shelly_input:%s:%d", sin.deviceId, sin.inputNo)
+	return fmt.Sprintf("shelly:%s:input%d", sin.deviceId, sin.inputNo)
 }
 
 func (sin *ShellyInput) IsHealthy() bool {
