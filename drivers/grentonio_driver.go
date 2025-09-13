@@ -109,7 +109,7 @@ func (gro *GrentonOutput) String() string {
 	return fmt.Sprintf("grenton_output:%d:%d", gro.cluId, gro.id)
 }
 
-func (gro *GrentonOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
+func (gro *GrentonOutput) SetOnStateUpdate(onStateUpdate func(bool, string)) error {
 	return errors.New("SetOnStateUpdate not supported")
 }
 

@@ -79,7 +79,7 @@ func (gpo *GpOutput) String() string {
 	return GetIoIdString(gpioDriverName, IoTypeDigitalOutput, strconv.Itoa(int(gpo.pin)))
 }
 
-func (gpo *GpOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
+func (gpo *GpOutput) SetOnStateUpdate(onStateUpdate func(bool, string)) error {
 	return errors.New("SetOnStateUpdate not supported")
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/brutella/hap/accessory"
 	"github.com/brutella/hap/characteristic"
 	drivers "github.com/hubertat/swkit/drivers"
+	"github.com/hubertat/swkit/logger"
 	"github.com/pkg/errors"
 )
 
@@ -30,21 +31,27 @@ type Light struct {
 	hk    *accessory.Lightbulb
 	fault *characteristic.StatusFault
 	lock  sync.Mutex
+	log   logger.EventLogger
 }
 
-func NewLight(config LightConfig, dOut drivers.DigitalOutput) *Light {
+func NewLight(config LightConfig, dOut drivers.DigitalOutput, logger logger.EventLogger) *Light {
 	return &Light{
 		name:           config.Name,
 		disableHomekit: config.DisableHomekit,
 
 		output: dOut,
 		lock:   sync.Mutex{},
+		log:    logger,
 	}
+}
+
+func (li *Light) getUniqueName() string {
+	return fmt.Sprintf("Light_%s", li.name)
 }
 
 func (li *Light) GetUniqueId() uint64 {
 	hash := fnv.New64()
-	hash.Write([]byte("Light_" + li.name))
+	hash.Write([]byte(li.getUniqueName()))
 	return hash.Sum64()
 }
 
@@ -63,11 +70,13 @@ func (li *Light) InitHk() *accessory.A {
 	li.fault.SetValue(characteristic.StatusFaultNoFault)
 	li.hk.Lightbulb.AddC(li.fault.C)
 
-	li.hk.Lightbulb.On.OnValueRemoteUpdate(li.SetValue)
+	li.hk.Lightbulb.On.OnValueRemoteUpdate(func(state bool) {
+		li.SetValue(state, "homekit")
+	})
 
 	// set callback to update on remote value change
 	// TODO consider altering sync method if digital output gives this option (check error)
-	li.withCallback = li.output.SetOnStateUpdate(li.hk.Lightbulb.On.SetValue) == nil
+	li.withCallback = li.output.SetOnStateUpdate(li.UpdateState) == nil
 
 	state, err := li.output.GetState()
 	if err != nil {
@@ -111,7 +120,7 @@ func (li *Light) Sync(force bool) (err error) {
 	li.isFaulty = false
 
 	if onState != li.hk.Lightbulb.On.Value() {
-		li.hk.Lightbulb.On.SetValue(onState)
+		li.UpdateState(onState, "internal: sync")
 	}
 
 	return nil
@@ -121,13 +130,34 @@ func (li *Light) GetControllers() []ControllingDevice {
 	return li.ControlBy
 }
 
-func (li *Light) SetValue(state bool) {
+func (li *Light) SetValue(state bool, source string) {
+	var uintState uint64
+	if state {
+		uintState = 1
+	}
+	li.log.LogEvent(logger.EventTypeSetValue, uintState, source, li.getUniqueName())
+
 	li.output.Set(state)
 }
 
-func (li *Light) Toggle() {
+func (li *Light) UpdateState(state bool, source string) {
+	var uintState uint64
+	if state {
+		uintState = 1
+	}
+	li.log.LogEvent(logger.EventTypeUpdateState, uintState, source, li.getUniqueName())
+
+	if li.disableHomekit {
+		return
+	}
+	li.hk.Lightbulb.On.SetValue(state)
+}
+
+func (li *Light) Toggle(source string) {
+	li.log.LogEvent(logger.EventTypeToggle, 0, source, li.getUniqueName())
+
 	oldState, err := li.output.GetState()
 	if err == nil {
-		li.SetValue(!oldState)
+		li.SetValue(!oldState, "toggle from: "+source)
 	}
 }

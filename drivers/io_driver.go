@@ -130,7 +130,7 @@ type DigitalOutput interface {
 	GetState() (bool, error)
 	Set(bool) error
 	String() string
-	SetOnStateUpdate(func(bool)) error
+	SetOnStateUpdate(func(bool, string)) error
 	IsHealthy() bool
 }
 

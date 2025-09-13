@@ -95,7 +95,7 @@ func (mout *McpOutput) Set(state bool) (err error) {
 	return
 }
 
-func (mout *McpOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
+func (mout *McpOutput) SetOnStateUpdate(onStateUpdate func(bool, string)) error {
 	return errors.New("SetOnStateUpdate not supported")
 }
 

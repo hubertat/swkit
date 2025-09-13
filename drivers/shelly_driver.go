@@ -380,7 +380,7 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			if present && o.onStateUpdate != nil {
 				state, _ := o.dev.GetOutputState(o.switchNo)
 				if state != oldState {
-					o.onStateUpdate(state)
+					o.onStateUpdate(state, "shelly_"+o.getStringId())
 				}
 			}
 		}
@@ -448,12 +448,12 @@ type ShellyOutput struct {
 	switchNo int
 	deviceId string
 
-	onStateUpdate func(bool)
+	onStateUpdate func(state bool, source string)
 
 	dev *shelly.ShellyDevice
 }
 
-func (sout *ShellyOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
+func (sout *ShellyOutput) SetOnStateUpdate(onStateUpdate func(bool, string)) error {
 	if onStateUpdate == nil {
 		return errors.New("onStateUpdate function cannot be nil")
 	}

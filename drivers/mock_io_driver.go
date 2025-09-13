@@ -33,7 +33,7 @@ func (mo *MockOutput) String() string {
 	return fmt.Sprintf("mock_output:%s", mo.id)
 }
 
-func (mo *MockOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
+func (mo *MockOutput) SetOnStateUpdate(onStateUpdate func(bool, string)) error {
 	return errors.New("SetOnStateUpdate not supported")
 }
 

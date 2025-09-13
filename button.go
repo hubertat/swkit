@@ -32,7 +32,7 @@ type Button struct {
 }
 
 type ClickableDevice interface {
-	Toggle()
+	Toggle(source string)
 }
 
 func (bu *Button) GetUniqueId() uint64 {

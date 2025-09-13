@@ -18,6 +18,7 @@ import (
 	hklog "github.com/brutella/hap/log"
 
 	"github.com/hubertat/swkit/drivers"
+	"github.com/hubertat/swkit/logger"
 	"github.com/hubertat/swkit/mqtt"
 )
 
@@ -54,6 +55,8 @@ type SwKit struct {
 	mqttClient *mqtt.MqttClient
 	ticker     *time.Ticker
 	logger     *log.Logger
+
+	eventLogger logger.EventLogger
 }
 
 type Device interface {
@@ -205,7 +208,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			return errors.Join(err, fmt.Errorf("failed to get digital output for light %s", light.Name))
 		}
 
-		sw.lights = append(sw.lights, NewLight(light, dOut))
+		sw.lights = append(sw.lights, NewLight(light, dOut, sw.eventLogger))
 	}
 
 	for _, outlet := range sw.Outlets {
@@ -219,7 +222,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			return errors.Join(err, fmt.Errorf("failed to get digital output for outlet %s", outlet.Name))
 		}
 
-		sw.outlets = append(sw.outlets, NewOutlet(outlet, dOut))
+		sw.outlets = append(sw.outlets, NewOutlet(outlet, dOut, sw.eventLogger))
 	}
 
 	for _, coloLight := range sw.ColorLights {
