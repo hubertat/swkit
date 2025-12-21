@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hubertat/swkit/mqtt"
 
@@ -13,19 +14,29 @@ import (
 )
 
 const gpioDriverName = "gpio"
+const filterLoopInterval = 1 * time.Millisecond
 
 type GpIO struct {
 	InvertInputs  bool
 	InvertOutputs bool
 
-	inputs  []GpInput
-	outputs []GpOutput
-	isReady bool
+	FilterInputsMs uint
+
+	inputs         []GpInput
+	outputs        []GpOutput
+	isReady        bool
+	filterTimer    *time.Ticker
+	quitFilterLoop chan bool
 }
 
 type GpInput struct {
 	pin    uint8
 	invert bool
+	// debouncing/filter:
+	filterDuration time.Duration
+	filteredState  bool
+	lastChanged    time.Time
+	lastState      bool
 }
 
 type GpOutput struct {
@@ -33,14 +44,39 @@ type GpOutput struct {
 	invert bool
 }
 
-func (gpi *GpInput) GetState() (state bool, err error) {
+func (gpi *GpInput) ioStateToBool(state rpio.State) bool {
 	if gpi.invert {
-		state = rpio.Pin(gpi.pin).Read() == rpio.Low
+		return state == 0
 	} else {
-		state = rpio.Pin(gpi.pin).Read() == rpio.High
+		return state == 1
+	}
+}
+
+func (gpi *GpInput) filterState() {
+	currentState := gpi.ioStateToBool(rpio.Pin(gpi.pin).Read())
+
+	if gpi.lastChanged.IsZero() {
+		if currentState == gpi.filteredState {
+			return
+		}
+		gpi.lastChanged = time.Now()
+		gpi.lastState = currentState
+	} else {
+		if time.Since(gpi.lastChanged) >= gpi.filterDuration {
+			if currentState == gpi.lastState {
+				gpi.filteredState = currentState
+			}
+			gpi.lastChanged = time.Time{}
+		}
+	}
+}
+
+func (gpi *GpInput) GetState() (state bool, err error) {
+	if gpi.filterDuration == 0 {
+		return gpi.ioStateToBool(rpio.Pin(gpi.pin).Read()), nil
 	}
 
-	return
+	return gpi.filteredState, nil
 }
 
 func (gpi *GpInput) String() string {
@@ -87,6 +123,19 @@ func (gpo *GpOutput) IsHealthy() bool {
 	return true
 }
 
+func (gp *GpIO) filterLoop() {
+	for {
+		select {
+		case <-gp.quitFilterLoop:
+			return
+		case <-gp.filterTimer.C:
+			for ix := range gp.inputs {
+				gp.inputs[ix].filterState()
+			}
+		}
+	}
+}
+
 func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
 	err := rpio.Open()
 	if err != nil {
@@ -114,7 +163,11 @@ func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
 			gpioPin := rpio.Pin(pin)
 			gpioPin.Input()
 			gpioPin.PullUp()
-			gp.inputs = append(gp.inputs, GpInput{pin: uint8(pin), invert: gp.InvertInputs})
+			gp.inputs = append(gp.inputs, GpInput{
+				pin:            uint8(pin),
+				invert:         gp.InvertInputs,
+				filterDuration: time.Millisecond * time.Duration(gp.FilterInputsMs),
+			})
 
 		case IoTypeDigitalOutput:
 			pin, err := strconv.Atoi(ioId)
@@ -130,6 +183,23 @@ func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
 			gp.outputs = append(gp.outputs, GpOutput{pin: uint8(pin), invert: gp.InvertOutputs})
 		default:
 			return errors.New("unsupported io type: " + ioType.String())
+		}
+	}
+
+	gp.quitFilterLoop = make(chan bool)
+	if gp.FilterInputsMs > 0 {
+		if time.Duration(gp.FilterInputsMs)*time.Millisecond <= filterLoopInterval {
+			return errors.New("failed to start filter loop: filter duration must be longer than loop interval (1ms)")
+		}
+		gp.filterTimer = time.NewTicker(filterLoopInterval)
+		go gp.filterLoop()
+	}
+
+	for ix, in := range gp.inputs {
+		if in.filterDuration > 0 {
+			in.filterDuration = 0
+			state, _ := in.GetState()
+			gp.inputs[ix].filteredState = state
 		}
 	}
 
@@ -154,6 +224,13 @@ func (gp *GpIO) Close() error {
 	for _, output := range gp.outputs {
 		output.Set(false)
 	}
+
+	if gp.filterTimer != nil {
+		gp.filterTimer.Stop()
+		gp.quitFilterLoop <- true
+		close(gp.quitFilterLoop)
+	}
+
 	return rpio.Close()
 }
 
@@ -167,9 +244,9 @@ func (gp *GpIO) GetDigitalInput(id string) (input DigitalInput, err error) {
 		err = fmt.Errorf("pin id out (%d) of range gpio takes uint8 pin", pin)
 		return
 	}
-	for _, in := range gp.inputs {
+	for ix, in := range gp.inputs {
 		if in.pin == uint8(pin) {
-			input = &in
+			input = &gp.inputs[ix]
 			return
 		}
 	}
@@ -188,9 +265,9 @@ func (gp *GpIO) GetDigitalOutput(id string) (output DigitalOutput, err error) {
 		err = fmt.Errorf("pin id out (%d) of range gpio takes uint8 pin", pin)
 		return
 	}
-	for _, out := range gp.outputs {
+	for ix, out := range gp.outputs {
 		if out.pin == uint8(pin) {
-			output = &out
+			output = &gp.outputs[ix]
 			return
 		}
 	}
