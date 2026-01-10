@@ -102,6 +102,17 @@ func (bu *Button) Name() string {
 }
 
 func (bu *Button) HandlePushEvent(e drivers.PushEvent) {
+	if !bu.disableHomekit {
+		switch e {
+		case drivers.PushEventSinglePress:
+			bu.ss.ProgrammableSwitchEvent.SetValue(characteristic.ProgrammableSwitchEventSinglePress)
+		case drivers.PushEventDoublePress:
+			bu.ss.ProgrammableSwitchEvent.SetValue(characteristic.ProgrammableSwitchEventDoublePress)
+		case drivers.PushEventLongPress:
+			bu.ss.ProgrammableSwitchEvent.SetValue(characteristic.ProgrammableSwitchEventLongPress)
+		}
+	}
+
 	for _, ctrl := range bu.controlThis {
 		if ctrl.e == e {
 			switch ctrl.action {
