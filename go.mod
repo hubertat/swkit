@@ -10,6 +10,7 @@ require (
 	github.com/hubertat/servicemaker v0.1.2
 	github.com/pkg/errors v0.9.1
 	github.com/racerxdl/go-mcp23017 v0.0.0-20200119181255-c8f9b9777b0e
+	github.com/simonvetter/modbus v1.6.4
 	github.com/stianeikeland/go-rpio/v4 v4.6.0
 )
 
@@ -18,6 +19,7 @@ require (
 	github.com/charmbracelet/lipgloss v0.10.0 // indirect
 	github.com/go-chi/chi v1.5.4 // indirect
 	github.com/go-logfmt/logfmt v0.6.0 // indirect
+	github.com/goburrow/serial v0.1.0 // indirect
 	github.com/gorilla/websocket v1.5.1 // indirect
 	github.com/logrusorgru/aurora v0.0.0-20181002194514-a7b3b318ed4e // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
@@ -34,7 +36,6 @@ require (
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 	golang.org/x/mod v0.13.0 // indirect
 	golang.org/x/net v0.21.0 // indirect
-	golang.org/x/sync v0.4.0 // indirect
 	golang.org/x/sys v0.17.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	golang.org/x/tools v0.14.0 // indirect

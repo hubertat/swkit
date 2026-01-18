@@ -127,6 +127,7 @@ func MapAllIoDrivers() map[string]IoDriver {
 		&McpIO{},
 		&MockIoDriver{},
 		&GrentonIO{},
+		&WagoIO{},
 	}
 
 	mapped := make(map[string]IoDriver)

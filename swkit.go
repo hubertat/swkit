@@ -50,6 +50,7 @@ type SwKit struct {
 	Grenton    *drivers.GrentonIO
 	FakeDriver *drivers.MockIoDriver
 	Shelly     *drivers.ShellyIO
+	Wago       *drivers.WagoIO
 
 	ioDrivers  map[string]drivers.IoDriver
 	mqttClient *mqtt.MqttClient
@@ -189,6 +190,10 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 
 	if sw.Shelly != nil {
 		sw.ioDrivers[sw.Shelly.String()] = sw.Shelly
+	}
+
+	if sw.Wago != nil {
+		sw.ioDrivers[sw.Wago.String()] = sw.Wago
 	}
 
 	for _, driver := range sw.ioDrivers {
