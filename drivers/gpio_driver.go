@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/log"
+	"github.com/hubertat/swkit/logging"
 	"github.com/hubertat/swkit/mqtt"
 
 	"github.com/stianeikeland/go-rpio/v4"
@@ -27,6 +29,7 @@ type GpIO struct {
 	isReady        bool
 	filterTimer    *time.Ticker
 	quitFilterLoop chan bool
+	logger         *log.Logger
 }
 
 type GpInput struct {
@@ -137,10 +140,14 @@ func (gp *GpIO) filterLoop() {
 }
 
 func (gp *GpIO) Setup(ctx context.Context, ios []string) error {
+	gp.logger = logging.NewLogger(logging.PrefixGpio)
+
 	err := rpio.Open()
 	if err != nil {
 		return errors.Join(err, fmt.Errorf("failed to Setup gpio driver: failed to open rpio"))
 	}
+
+	gp.logger.Debug("setup starting", "inputCount", len(ios))
 	for _, io := range ios {
 		driver, ioType, ioId, err := ResolveIoIdString(io)
 		if err != nil {
@@ -299,4 +306,13 @@ func (gp *GpIO) GetRgbwOutput(id string) (RgbwOutput, error) {
 // GetPushEventEmitter returns a PushEventEmitter for the given pin.
 func (gp *GpIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
 	return nil, errors.New("push event emitter not implemented in GPIO driver")
+}
+
+// Status returns a summary of the driver's current state
+func (gp *GpIO) Status() string {
+	filterInfo := ""
+	if gp.FilterInputsMs > 0 {
+		filterInfo = fmt.Sprintf(" filter:%dms", gp.FilterInputsMs)
+	}
+	return fmt.Sprintf("in:%d out:%d%s", len(gp.inputs), len(gp.outputs), filterInfo)
 }

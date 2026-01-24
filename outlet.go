@@ -7,6 +7,7 @@ import (
 
 	"github.com/brutella/hap/accessory"
 	"github.com/brutella/hap/characteristic"
+	"github.com/charmbracelet/log"
 	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
 )
@@ -24,6 +25,7 @@ type Outlet struct {
 
 	output       drivers.DigitalOutput
 	withCallback bool
+	logger       *log.Logger
 
 	hk    *accessory.Outlet
 	fault *characteristic.StatusFault
@@ -31,11 +33,13 @@ type Outlet struct {
 	lock sync.Mutex
 }
 
-func NewOutlet(config OutletConfig, dOut drivers.DigitalOutput) *Outlet {
+func NewOutlet(config OutletConfig, dOut drivers.DigitalOutput, logger *log.Logger) *Outlet {
+	logger.Debug("outlet created", "name", config.Name, "output", dOut.String())
 	return &Outlet{
 		name:           config.Name,
 		disableHomekit: config.DisableHomekit,
 		output:         dOut,
+		logger:         logger,
 		lock:           sync.Mutex{},
 	}
 }
@@ -52,8 +56,8 @@ func (ou *Outlet) GetUniqueId() uint64 {
 }
 
 func (ou *Outlet) InitHk() *accessory.A {
-
 	if ou.disableHomekit {
+		ou.logger.Debug("homekit disabled for outlet", "name", ou.name)
 		return nil
 	}
 
@@ -71,6 +75,7 @@ func (ou *Outlet) InitHk() *accessory.A {
 
 	ou.withCallback = ou.output.SetOnStateUpdate(ou.hk.Outlet.On.SetValue) == nil
 
+	ou.logger.Debug("homekit accessory initialized", "outlet", ou.name, "withCallback", ou.withCallback)
 	return ou.hk.A
 }
 
@@ -81,9 +86,15 @@ func (ou *Outlet) Sync(force bool) error {
 
 	if ou.withCallback && !force {
 		if ou.output.IsHealthy() {
+			if ou.isFaulty {
+				ou.logger.Debug("outlet health restored", "outlet", ou.name)
+			}
 			ou.isFaulty = false
 			ou.fault.SetValue(characteristic.StatusFaultNoFault)
 		} else {
+			if !ou.isFaulty {
+				ou.logger.Debug("outlet became faulty", "outlet", ou.name)
+			}
 			ou.isFaulty = true
 			ou.fault.SetValue(characteristic.StatusFaultGeneralFault)
 		}
@@ -97,6 +108,7 @@ func (ou *Outlet) Sync(force bool) error {
 	if err != nil {
 		ou.fault.SetValue(characteristic.StatusFaultGeneralFault)
 		ou.isFaulty = true
+		ou.logger.Debug("sync failed to get state", "outlet", ou.name, "err", err)
 		return errors.Wrap(err, "Sync failed for Outlet, GetState failed")
 	}
 
@@ -104,6 +116,7 @@ func (ou *Outlet) Sync(force bool) error {
 	ou.isFaulty = false
 
 	if onState != ou.hk.Outlet.On.Value() {
+		ou.logger.Debug("sync detected state mismatch, updating homekit", "outlet", ou.name, "hwState", onState, "hkState", ou.hk.Outlet.On.Value())
 		ou.hk.Outlet.On.SetValue(onState)
 	}
 
@@ -111,13 +124,16 @@ func (ou *Outlet) Sync(force bool) error {
 }
 
 func (ou *Outlet) SetValue(state bool) {
+	ou.logger.Debug("setting outlet value", "outlet", ou.name, "state", state)
 	ou.output.Set(state)
 }
 
 func (ou *Outlet) Toggle() {
 	oldState, err := ou.output.GetState()
 	if err != nil {
+		ou.logger.Debug("toggle failed to get current state", "outlet", ou.name, "err", err)
 		return
 	}
+	ou.logger.Debug("toggling outlet", "outlet", ou.name, "oldState", oldState, "newState", !oldState)
 	ou.SetValue(!oldState)
 }

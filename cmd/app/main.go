@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/hubertat/servicemaker"
 	"github.com/hubertat/swkit"
+	"github.com/hubertat/swkit/logging"
 )
 
 const defaultSyncInterval = "330ms"
@@ -43,10 +44,7 @@ func main() {
 	if *debug {
 		log.SetLevel(log.DebugLevel)
 	}
-	logger := log.NewWithOptions(os.Stderr, log.Options{
-		Prefix: "swkit 🏚️",
-		Level:  log.GetLevel(),
-	})
+	logger := logging.NewLogger(logging.PrefixMain)
 	logger.Info("swkit started", "version", Version)
 
 	if *debug {

@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/log"
+	"github.com/hubertat/swkit/logging"
 	"github.com/hubertat/swkit/mqtt"
 	"github.com/racerxdl/go-mcp23017"
 )
@@ -16,6 +17,7 @@ const mcpioDriverName = "mcpio"
 
 type McpIO struct {
 	device *mcp23017.Device
+	logger *log.Logger
 
 	inputs  []McpInput
 	outputs []McpOutput
@@ -39,6 +41,7 @@ type McpOutput struct {
 	invert bool
 
 	device *mcp23017.Device
+	logger *log.Logger
 }
 
 func (min *McpInput) String() string {
@@ -87,10 +90,10 @@ func (mout *McpOutput) Set(state bool) (err error) {
 		state = !state
 	}
 
-	log.Println("DEBUG: Setting mcpio pin", mout.pin, "to", state)
+	mout.logger.Debug("setting pin", "pin", mout.pin, "state", state)
 	err = mout.device.DigitalWrite(mout.pin, mcp23017.PinLevel(state))
 	if err != nil {
-		log.Println("DEBUG: Failed to set mcpio pin", mout.pin, "err ", err)
+		mout.logger.Debug("failed to set pin", "pin", mout.pin, "err", err)
 	}
 	return
 }
@@ -113,11 +116,15 @@ func (mcpio *McpIO) IsReady() bool {
 }
 
 func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
+	mcp.logger = logging.NewLogger(logging.PrefixMcpio)
+
 	var err error
 	mcp.device, err = mcp23017.Open(mcp.BusNo, mcp.DevNo)
 	if err != nil {
 		return errors.Join(err, errors.New("failed to open mcp23017 device"))
 	}
+
+	mcp.logger.Debug("setup starting", "busNo", mcp.BusNo, "devNo", mcp.DevNo)
 
 	for _, io := range ios {
 		driver, ioType, ioId, err := ResolveIoIdString(io)
@@ -162,7 +169,7 @@ func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
 			if err != nil {
 				return errors.Join(err, errors.New("failed to set pin mode"))
 			}
-			mcp.outputs = append(mcp.outputs, McpOutput{pin: uint8(pin), device: mcp.device})
+			mcp.outputs = append(mcp.outputs, McpOutput{pin: uint8(pin), device: mcp.device, logger: mcp.logger})
 
 		default:
 			return errors.New("unsupported io type: " + ioType.String())
@@ -260,4 +267,10 @@ func (mcp *McpIO) GetAllIo() (inputs []string, outputs []string) {
 	}
 
 	return
+}
+
+// Status returns a summary of the driver's current state
+func (mcp *McpIO) Status() string {
+	addr := fmt.Sprintf("0x%02X", 0x20+mcp.DevNo)
+	return fmt.Sprintf("i2c:%d addr:%s in:%d out:%d", mcp.BusNo, addr, len(mcp.inputs), len(mcp.outputs))
 }

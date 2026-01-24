@@ -3,12 +3,12 @@ package mqtt
 import (
 	"context"
 	"net/url"
-	"os"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
+	"github.com/hubertat/swkit/logging"
 )
 
 const subscribeTimeout = 10 * time.Second
@@ -31,10 +31,7 @@ type MqttClient struct {
 func NewMqttClient(broker string, clientId string) (mc *MqttClient, err error) {
 	mc = &MqttClient{
 		clientId: clientId,
-		logger: log.NewWithOptions(os.Stderr, log.Options{
-			Prefix: "MqttClient 🐰",
-			Level:  log.GetLevel(),
-		}),
+		logger:   logging.NewLogger(logging.PrefixMqtt),
 	}
 
 	mc.brokerUrl, err = url.Parse(broker)

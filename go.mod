@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/brutella/dnssd v1.2.10
 	github.com/brutella/hap v0.0.31
+	github.com/charmbracelet/lipgloss v0.10.0
 	github.com/charmbracelet/log v0.4.0
 	github.com/eclipse/paho.golang v0.21.0
 	github.com/hubertat/servicemaker v0.1.2
@@ -16,7 +17,6 @@ require (
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
-	github.com/charmbracelet/lipgloss v0.10.0 // indirect
 	github.com/go-chi/chi v1.5.4 // indirect
 	github.com/go-logfmt/logfmt v0.6.0 // indirect
 	github.com/goburrow/serial v0.1.0 // indirect

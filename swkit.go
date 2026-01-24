@@ -7,9 +7,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
 
 	dnslog "github.com/brutella/dnssd/log"
@@ -236,7 +238,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			return errors.Join(err, fmt.Errorf("failed to get digital output for light %s", light.Name))
 		}
 
-		sw.lights = append(sw.lights, NewLight(light, dOut))
+		sw.lights = append(sw.lights, NewLight(light, dOut, logger))
 	}
 
 	for _, outlet := range sw.Outlets {
@@ -250,7 +252,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			return errors.Join(err, fmt.Errorf("failed to get digital output for outlet %s", outlet.Name))
 		}
 
-		sw.outlets = append(sw.outlets, NewOutlet(outlet, dOut))
+		sw.outlets = append(sw.outlets, NewOutlet(outlet, dOut, logger))
 	}
 
 	for _, coloLight := range sw.ColorLights {
@@ -274,7 +276,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			return errors.Join(err, fmt.Errorf("failed to get rgbw for color light %s", coloLight.Name))
 		}
 
-		sw.colorLights = append(sw.colorLights, NewColorLight(coloLight, dOut, rgbw))
+		sw.colorLights = append(sw.colorLights, NewColorLight(coloLight, dOut, rgbw, logger))
 	}
 
 	for _, button := range sw.Buttons {
@@ -313,7 +315,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			}
 		}
 
-		sw.buttons = append(sw.buttons, NewButton(button, eventEmitter, ctrlDevs))
+		sw.buttons = append(sw.buttons, NewButton(button, eventEmitter, ctrlDevs, logger))
 	}
 
 	return nil
@@ -350,7 +352,7 @@ func (sw *SwKit) StartTicker(interval time.Duration, forceEachCount int) {
 				for _, io := range sw.getDevices() {
 					err := io.Sync(force)
 					if err != nil {
-						log.Printf("Received error(s) from syncing io:\n%v", err)
+						sw.logger.Error("received error(s) from syncing io", "err", err)
 					}
 				}
 			}
@@ -373,16 +375,67 @@ func (sw *SwKit) Close() (err error) {
 }
 
 func (sw *SwKit) PrintIoStatus(writer io.Writer) {
-	fmt.Fprintln(writer)
-	fmt.Fprintln(writer, "=== active io drivers ===")
-	for driverName, _ := range sw.ioDrivers {
-		fmt.Fprintln(writer, "________")
-		fmt.Fprintf(writer, "| driver: %s\n", driverName)
-		fmt.Fprintln(writer)
-		fmt.Fprintln(writer, "--------")
+	// Define styles
+	headerStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("86")).
+		MarginBottom(1)
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1)
+
+	driverNameStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("39"))
+
+	readyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("42")).
+		Bold(true)
+
+	notReadyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("196")).
+		Bold(true)
+
+	// Build content
+	var lines []string
+	for driverName, driver := range sw.ioDrivers {
+		statusText := readyStyle.Render("Ready")
+		if !driver.IsReady() {
+			statusText = notReadyStyle.Render("Not Ready")
+		}
+
+		// Get status info if available
+		statusInfo := ""
+		if statusProvider, ok := driver.(DriverStatusProvider); ok {
+			statusInfo = statusProvider.Status()
+			if statusInfo != "" {
+				statusInfo = "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(statusInfo)
+			}
+		}
+
+		line := fmt.Sprintf("%s  %s%s",
+			driverNameStyle.Render(fmt.Sprintf("%-10s", driverName)),
+			statusText,
+			statusInfo,
+		)
+		lines = append(lines, line)
 	}
-	fmt.Fprintln(writer, "-----------------------------")
+
+	header := headerStyle.Render("Active IO Drivers")
+	content := strings.Join(lines, "\n")
+	box := boxStyle.Render(content)
+
 	fmt.Fprintln(writer)
+	fmt.Fprintln(writer, header)
+	fmt.Fprintln(writer, box)
+	fmt.Fprintln(writer)
+}
+
+// DriverStatusProvider is an optional interface for drivers to provide status info
+type DriverStatusProvider interface {
+	Status() string
 }
 
 func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error {

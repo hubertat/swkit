@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/log"
+	"github.com/hubertat/swkit/logging"
 	"github.com/simonvetter/modbus"
 )
 
@@ -46,6 +48,7 @@ type WagoIO struct {
 	client  *modbus.ModbusClient
 	mu      sync.RWMutex
 	isReady bool
+	logger  *log.Logger
 
 	inputs  []WagoDI
 	outputs []WagoDO
@@ -86,6 +89,8 @@ func (wio *WagoIO) IsReady() bool {
 }
 
 func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
+	wio.logger = logging.NewLogger(logging.PrefixWago)
+
 	if wio.Address == "" {
 		return errors.New("wago driver: address is required")
 	}
@@ -97,6 +102,8 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 	if wio.PollIntervalMs == 0 {
 		wio.PollIntervalMs = wagoDefaultPollIntervalMs
 	}
+
+	wio.logger.Debug("setup starting", "address", wio.Address, "port", wio.Port)
 
 	// Calculate total DI and DO counts from installed modules
 	for _, modulePartNo := range wio.ModulesInstalled {
@@ -180,7 +187,7 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 			}
 
 			wio.inputs = append(wio.inputs, dIn)
-			wio.pushers = append(wio.pushers, NewPushEventDetector(&dIn, fmt.Sprintf("%d", index), nil))
+			wio.pushers = append(wio.pushers, NewPushEventDetector(&dIn, fmt.Sprintf("%d", index), nil, wio.logger))
 
 		default:
 			return fmt.Errorf("wago driver: unsupported io type: %s", ioType.String())
@@ -204,6 +211,7 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 	}
 
 	wio.isReady = true
+	wio.logger.Info("setup complete", "totalDI", wio.totalDI, "totalDO", wio.totalDO)
 	return nil
 }
 
@@ -264,12 +272,12 @@ func (wio *WagoIO) refreshStates() error {
 		}
 	}
 
-	// DEBUG
-	// for ix, in := range inputs {
-	// 	if in {
-	// 		fmt.Println("wago input is ON", ix)
-	// 	}
-	// }
+	// Debug log active inputs
+	for ix, in := range inputs {
+		if in {
+			wio.logger.Debug("input is ON", "index", ix)
+		}
+	}
 
 	// Lock only for copying to state slices
 	wio.mu.Lock()
@@ -451,4 +459,13 @@ func (wdo *WagoDO) IsHealthy() bool {
 	wdo.driver.mu.RLock()
 	defer wdo.driver.mu.RUnlock()
 	return wdo.driver.isReady && !wdo.driver.isStateStale()
+}
+
+// Status returns a summary of the driver's current state
+func (wio *WagoIO) Status() string {
+	modules := strings.Join(wio.ModulesInstalled, ",")
+	if len(modules) > 30 {
+		modules = modules[:27] + "..."
+	}
+	return fmt.Sprintf("%s:%d DI:%d DO:%d [%s]", wio.Address, wio.Port, wio.totalDI, wio.totalDO, modules)
 }

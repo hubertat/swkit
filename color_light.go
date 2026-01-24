@@ -8,6 +8,7 @@ import (
 
 	"github.com/brutella/hap/accessory"
 	"github.com/brutella/hap/characteristic"
+	"github.com/charmbracelet/log"
 	drivers "github.com/hubertat/swkit/drivers"
 )
 
@@ -23,18 +24,9 @@ type ColorLight struct {
 	disableHomekit bool
 	isFaulty       bool
 
-	// Is it required here (to store internal state)
-	// we have states in:
-	// * drivers io
-	// * homekit (if enabled)
-	// on                      bool
-	// red, green, blue, white uint8
-	// brightness              uint8
-
 	onDigitalOut drivers.DigitalOutput
 	rgbwOut      drivers.RgbwOutput
-	// Dont use brighnetss as separate io, using rgb(w) is sufficient
-	// brightnessOut drivers.AnalogOutput
+	logger       *log.Logger
 
 	hk    *accessory.ColoredLightbulb
 	fault *characteristic.StatusFault
@@ -42,14 +34,15 @@ type ColorLight struct {
 	lock sync.Mutex
 }
 
-func NewColorLight(config ColorLightConfig, dOut drivers.DigitalOutput, rgbwOut drivers.RgbwOutput) *ColorLight {
+func NewColorLight(config ColorLightConfig, dOut drivers.DigitalOutput, rgbwOut drivers.RgbwOutput, logger *log.Logger) *ColorLight {
+	logger.Debug("color light created", "name", config.Name, "digitalOut", dOut.String(), "rgbwOut", rgbwOut.String())
 	return &ColorLight{
 		name:           config.Name,
 		disableHomekit: config.DisableHomekit,
 		lock:           sync.Mutex{},
-
-		onDigitalOut: dOut,
-		rgbwOut:      rgbwOut,
+		logger:         logger,
+		onDigitalOut:   dOut,
+		rgbwOut:        rgbwOut,
 	}
 }
 
@@ -65,8 +58,8 @@ func (cl *ColorLight) GetUniqueId() uint64 {
 }
 
 func (cl *ColorLight) InitHk() *accessory.A {
-
 	if cl.disableHomekit {
+		cl.logger.Debug("homekit disabled for color light", "name", cl.name)
 		return nil
 	}
 
@@ -85,6 +78,7 @@ func (cl *ColorLight) InitHk() *accessory.A {
 	cl.hk.Lightbulb.Hue.OnValueRemoteUpdate(cl.updateHue)
 	cl.hk.Lightbulb.Saturation.OnValueRemoteUpdate(cl.updateSaturation)
 
+	cl.logger.Debug("homekit accessory initialized", "colorLight", cl.name)
 	return cl.hk.A
 }
 
@@ -157,12 +151,16 @@ func (cl *ColorLight) Sync(force bool) (err error) {
 }
 
 func (cl *ColorLight) SetValue(state bool) {
+	cl.logger.Debug("setting color light value", "colorLight", cl.name, "state", state)
 	cl.onDigitalOut.Set(state)
 }
 
 func (cl *ColorLight) Toggle() {
 	currentState, err := cl.onDigitalOut.GetState()
 	if err == nil {
+		cl.logger.Debug("toggling color light", "colorLight", cl.name, "oldState", currentState, "newState", !currentState)
 		cl.SetValue(!currentState)
+	} else {
+		cl.logger.Debug("toggle failed to get current state", "colorLight", cl.name, "err", err)
 	}
 }
