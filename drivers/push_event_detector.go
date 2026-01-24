@@ -129,9 +129,13 @@ func (ped *PushEventDetector) Subscribe(eventTypes PushEvent, handler func(PushE
 	ped.subMutex.Lock()
 	defer ped.subMutex.Unlock()
 
+	// DEBUG
+	// fmt.Println("[D] {pushEventDetector} subscribing")
+
 	// Subscribe to each event type in the bitmask
 	for _, evt := range AllPushEvents() {
 		if eventTypes&evt == evt {
+			// fmt.Println("[D] {pushEventDetector} subscribing to ", evt.String())
 			ped.subscribers[evt] = append(ped.subscribers[evt], handler)
 		}
 	}
@@ -263,10 +267,15 @@ func (ped *PushEventDetector) emitClickEvent() {
 
 // emit sends an event to all subscribed handlers.
 func (ped *PushEventDetector) emit(event PushEvent) {
+	// DEBUG
+	// fmt.Printf("[D] {push e} \temitting \t[%s]\n", event.String())
+
 	ped.subMutex.RLock()
 	handlers, exists := ped.subscribers[event]
 	ped.subMutex.RUnlock()
 
+	// DEBUG
+	// fmt.Printf("[D] {push e} \t handlers exist:%t len:%d\n", exists, len(handlers))
 	if !exists || len(handlers) == 0 {
 		return
 	}

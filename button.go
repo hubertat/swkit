@@ -88,8 +88,15 @@ func NewButton(config ButtonConfig, emitter drivers.PushEventEmitter, control []
 	}
 
 	var evs drivers.PushEvent
+	// TODO
+	// consider should we detect from homekit which events are actually needed?
+	if !config.DisableHomekit {
+		evs |= drivers.PushEventSinglePress
+		evs |= drivers.PushEventDoublePress
+		evs |= drivers.PushEventLongPress
+	}
 	for _, c := range control {
-		evs &= c.e
+		evs |= c.e
 	}
 
 	emitter.Subscribe(evs, b.HandlePushEvent)

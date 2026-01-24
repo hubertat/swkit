@@ -43,13 +43,16 @@ type WagoIO struct {
 	ModulesInstalled []string
 	PollIntervalMs   uint
 
-	client   *modbus.ModbusClient
-	mu       sync.RWMutex
-	isReady  bool
-	inputs   []WagoDI
-	outputs  []WagoDO
-	totalDI  int
-	totalDO  int
+	client  *modbus.ModbusClient
+	mu      sync.RWMutex
+	isReady bool
+
+	inputs  []WagoDI
+	outputs []WagoDO
+	pushers []*PushEventDetector
+
+	totalDI int
+	totalDO int
 
 	// Local state cache
 	inputStates  []bool
@@ -167,6 +170,18 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 				index:  uint16(index),
 			})
 
+		case IoTypePushEventEmitter:
+			if index < 0 || index >= wio.totalDI {
+				return fmt.Errorf("wago driver: push event emitter (di) index %d out of range (0-%d)", index, wio.totalDI-1)
+			}
+			dIn := WagoDI{
+				driver: wio,
+				index:  uint16(index),
+			}
+
+			wio.inputs = append(wio.inputs, dIn)
+			wio.pushers = append(wio.pushers, NewPushEventDetector(&dIn, fmt.Sprintf("%d", index), nil))
+
 		default:
 			return fmt.Errorf("wago driver: unsupported io type: %s", ioType.String())
 		}
@@ -182,6 +197,11 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 	wio.stopPoll = make(chan struct{})
 	wio.pollTicker = time.NewTicker(time.Duration(wio.PollIntervalMs) * time.Millisecond)
 	go wio.pollLoop()
+
+	// Start push detectors
+	for _, push := range wio.pushers {
+		push.Start()
+	}
 
 	wio.isReady = true
 	return nil
@@ -244,6 +264,13 @@ func (wio *WagoIO) refreshStates() error {
 		}
 	}
 
+	// DEBUG
+	// for ix, in := range inputs {
+	// 	if in {
+	// 		fmt.Println("wago input is ON", ix)
+	// 	}
+	// }
+
 	// Lock only for copying to state slices
 	wio.mu.Lock()
 	if inputs != nil {
@@ -269,6 +296,11 @@ func (wio *WagoIO) Close() error {
 	defer wio.mu.Unlock()
 
 	wio.isReady = false
+
+	// Stop pushers
+	for _, push := range wio.pushers {
+		push.Stop()
+	}
 
 	// Stop polling
 	if wio.pollTicker != nil {
@@ -327,7 +359,18 @@ func (wio *WagoIO) GetRgbwOutput(id string) (RgbwOutput, error) {
 }
 
 func (wio *WagoIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
-	return nil, errors.New("wago driver: push event emitter not implemented")
+	index, err := strconv.Atoi(id)
+	if err != nil {
+		return nil, errors.Join(err, fmt.Errorf("wago driver: failed to parse push event emitter id: %s", id))
+	}
+
+	for ix := range wio.pushers {
+		if strings.EqualFold(wio.pushers[ix].name, id) {
+			return wio.pushers[ix], nil
+		}
+	}
+
+	return nil, fmt.Errorf("wago driver: push event emitter %d not found", index)
 }
 
 // WagoDI methods
