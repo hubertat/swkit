@@ -163,6 +163,7 @@ const (
 	IconButton     = "👆"
 	IconDriver     = "⚡"
 	IconHomeKit    = "🍎"
+	IconChat       = "💬"
 	IconHealthy    = "✓"
 	IconFaulty     = "✗"
 	IconOn         = "●"

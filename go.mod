@@ -3,6 +3,7 @@ module github.com/hubertat/swkit
 go 1.24.0
 
 require (
+	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/brutella/dnssd v1.2.10
 	github.com/brutella/hap v0.0.31
 	github.com/charmbracelet/bubbles v0.21.0
@@ -21,6 +22,7 @@ require (
 
 require (
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
+	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
 	github.com/charmbracelet/keygen v0.5.3 // indirect
@@ -50,15 +52,19 @@ require (
 	github.com/quan-to/slog v0.0.0-20190414172229-8bce0937f2c1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tadglines/go-pkgs v0.0.0-20210623144937-b983b20f54f9 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
+	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/xiam/to v0.0.0-20200126224905-d60d31e03561 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/crypto v0.36.0 // indirect
+	golang.org/x/crypto v0.40.0 // indirect
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56 // indirect
-	golang.org/x/mod v0.19.0 // indirect
-	golang.org/x/net v0.36.0 // indirect
-	golang.org/x/sync v0.12.0 // indirect
+	golang.org/x/mod v0.25.0 // indirect
+	golang.org/x/net v0.41.0 // indirect
+	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
-	golang.org/x/text v0.23.0 // indirect
-	golang.org/x/tools v0.23.0 // indirect
+	golang.org/x/text v0.27.0 // indirect
+	golang.org/x/tools v0.34.0 // indirect
 	gopkg.in/Regis24GmbH/go-diacritics.v2 v2.0.3 // indirect
 )

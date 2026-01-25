@@ -299,6 +299,21 @@ func (wio *WagoIO) isStateStale() bool {
 	return time.Since(wio.lastPollOk) > wagoStaleThreshold
 }
 
+// parseIoId parses an IO ID string and returns an error if it's invalid.
+// it can parse different formats and response accordingly
+// - integer index of io (int)
+// - module number and relative io number for specific module (int, int): 2:1
+// - module number and relative io number for specific module (int, string): 2:a, 2:A
+func (wio *WagoIO) parseIoId(id string) (module int, index int, err error) {
+	intIndex, err := strconv.Atoi(id)
+	if err == nil {
+		// It is integer index, return with module -1 to indicate absolute index
+		return -1, intIndex, nil
+	}
+	// TODO: Implement module:index parsing format (e.g., "2:1" or "2:a")
+	return 0, 0, fmt.Errorf("invalid IO ID format: %s", id)
+}
+
 func (wio *WagoIO) Close() error {
 	wio.mu.Lock()
 	defer wio.mu.Unlock()
@@ -328,6 +343,8 @@ func (wio *WagoIO) Close() error {
 	return wio.client.Close()
 }
 
+// GetDigitalInput retrieves a digital input by its ID.
+// use naming patter
 func (wio *WagoIO) GetDigitalInput(id string) (DigitalInput, error) {
 	index, err := strconv.Atoi(id)
 	if err != nil {

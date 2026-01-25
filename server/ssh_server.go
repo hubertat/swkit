@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/wish"
 	"github.com/charmbracelet/wish/activeterm"
 	"github.com/charmbracelet/wish/bubbletea"
+	"github.com/hubertat/swkit/agent"
 	"github.com/hubertat/swkit/app"
 	"github.com/hubertat/swkit/ui/tui"
 )
@@ -20,12 +21,18 @@ const defaultSSHPort = 2222
 // SshTuiServer serves the TUI over SSH using Charm Wish
 type SshTuiServer struct {
 	provider app.StateProvider
+	agent    *agent.Agent
 	server   *ssh.Server
 	logger   *log.Logger
 }
 
 // NewSshTuiServer creates a new SSH TUI server
 func NewSshTuiServer(provider app.StateProvider, port int, hostKeyPath string, logger *log.Logger) (*SshTuiServer, error) {
+	return NewSshTuiServerWithAgent(provider, nil, port, hostKeyPath, logger)
+}
+
+// NewSshTuiServerWithAgent creates a new SSH TUI server with optional agent support
+func NewSshTuiServerWithAgent(provider app.StateProvider, ag *agent.Agent, port int, hostKeyPath string, logger *log.Logger) (*SshTuiServer, error) {
 	if port == 0 {
 		port = defaultSSHPort
 	}
@@ -38,6 +45,7 @@ func NewSshTuiServer(provider app.StateProvider, port int, hostKeyPath string, l
 
 	s := &SshTuiServer{
 		provider: provider,
+		agent:    ag,
 		logger:   logger,
 	}
 
@@ -60,7 +68,7 @@ func NewSshTuiServer(provider app.StateProvider, port int, hostKeyPath string, l
 // teaHandler creates a new TUI model for each SSH session
 func (s *SshTuiServer) teaHandler(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
 	renderer := bubbletea.MakeRenderer(sess)
-	model := tui.NewModelWithRenderer(s.provider, renderer)
+	model := tui.NewModelWithRendererAndAgent(s.provider, renderer, s.agent)
 	return model, []tea.ProgramOption{tea.WithAltScreen()}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/hubertat/servicemaker"
 	"github.com/hubertat/swkit"
+	"github.com/hubertat/swkit/agent"
 	"github.com/hubertat/swkit/logging"
 	"github.com/hubertat/swkit/server"
 	"github.com/hubertat/swkit/ui/tui"
@@ -115,10 +116,31 @@ func main() {
 		}
 	}
 
-	// Start SSH TUI server if configured
+	// Start SSH TUI server if configured (before agent init so we can pass agent to SSH server later)
 	provider := swkit.NewStateProvider(sk)
+
+	// Initialize agent if API key is available
+	var ag *agent.Agent
+	agentCfg := agent.DefaultConfig()
+	// Apply config from SwKit if present
+	if sk.Agent != nil {
+		agentCfg = agentCfg.WithModel(sk.Agent.Model).WithSystemPrompt(sk.Agent.SystemPrompt)
+	}
+	if agentCfg.Valid() {
+		var agentErr error
+		ag, agentErr = agent.NewAgent(agentCfg, provider)
+		if agentErr != nil {
+			logger.Error("failed to create agent", "err", agentErr)
+		} else {
+			logger.Info("AI agent enabled", "model", agentCfg.Model)
+		}
+	} else {
+		logger.Debug("AI agent disabled (ANTHROPIC_API_KEY not set)")
+	}
+
+	// Start SSH TUI server if configured
 	if sk.SshServer != nil && sk.SshServer.Enabled {
-		sshSrv, err := server.NewSshTuiServer(provider, sk.SshServer.Port, sk.SshServer.HostKeyPath, logger)
+		sshSrv, err := server.NewSshTuiServerWithAgent(provider, ag, sk.SshServer.Port, sk.SshServer.HostKeyPath, logger)
 		if err != nil {
 			logger.Error("failed to create SSH server", "err", err)
 		} else {
@@ -132,7 +154,7 @@ func main() {
 
 	// Run TUI or wait for signal
 	if *tuiEnabled {
-		p := tea.NewProgram(tui.NewModel(provider), tea.WithAltScreen())
+		p := tea.NewProgram(tui.NewModelWithAgent(provider, ag), tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			logger.Error("TUI error", "err", err)
 		}

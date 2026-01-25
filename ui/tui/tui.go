@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/hubertat/swkit/agent"
 	"github.com/hubertat/swkit/app"
 )
 
@@ -20,6 +21,7 @@ const (
 	TabDrivers
 	TabDevices
 	TabHomeKit
+	TabChat
 )
 
 func (t Tab) String() string {
@@ -32,6 +34,8 @@ func (t Tab) String() string {
 		return "Devices"
 	case TabHomeKit:
 		return "HomeKit"
+	case TabChat:
+		return "Chat"
 	default:
 		return "Unknown"
 	}
@@ -39,7 +43,7 @@ func (t Tab) String() string {
 
 // AllTabs returns all available tabs
 func AllTabs() []Tab {
-	return []Tab{TabDashboard, TabDrivers, TabDevices, TabHomeKit}
+	return []Tab{TabDashboard, TabDrivers, TabDevices, TabHomeKit, TabChat}
 }
 
 // Model is the main TUI model
@@ -54,6 +58,8 @@ type Model struct {
 	cursor        int // For list navigation within tabs
 	ctx           context.Context
 	cancel        context.CancelFunc
+	chat          ChatView
+	agent         *agent.Agent
 }
 
 // StateUpdateMsg is sent when state is updated
@@ -68,30 +74,46 @@ type ControlResultMsg struct {
 
 // NewModel creates a new TUI model using the default renderer
 func NewModel(provider app.StateProvider) Model {
+	return NewModelWithAgent(provider, nil)
+}
+
+// NewModelWithAgent creates a new TUI model with an optional agent
+func NewModelWithAgent(provider app.StateProvider, ag *agent.Agent) Model {
 	ctx, cancel := context.WithCancel(context.Background())
+	theme := DefaultTheme()
 	return Model{
 		provider:  provider,
 		state:     provider.GetState(),
 		activeTab: TabDashboard,
 		keys:      DefaultKeyMap(),
-		theme:     DefaultTheme(),
+		theme:     theme,
 		ctx:       ctx,
 		cancel:    cancel,
+		agent:     ag,
+		chat:      NewChatView(ag, theme),
 	}
 }
 
 // NewModelWithRenderer creates a new TUI model with a custom renderer.
 // This is needed for SSH sessions where each connection has its own renderer.
 func NewModelWithRenderer(provider app.StateProvider, renderer *lipgloss.Renderer) Model {
+	return NewModelWithRendererAndAgent(provider, renderer, nil)
+}
+
+// NewModelWithRendererAndAgent creates a new TUI model with a custom renderer and optional agent.
+func NewModelWithRendererAndAgent(provider app.StateProvider, renderer *lipgloss.Renderer, ag *agent.Agent) Model {
 	ctx, cancel := context.WithCancel(context.Background())
+	theme := ThemeWithRenderer(renderer)
 	return Model{
 		provider:  provider,
 		state:     provider.GetState(),
 		activeTab: TabDashboard,
 		keys:      DefaultKeyMap(),
-		theme:     ThemeWithRenderer(renderer),
+		theme:     theme,
 		ctx:       ctx,
 		cancel:    cancel,
+		agent:     ag,
+		chat:      NewChatView(ag, theme),
 	}
 }
 
@@ -126,8 +148,42 @@ func (m Model) waitForNextState() tea.Cmd {
 
 // Update handles messages
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Handle chat tab specially - forward most keys to chat view
+		if m.activeTab == TabChat && m.chat.IsFocused() {
+			// Only capture quit and tab switching from chat
+			switch {
+			case key.Matches(msg, m.keys.Quit):
+				m.cancel()
+				return m, tea.Quit
+			case key.Matches(msg, m.keys.Tab):
+				m.chat.Blur()
+				m.activeTab = (m.activeTab + 1) % Tab(len(AllTabs()))
+				m.cursor = 0
+				return m, nil
+			case key.Matches(msg, m.keys.ShiftTab):
+				m.chat.Blur()
+				if m.activeTab == 0 {
+					m.activeTab = Tab(len(AllTabs()) - 1)
+				} else {
+					m.activeTab--
+				}
+				m.cursor = 0
+				return m, nil
+			case msg.String() == "esc":
+				m.chat.Blur()
+				return m, nil
+			default:
+				// Forward to chat view
+				var cmd tea.Cmd
+				m.chat, cmd = m.chat.Update(msg)
+				return m, cmd
+			}
+		}
+
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			m.cancel()
@@ -136,6 +192,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Tab):
 			m.activeTab = (m.activeTab + 1) % Tab(len(AllTabs()))
 			m.cursor = 0
+			if m.activeTab == TabChat {
+				m.chat.Focus()
+			}
 			return m, nil
 
 		case key.Matches(msg, m.keys.ShiftTab):
@@ -145,6 +204,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeTab--
 			}
 			m.cursor = 0
+			if m.activeTab == TabChat {
+				m.chat.Focus()
+			}
 			return m, nil
 
 		case key.Matches(msg, m.keys.Up):
@@ -172,13 +234,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeTab == TabDevices {
 				return m, m.toggleSelectedDevice()
 			}
+			if m.activeTab == TabChat && !m.chat.IsFocused() {
+				m.chat.Focus()
+				return m, nil
+			}
 			return m, nil
 		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Update chat view size (account for header, tabs, help)
+		chatHeight := m.height - 10
+		if chatHeight < 10 {
+			chatHeight = 10
+		}
+		m.chat.SetSize(m.width-4, chatHeight)
 		return m, nil
+
+	case ChatResponseMsg:
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
 
 	case StateUpdateMsg:
 		m.state = msg.State
@@ -239,6 +317,8 @@ func (m Model) View() string {
 		b.WriteString(m.renderDevices())
 	case TabHomeKit:
 		b.WriteString(m.renderHomeKit())
+	case TabChat:
+		b.WriteString(m.chat.View())
 	}
 
 	// Help

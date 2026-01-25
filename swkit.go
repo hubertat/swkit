@@ -45,6 +45,7 @@ type SwKit struct {
 	HkDebug     bool
 
 	SshServer *SshServerConfig `json:",omitempty"`
+	Agent     *AgentConfig     `json:",omitempty"`
 
 	Mcp23017   *drivers.McpIO
 	Gpio       *drivers.GpIO
@@ -64,6 +65,12 @@ type SshServerConfig struct {
 	Enabled     bool
 	Port        int    // default 2222
 	HostKeyPath string // default ".ssh/swkit_host_key"
+}
+
+// AgentConfig configures the AI chat agent
+type AgentConfig struct {
+	Model        string // default: claude-sonnet-4-5-20250514
+	SystemPrompt string // optional custom system prompt
 }
 
 type Device interface {
