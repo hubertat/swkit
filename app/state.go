@@ -87,3 +87,11 @@ type StateSummary struct {
 	HomeKitEnabled   bool
 	HomeKitDevices   int
 }
+
+// ControlResult represents the result of a device control operation
+type ControlResult struct {
+	DeviceName string
+	Action     string // "toggle", "on", "off"
+	NewState   bool
+	Error      error
+}

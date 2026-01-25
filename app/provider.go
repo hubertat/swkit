@@ -14,3 +14,12 @@ type StateProvider interface {
 	// The channel is closed when the context is cancelled
 	Subscribe(ctx context.Context, interval time.Duration) <-chan AppState
 }
+
+// DeviceController extends StateProvider with control capabilities
+type DeviceController interface {
+	StateProvider
+	// ToggleDevice toggles the device at the given index
+	ToggleDevice(index int) ControlResult
+	// SetDevice sets the device at the given index to the given state
+	SetDevice(index int, state bool) ControlResult
+}

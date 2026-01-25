@@ -49,7 +49,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		Enter: key.NewBinding(
 			key.WithKeys("enter"),
-			key.WithHelp("enter", "select"),
+			key.WithHelp("enter", "toggle"),
 		),
 		Left: key.NewBinding(
 			key.WithKeys("left", "h"),
@@ -64,14 +64,14 @@ func DefaultKeyMap() KeyMap {
 
 // ShortHelp returns key bindings to show in compact help
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Tab, k.Up, k.Down, k.Refresh, k.Quit}
+	return []key.Binding{k.Tab, k.Up, k.Down, k.Enter, k.Refresh, k.Quit}
 }
 
 // FullHelp returns all key bindings for extended help
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Tab, k.ShiftTab},
-		{k.Up, k.Down},
+		{k.Up, k.Down, k.Enter},
 		{k.Refresh, k.Help, k.Quit},
 	}
 }

@@ -61,6 +61,11 @@ type StateUpdateMsg struct {
 	State app.AppState
 }
 
+// ControlResultMsg is sent when a device control operation completes
+type ControlResultMsg struct {
+	Result app.ControlResult
+}
+
 // NewModel creates a new TUI model using the default renderer
 func NewModel(provider app.StateProvider) Model {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -162,6 +167,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Refresh):
 			m.state = m.provider.GetState()
 			return m, nil
+
+		case key.Matches(msg, m.keys.Enter):
+			if m.activeTab == TabDevices {
+				return m, m.toggleSelectedDevice()
+			}
+			return m, nil
 		}
 
 	case tea.WindowSizeMsg:
@@ -172,9 +183,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StateUpdateMsg:
 		m.state = msg.State
 		return m, m.waitForNextState()
+
+	case ControlResultMsg:
+		// Control operation completed - state will update on next poll
+		// Could add error feedback here in the future
+		return m, nil
 	}
 
 	return m, nil
+}
+
+// toggleSelectedDevice sends a toggle command for the currently selected device
+func (m Model) toggleSelectedDevice() tea.Cmd {
+	controller, ok := m.provider.(app.DeviceController)
+	if !ok {
+		return nil
+	}
+	return func() tea.Msg {
+		return ControlResultMsg{Result: controller.ToggleDevice(m.cursor)}
+	}
 }
 
 // getMaxItems returns the max navigable items for current tab

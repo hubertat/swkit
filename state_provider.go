@@ -2,6 +2,7 @@ package swkit
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/hubertat/swkit/app"
@@ -189,4 +190,124 @@ func isOutputHealthy(output drivers.DigitalOutput) bool {
 		return false
 	}
 	return output.IsHealthy()
+}
+
+// ToggleDevice toggles the device at the given index
+func (p *SwKitProvider) ToggleDevice(index int) app.ControlResult {
+	device, deviceName, _, err := p.getControllableByIndex(index)
+	if err != nil {
+		return app.ControlResult{Error: err}
+	}
+	if device == nil {
+		return app.ControlResult{
+			DeviceName: deviceName,
+			Action:     "toggle",
+			Error:      fmt.Errorf("buttons cannot be toggled"),
+		}
+	}
+
+	device.Toggle()
+
+	// Get new state by reading from the device
+	newState := p.getDeviceState(device)
+
+	return app.ControlResult{
+		DeviceName: device.Name(),
+		Action:     "toggle",
+		NewState:   newState,
+	}
+}
+
+// SetDevice sets the device at the given index to the given state
+func (p *SwKitProvider) SetDevice(index int, state bool) app.ControlResult {
+	device, deviceName, _, err := p.getControllableByIndex(index)
+	if err != nil {
+		return app.ControlResult{Error: err}
+	}
+	if device == nil {
+		return app.ControlResult{
+			DeviceName: deviceName,
+			Action:     actionName(state),
+			Error:      fmt.Errorf("buttons cannot be controlled"),
+		}
+	}
+
+	device.SetValue(state)
+
+	return app.ControlResult{
+		DeviceName: device.Name(),
+		Action:     actionName(state),
+		NewState:   state,
+	}
+}
+
+// getControllableByIndex returns the Controllable device at the given index
+// Device order matches GetState(): lights -> colorLights -> outlets -> buttons
+// Returns nil Controllable for buttons since they don't implement the interface
+func (p *SwKitProvider) getControllableByIndex(index int) (Controllable, string, app.DeviceType, error) {
+	lightsCount := len(p.sw.lights)
+	colorLightsCount := len(p.sw.colorLights)
+	outletsCount := len(p.sw.outlets)
+	buttonsCount := len(p.sw.buttons)
+
+	if index < 0 || index >= lightsCount+colorLightsCount+outletsCount+buttonsCount {
+		return nil, "", "", fmt.Errorf("device index %d out of range", index)
+	}
+
+	// Lights
+	if index < lightsCount {
+		return p.sw.lights[index], p.sw.lights[index].name, app.DeviceTypeLight, nil
+	}
+	index -= lightsCount
+
+	// ColorLights
+	if index < colorLightsCount {
+		return p.sw.colorLights[index], p.sw.colorLights[index].name, app.DeviceTypeColorLight, nil
+	}
+	index -= colorLightsCount
+
+	// Outlets
+	if index < outletsCount {
+		return p.sw.outlets[index], p.sw.outlets[index].name, app.DeviceTypeOutlet, nil
+	}
+	index -= outletsCount
+
+	// Buttons - return nil for Controllable since they don't implement the interface
+	if index < buttonsCount {
+		return nil, p.sw.buttons[index].name, app.DeviceTypeButton, nil
+	}
+
+	return nil, "", "", fmt.Errorf("device index %d out of range", index)
+}
+
+// getDeviceState reads the current on/off state from the device
+func (p *SwKitProvider) getDeviceState(device Controllable) bool {
+	switch d := device.(type) {
+	case *Light:
+		if d.output != nil {
+			if state, err := d.output.GetState(); err == nil {
+				return state
+			}
+		}
+	case *ColorLight:
+		if d.onDigitalOut != nil {
+			if state, err := d.onDigitalOut.GetState(); err == nil {
+				return state
+			}
+		}
+	case *Outlet:
+		if d.output != nil {
+			if state, err := d.output.GetState(); err == nil {
+				return state
+			}
+		}
+	}
+	return false
+}
+
+func actionName(state bool) string {
+	if state {
+		return "on"
+	}
+	return "off"
 }
