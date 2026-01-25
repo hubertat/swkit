@@ -61,7 +61,7 @@ type StateUpdateMsg struct {
 	State app.AppState
 }
 
-// NewModel creates a new TUI model
+// NewModel creates a new TUI model using the default renderer
 func NewModel(provider app.StateProvider) Model {
 	ctx, cancel := context.WithCancel(context.Background())
 	return Model{
@@ -70,6 +70,21 @@ func NewModel(provider app.StateProvider) Model {
 		activeTab: TabDashboard,
 		keys:      DefaultKeyMap(),
 		theme:     DefaultTheme(),
+		ctx:       ctx,
+		cancel:    cancel,
+	}
+}
+
+// NewModelWithRenderer creates a new TUI model with a custom renderer.
+// This is needed for SSH sessions where each connection has its own renderer.
+func NewModelWithRenderer(provider app.StateProvider, renderer *lipgloss.Renderer) Model {
+	ctx, cancel := context.WithCancel(context.Background())
+	return Model{
+		provider:  provider,
+		state:     provider.GetState(),
+		activeTab: TabDashboard,
+		keys:      DefaultKeyMap(),
+		theme:     ThemeWithRenderer(renderer),
 		ctx:       ctx,
 		cancel:    cancel,
 	}

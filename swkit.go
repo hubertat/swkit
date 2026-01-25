@@ -5,10 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -47,6 +44,8 @@ type SwKit struct {
 	HkAddress   string
 	HkDebug     bool
 
+	SshServer *SshServerConfig `json:",omitempty"`
+
 	Mcp23017   *drivers.McpIO
 	Gpio       *drivers.GpIO
 	Grenton    *drivers.GrentonIO
@@ -58,6 +57,13 @@ type SwKit struct {
 	mqttClient *mqtt.MqttClient
 	ticker     *time.Ticker
 	logger     *log.Logger
+}
+
+// SshServerConfig configures the SSH TUI server
+type SshServerConfig struct {
+	Enabled     bool
+	Port        int    // default 2222
+	HostKeyPath string // default ".ssh/swkit_host_key"
 }
 
 type Device interface {
@@ -328,7 +334,7 @@ func (sw *SwKit) getDriverAndNameForIo(ioIdString string, expectedType drivers.I
 	}
 
 	if outType != expectedType {
-		return "", nil, fmt.Errorf("invalid io type for digital output: %s, wanted: %d, got: %s", ioIdString, expectedType.String(), outType.String())
+		return "", nil, fmt.Errorf("invalid io type for digital output: %s, wanted: %s, got: %s", ioIdString, expectedType.String(), outType.String())
 	}
 
 	driver, driverPresent := sw.ioDrivers[driverName]
@@ -339,21 +345,22 @@ func (sw *SwKit) getDriverAndNameForIo(ioIdString string, expectedType drivers.I
 	return ioName, driver, nil
 }
 
-func (sw *SwKit) StartTicker(interval time.Duration, forceEachCount int) {
-
+func (sw *SwKit) StartTicker(ctx context.Context, interval time.Duration, forceEachCount int) {
 	counter := 0
 	sw.ticker = time.NewTicker(interval)
+	defer sw.ticker.Stop()
 
 	for {
 		select {
+		case <-ctx.Done():
+			sw.logger.Info("ticker stopped")
+			return
 		case <-sw.ticker.C:
 			force := counter%forceEachCount == 0
-			{
-				for _, io := range sw.getDevices() {
-					err := io.Sync(force)
-					if err != nil {
-						sw.logger.Error("received error(s) from syncing io", "err", err)
-					}
+			for _, io := range sw.getDevices() {
+				err := io.Sync(force)
+				if err != nil {
+					sw.logger.Error("received error(s) from syncing io", "err", err)
 				}
 			}
 			counter++
@@ -438,7 +445,7 @@ type DriverStatusProvider interface {
 	Status() string
 }
 
-func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error {
+func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) (cancel func(), errCh <-chan error, err error) {
 	hkName := sw.Name
 	if len(hkName) < 1 {
 		hkName = homeKitBridgeName
@@ -467,7 +474,7 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 	}
 	hkServer, err := hap.NewServer(store, bridge.A, acc...)
 	if err != nil {
-		return errors.Join(err, errors.New("failed to create HomeKit server"))
+		return nil, nil, errors.Join(err, errors.New("failed to create HomeKit server"))
 	}
 	hkServer.Pin = sw.HkPin
 	if len(sw.HkAddress) > 0 {
@@ -479,18 +486,13 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 		dnslog.Debug.Enable()
 	}
 
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt)
-	signal.Notify(c, syscall.SIGTERM)
+	hkCtx, hkCancel := context.WithCancel(ctx)
+	resultCh := make(chan error, 1)
 
-	ctx, cancel := context.WithCancel(ctx)
 	go func() {
-		<-c
-		// Stop delivering signals.
-		signal.Stop(c)
-		// Cancel the context to stop the server.
-		cancel()
+		resultCh <- hkServer.ListenAndServe(hkCtx)
+		close(resultCh)
 	}()
 
-	return hkServer.ListenAndServe(ctx)
+	return hkCancel, resultCh, nil
 }

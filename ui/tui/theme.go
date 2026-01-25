@@ -55,95 +55,101 @@ var (
 	ColorOff       = lipgloss.Color("244") // Gray - off state
 )
 
-// DefaultTheme creates the default TUI theme
+// DefaultTheme creates the default TUI theme using the default renderer
 func DefaultTheme() Theme {
+	return ThemeWithRenderer(lipgloss.DefaultRenderer())
+}
+
+// ThemeWithRenderer creates a TUI theme using the specified renderer.
+// This is needed for SSH sessions where each connection needs its own renderer.
+func ThemeWithRenderer(r *lipgloss.Renderer) Theme {
 	return Theme{
-		App: lipgloss.NewStyle().
+		App: r.NewStyle().
 			Padding(1, 2),
 
-		Header: lipgloss.NewStyle().
+		Header: r.NewStyle().
 			Bold(true).
 			Foreground(ColorHeader).
 			MarginBottom(1),
 
-		TabActive: lipgloss.NewStyle().
+		TabActive: r.NewStyle().
 			Bold(true).
 			Foreground(ColorHeader).
 			Background(lipgloss.Color("236")).
 			Padding(0, 2),
 
-		TabInactive: lipgloss.NewStyle().
+		TabInactive: r.NewStyle().
 			Foreground(ColorSecondary).
 			Padding(0, 2),
 
-		TabBar: lipgloss.NewStyle().
+		TabBar: r.NewStyle().
 			MarginBottom(1),
 
-		Box: lipgloss.NewStyle().
+		Box: r.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(ColorBorder).
 			Padding(0, 1),
 
-		BoxTitle: lipgloss.NewStyle().
+		BoxTitle: r.NewStyle().
 			Bold(true).
 			Foreground(ColorHeader),
 
-		Primary: lipgloss.NewStyle().
+		Primary: r.NewStyle().
 			Bold(true).
 			Foreground(ColorPrimary),
 
-		Secondary: lipgloss.NewStyle().
+		Secondary: r.NewStyle().
 			Foreground(ColorSecondary),
 
-		Success: lipgloss.NewStyle().
+		Success: r.NewStyle().
 			Foreground(ColorSuccess).
 			Bold(true),
 
-		Error: lipgloss.NewStyle().
+		Error: r.NewStyle().
 			Foreground(ColorError).
 			Bold(true),
 
-		Muted: lipgloss.NewStyle().
+		Muted: r.NewStyle().
 			Foreground(ColorMuted),
 
-		Ready: lipgloss.NewStyle().
+		Ready: r.NewStyle().
 			Foreground(ColorSuccess).
 			Bold(true),
 
-		NotReady: lipgloss.NewStyle().
+		NotReady: r.NewStyle().
 			Foreground(ColorError).
 			Bold(true),
 
-		Healthy: lipgloss.NewStyle().
+		Healthy: r.NewStyle().
 			Foreground(ColorSuccess),
 
-		Faulty: lipgloss.NewStyle().
+		Faulty: r.NewStyle().
 			Foreground(ColorError),
 
-		On: lipgloss.NewStyle().
+		On: r.NewStyle().
 			Foreground(ColorOn).
 			Bold(true),
 
-		Off: lipgloss.NewStyle().
+		Off: r.NewStyle().
 			Foreground(ColorOff),
 
-		ListItem: lipgloss.NewStyle().
+		ListItem: r.NewStyle().
 			PaddingLeft(2),
 
-		ListItemSelected: lipgloss.NewStyle().
+		ListItemSelected: r.NewStyle().
 			PaddingLeft(1).
 			Foreground(ColorHeader).
 			Bold(true),
 
-		Help: lipgloss.NewStyle().
+		Help: r.NewStyle().
 			Foreground(ColorMuted).
 			MarginTop(1),
 
-		HelpKey: lipgloss.NewStyle().
+		HelpKey: r.NewStyle().
 			Foreground(ColorSecondary).
 			Bold(true),
 
-		HelpDesc: lipgloss.NewStyle().
+		HelpDesc: r.NewStyle().
 			Foreground(ColorMuted),
 	}
 }
