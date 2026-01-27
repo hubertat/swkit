@@ -3,7 +3,7 @@ package agent
 import "os"
 
 const (
-	DefaultModel = "claude-sonnet-4-5-20250514"
+	DefaultModel = "claude-sonnet-4-20250514"
 
 	DefaultSystemPrompt = `You are a home automation assistant for swkit. You can:
 - Control lights and outlets (turn on/off, toggle)
