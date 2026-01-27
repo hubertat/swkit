@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/hubertat/swkit/agent"
 )
@@ -40,6 +41,7 @@ type ChatView struct {
 	currentMsg strings.Builder
 	theme      Theme
 	focused    bool
+	mdRenderer *glamour.TermRenderer
 }
 
 // NewChatView creates a new chat view
@@ -52,13 +54,20 @@ func NewChatView(ag *agent.Agent, theme Theme) ChatView {
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
 
+	// Create markdown renderer with dark style and word wrapping
+	mdRenderer, _ := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(76),
+	)
+
 	cv := ChatView{
-		agent:    ag,
-		messages: make([]ChatMessage, 0),
-		input:    ti,
-		viewport: vp,
-		theme:    theme,
-		focused:  false,
+		agent:      ag,
+		messages:   make([]ChatMessage, 0),
+		input:      ti,
+		viewport:   vp,
+		theme:      theme,
+		focused:    false,
+		mdRenderer: mdRenderer,
 	}
 
 	// Add welcome message
@@ -67,6 +76,15 @@ func NewChatView(ag *agent.Agent, theme Theme) ChatView {
 		Content: "Welcome! Ask me to control devices or get system status.",
 		Time:    time.Now(),
 	})
+
+	// Show warning if agent is not configured
+	if ag == nil {
+		cv.messages = append(cv.messages, ChatMessage{
+			Role:    "system",
+			Content: "Agent not configured (ANTHROPIC_API_KEY not set). Chat is disabled.",
+			Time:    time.Now(),
+		})
+	}
 
 	return cv
 }
@@ -103,6 +121,16 @@ func (c *ChatView) SetSize(width, height int) {
 	c.viewport.Height = viewportHeight
 	c.input.Width = width - 6
 
+	// Recreate markdown renderer with updated width
+	mdWidth := width - 8 // Account for borders and padding
+	if mdWidth < 40 {
+		mdWidth = 40
+	}
+	c.mdRenderer, _ = glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(mdWidth),
+	)
+
 	c.updateViewportContent()
 	c.ready = true
 }
@@ -121,14 +149,19 @@ func (c ChatView) Update(msg tea.Msg) (ChatView, tea.Cmd) {
 			})
 			c.streaming = false
 		} else if msg.Done {
-			if c.currentMsg.Len() > 0 {
+			// Use msg.Content if provided, otherwise use accumulated currentMsg
+			responseContent := msg.Content
+			if responseContent == "" && c.currentMsg.Len() > 0 {
+				responseContent = c.currentMsg.String()
+			}
+			if responseContent != "" {
 				c.messages = append(c.messages, ChatMessage{
 					Role:    "assistant",
-					Content: c.currentMsg.String(),
+					Content: responseContent,
 					Time:    time.Now(),
 				})
-				c.currentMsg.Reset()
 			}
+			c.currentMsg.Reset()
 			c.streaming = false
 		} else {
 			c.currentMsg.WriteString(msg.Content)
@@ -231,30 +264,64 @@ func (c *ChatView) sendMessage(text string) tea.Cmd {
 func (c *ChatView) updateViewportContent() {
 	var content strings.Builder
 
-	for _, msg := range c.messages {
-		var prefix string
-		var style lipgloss.Style
+	// Calculate max width for text wrapping (account for prefix and some padding)
+	maxWidth := c.viewport.Width - 2
+	if maxWidth < 20 {
+		maxWidth = 20
+	}
 
+	for _, msg := range c.messages {
 		switch msg.Role {
 		case "user":
-			prefix = "You: "
-			style = c.theme.Primary
-		case "assistant":
-			prefix = "AI: "
-			style = c.theme.Secondary
-		case "system":
-			prefix = ""
-			style = c.theme.Muted
-		}
+			wrappedStyle := c.theme.Primary.Width(maxWidth)
+			line := wrappedStyle.Render("You: " + msg.Content)
+			content.WriteString(line)
+			content.WriteString("\n\n")
 
-		line := style.Render(prefix + msg.Content)
-		content.WriteString(line)
-		content.WriteString("\n\n")
+		case "assistant":
+			// Render markdown for assistant messages
+			content.WriteString(c.theme.Secondary.Render("AI:"))
+			content.WriteString("\n")
+			if c.mdRenderer != nil {
+				rendered, err := c.mdRenderer.Render(msg.Content)
+				if err == nil {
+					// Trim extra newlines that glamour adds
+					content.WriteString(strings.TrimSpace(rendered))
+				} else {
+					// Fallback to plain text if rendering fails
+					wrappedStyle := c.theme.Secondary.Width(maxWidth)
+					content.WriteString(wrappedStyle.Render(msg.Content))
+				}
+			} else {
+				wrappedStyle := c.theme.Secondary.Width(maxWidth)
+				content.WriteString(wrappedStyle.Render(msg.Content))
+			}
+			content.WriteString("\n\n")
+
+		case "system":
+			wrappedStyle := c.theme.Muted.Width(maxWidth)
+			line := wrappedStyle.Render(msg.Content)
+			content.WriteString(line)
+			content.WriteString("\n\n")
+		}
 	}
 
 	// Show streaming content
 	if c.streaming && c.currentMsg.Len() > 0 {
-		content.WriteString(c.theme.Secondary.Render("AI: " + c.currentMsg.String()))
+		content.WriteString(c.theme.Secondary.Render("AI:"))
+		content.WriteString("\n")
+		if c.mdRenderer != nil {
+			rendered, err := c.mdRenderer.Render(c.currentMsg.String())
+			if err == nil {
+				content.WriteString(strings.TrimSpace(rendered))
+			} else {
+				wrappedStyle := c.theme.Secondary.Width(maxWidth)
+				content.WriteString(wrappedStyle.Render(c.currentMsg.String()))
+			}
+		} else {
+			wrappedStyle := c.theme.Secondary.Width(maxWidth)
+			content.WriteString(wrappedStyle.Render(c.currentMsg.String()))
+		}
 		content.WriteString(c.theme.Muted.Render("..."))
 		content.WriteString("\n")
 	} else if c.streaming {
@@ -273,8 +340,14 @@ func (c ChatView) View() string {
 
 	var b strings.Builder
 
-	// Chat messages viewport
-	b.WriteString(c.theme.Box.Width(c.width - 2).Render(c.viewport.View()))
+	// Chat messages viewport with scrollbar
+	viewportContent := c.viewport.View()
+	scrollbar := c.renderScrollbar()
+
+	// Combine viewport box and scrollbar horizontally
+	chatBox := c.theme.Box.Width(c.width - 4).Render(viewportContent)
+	chatWithScrollbar := lipgloss.JoinHorizontal(lipgloss.Top, chatBox, scrollbar)
+	b.WriteString(chatWithScrollbar)
 	b.WriteString("\n")
 
 	// Input area
@@ -292,6 +365,60 @@ func (c ChatView) View() string {
 	b.WriteString(inputStyle.Render(inputContent))
 
 	return b.String()
+}
+
+// renderScrollbar creates a visual scrollbar indicator
+func (c ChatView) renderScrollbar() string {
+	totalLines := c.viewport.TotalLineCount()
+	visibleLines := c.viewport.Height
+	scrollPos := c.viewport.YOffset
+
+	// No scrollbar needed if content fits
+	if totalLines <= visibleLines {
+		// Return empty space to maintain alignment
+		var sb strings.Builder
+		for i := 0; i < visibleLines+2; i++ { // +2 for box borders
+			sb.WriteString(" \n")
+		}
+		return sb.String()
+	}
+
+	// Calculate scrollbar dimensions (account for box borders)
+	barHeight := visibleLines
+	if barHeight < 3 {
+		barHeight = 3
+	}
+
+	// Calculate thumb size (minimum 1 line)
+	thumbSize := (visibleLines * barHeight) / totalLines
+	if thumbSize < 1 {
+		thumbSize = 1
+	}
+
+	// Calculate thumb position
+	scrollRange := totalLines - visibleLines
+	thumbRange := barHeight - thumbSize
+	thumbPos := 0
+	if scrollRange > 0 {
+		thumbPos = (scrollPos * thumbRange) / scrollRange
+	}
+
+	// Build scrollbar with top/bottom spacing for box borders
+	var sb strings.Builder
+	sb.WriteString(" \n") // Align with box border top
+
+	for i := 0; i < barHeight; i++ {
+		if i >= thumbPos && i < thumbPos+thumbSize {
+			sb.WriteString(c.theme.Primary.Render("┃"))
+		} else {
+			sb.WriteString(c.theme.Muted.Render("│"))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString(" ") // Align with box border bottom
+
+	return sb.String()
 }
 
 // HasAgent returns true if an agent is configured

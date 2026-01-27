@@ -154,11 +154,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Handle chat tab specially - forward most keys to chat view
 		if m.activeTab == TabChat && m.chat.IsFocused() {
-			// Only capture quit and tab switching from chat
+			// Only capture tab switching from chat (let all other keys through including 'q')
 			switch {
-			case key.Matches(msg, m.keys.Quit):
-				m.cancel()
-				return m, tea.Quit
 			case key.Matches(msg, m.keys.Tab):
 				m.chat.Blur()
 				m.activeTab = (m.activeTab + 1) % Tab(len(AllTabs()))
