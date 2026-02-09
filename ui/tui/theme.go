@@ -134,10 +134,10 @@ func ThemeWithRenderer(r *lipgloss.Renderer) Theme {
 			Foreground(ColorOff),
 
 		ListItem: r.NewStyle().
-			PaddingLeft(2),
+			PaddingLeft(0),
 
 		ListItemSelected: r.NewStyle().
-			PaddingLeft(1).
+			PaddingLeft(0).
 			Foreground(ColorHeader).
 			Bold(true),
 
@@ -164,6 +164,7 @@ const (
 	IconDriver     = "⚡"
 	IconHomeKit    = "🍎"
 	IconChat       = "💬"
+	IconIoDebug    = "🔍"
 	IconHealthy    = "✓"
 	IconFaulty     = "✗"
 	IconOn         = "●"

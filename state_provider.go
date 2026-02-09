@@ -62,6 +62,29 @@ func (p *SwKitProvider) GetState() app.AppState {
 		state.Devices = append(state.Devices, ds)
 	}
 
+	// Collect IO debug data from drivers that support it (typed fields for stable order)
+	collectIoDebug := func(driverName string, provider drivers.IoDebugProvider) {
+		snapshot := provider.GetIoDebugSnapshot()
+		for _, pt := range snapshot.Points {
+			ioType := "input"
+			if pt.Type == drivers.IoTypeDigitalOutput {
+				ioType = "output"
+			}
+			state.IoDebug = append(state.IoDebug, app.IoPointDebugState{
+				DriverName:  driverName,
+				Index:       pt.Index,
+				Name:        pt.Name,
+				Type:        ioType,
+				State:       pt.State,
+				Healthy:     pt.Healthy,
+				LastChanged: pt.LastChanged,
+			})
+		}
+	}
+	if p.sw.Wago != nil {
+		collectIoDebug(p.sw.Wago.String(), p.sw.Wago)
+	}
+
 	// Collect HomeKit state
 	state.HomeKit = app.HomeKitState{
 		Enabled:     len(p.sw.HkPin) == 8,
@@ -109,12 +132,14 @@ func (p *SwKitProvider) Subscribe(ctx context.Context, interval time.Duration) <
 func (p *SwKitProvider) buildLightState(light *Light) app.DeviceState {
 	isOn := false
 	isHealthy := true
+	outputIoId := ""
 
 	if light.output != nil {
 		if state, err := light.output.GetState(); err == nil {
 			isOn = state
 		}
 		isHealthy = isOutputHealthy(light.output)
+		outputIoId = light.output.String()
 	}
 
 	return app.DeviceState{
@@ -124,18 +149,26 @@ func (p *SwKitProvider) buildLightState(light *Light) app.DeviceState {
 		IsHealthy:      isHealthy,
 		IsFaulty:       light.isFaulty,
 		HomeKitEnabled: !light.disableHomekit,
+		OutputIoId:     outputIoId,
 	}
 }
 
 func (p *SwKitProvider) buildColorLightState(cl *ColorLight) app.DeviceState {
 	isOn := false
 	isHealthy := true
+	outputIoId := ""
+	rgbwIoId := ""
 
 	if cl.onDigitalOut != nil {
 		if state, err := cl.onDigitalOut.GetState(); err == nil {
 			isOn = state
 		}
 		isHealthy = isOutputHealthy(cl.onDigitalOut)
+		outputIoId = cl.onDigitalOut.String()
+	}
+
+	if cl.rgbwOut != nil {
+		rgbwIoId = cl.rgbwOut.String()
 	}
 
 	return app.DeviceState{
@@ -145,18 +178,22 @@ func (p *SwKitProvider) buildColorLightState(cl *ColorLight) app.DeviceState {
 		IsHealthy:      isHealthy,
 		IsFaulty:       cl.isFaulty,
 		HomeKitEnabled: !cl.disableHomekit,
+		OutputIoId:     outputIoId,
+		RgbwIoId:       rgbwIoId,
 	}
 }
 
 func (p *SwKitProvider) buildOutletState(outlet *Outlet) app.DeviceState {
 	isOn := false
 	isHealthy := true
+	outputIoId := ""
 
 	if outlet.output != nil {
 		if state, err := outlet.output.GetState(); err == nil {
 			isOn = state
 		}
 		isHealthy = isOutputHealthy(outlet.output)
+		outputIoId = outlet.output.String()
 	}
 
 	return app.DeviceState{
@@ -166,22 +203,40 @@ func (p *SwKitProvider) buildOutletState(outlet *Outlet) app.DeviceState {
 		IsHealthy:      isHealthy,
 		IsFaulty:       outlet.isFaulty,
 		HomeKitEnabled: !outlet.disableHomekit,
+		OutputIoId:     outputIoId,
 	}
 }
 
 func (p *SwKitProvider) buildButtonState(button *Button) app.DeviceState {
 	isHealthy := true
+	eventInputId := ""
 	if button.emitter != nil {
 		isHealthy = button.emitter.IsHealthy()
+		eventInputId = button.emitter.String()
+	}
+
+	var relations []app.ButtonControlRelation
+	for _, ctrl := range button.controlThis {
+		action := ctrl.action
+		if action == "" {
+			action = "toggle"
+		}
+		relations = append(relations, app.ButtonControlRelation{
+			EventType:  ctrl.e.String(),
+			Action:     action,
+			DeviceName: ctrl.dev.Name(),
+		})
 	}
 
 	return app.DeviceState{
-		Name:           button.name,
-		Type:           app.DeviceTypeButton,
-		IsOn:           false, // Buttons are stateless
-		IsHealthy:      isHealthy,
-		IsFaulty:       false, // Buttons don't track faulty state
-		HomeKitEnabled: !button.disableHomekit,
+		Name:             button.name,
+		Type:             app.DeviceTypeButton,
+		IsOn:             false, // Buttons are stateless
+		IsHealthy:        isHealthy,
+		IsFaulty:         false, // Buttons don't track faulty state
+		HomeKitEnabled:   !button.disableHomekit,
+		EventInputId:     eventInputId,
+		ControlRelations: relations,
 	}
 }
 
@@ -310,4 +365,17 @@ func actionName(state bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// ToggleIoOutput toggles a raw IO output by driver name and output index
+func (p *SwKitProvider) ToggleIoOutput(driverName string, outputIndex int) error {
+	driver, ok := p.sw.ioDrivers[driverName]
+	if !ok {
+		return fmt.Errorf("driver %q not found", driverName)
+	}
+	toggler, ok := driver.(drivers.IoOutputToggler)
+	if !ok {
+		return fmt.Errorf("driver %q does not support output toggling", driverName)
+	}
+	return toggler.ToggleOutput(outputIndex)
 }

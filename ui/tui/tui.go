@@ -2,16 +2,40 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/hubertat/swkit/agent"
 	"github.com/hubertat/swkit/app"
 )
+
+// IoDebugFilter controls which IO points are shown
+type IoDebugFilter int
+
+const (
+	IoFilterAll IoDebugFilter = iota
+	IoFilterInputs
+	IoFilterOutputs
+)
+
+func (f IoDebugFilter) String() string {
+	switch f {
+	case IoFilterInputs:
+		return "Inputs"
+	case IoFilterOutputs:
+		return "Outputs"
+	default:
+		return "All"
+	}
+}
 
 // Tab represents a navigation tab
 type Tab int
@@ -21,6 +45,7 @@ const (
 	TabDrivers
 	TabDevices
 	TabHomeKit
+	TabIoDebug
 	TabChat
 )
 
@@ -34,6 +59,8 @@ func (t Tab) String() string {
 		return "Devices"
 	case TabHomeKit:
 		return "HomeKit"
+	case TabIoDebug:
+		return "IO Debug"
 	case TabChat:
 		return "Chat"
 	default:
@@ -43,7 +70,7 @@ func (t Tab) String() string {
 
 // AllTabs returns all available tabs
 func AllTabs() []Tab {
-	return []Tab{TabDashboard, TabDrivers, TabDevices, TabHomeKit, TabChat}
+	return []Tab{TabDashboard, TabDrivers, TabDevices, TabHomeKit, TabIoDebug, TabChat}
 }
 
 // Model is the main TUI model
@@ -56,6 +83,12 @@ type Model struct {
 	width, height int
 	showHelp      bool
 	cursor        int // For list navigation within tabs
+	ioDebugFilter IoDebugFilter
+	ioNames       map[string]string // session-only custom names, key: "driver|type|index"
+	ioNaming      bool              // true when text input is active for naming
+	ioNameInput   textinput.Model
+	ioNameTarget  string // key of the IO point being named
+	ioExportMsg   string // transient status message after export
 	ctx           context.Context
 	cancel        context.CancelFunc
 	chat          ChatView
@@ -82,15 +115,17 @@ func NewModelWithAgent(provider app.StateProvider, ag *agent.Agent) Model {
 	ctx, cancel := context.WithCancel(context.Background())
 	theme := DefaultTheme()
 	return Model{
-		provider:  provider,
-		state:     provider.GetState(),
-		activeTab: TabDashboard,
-		keys:      DefaultKeyMap(),
-		theme:     theme,
-		ctx:       ctx,
-		cancel:    cancel,
-		agent:     ag,
-		chat:      NewChatView(ag, theme),
+		provider:    provider,
+		state:       provider.GetState(),
+		activeTab:   TabDashboard,
+		keys:        DefaultKeyMap(),
+		theme:       theme,
+		ioNames:     make(map[string]string),
+		ioNameInput: newIoNameInput(),
+		ctx:         ctx,
+		cancel:      cancel,
+		agent:       ag,
+		chat:        NewChatView(ag, theme),
 	}
 }
 
@@ -105,15 +140,17 @@ func NewModelWithRendererAndAgent(provider app.StateProvider, renderer *lipgloss
 	ctx, cancel := context.WithCancel(context.Background())
 	theme := ThemeWithRenderer(renderer)
 	return Model{
-		provider:  provider,
-		state:     provider.GetState(),
-		activeTab: TabDashboard,
-		keys:      DefaultKeyMap(),
-		theme:     theme,
-		ctx:       ctx,
-		cancel:    cancel,
-		agent:     ag,
-		chat:      NewChatView(ag, theme),
+		provider:    provider,
+		state:       provider.GetState(),
+		activeTab:   TabDashboard,
+		keys:        DefaultKeyMap(),
+		theme:       theme,
+		ioNames:     make(map[string]string),
+		ioNameInput: newIoNameInput(),
+		ctx:         ctx,
+		cancel:      cancel,
+		agent:       ag,
+		chat:        NewChatView(ag, theme),
 	}
 }
 
@@ -151,7 +188,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case ioExportClearMsg:
+		m.ioExportMsg = ""
+		return m, nil
+
 	case tea.KeyMsg:
+		// Handle IO naming mode - intercept all keys
+		if m.ioNaming {
+			switch msg.Type {
+			case tea.KeyEnter:
+				name := strings.TrimSpace(m.ioNameInput.Value())
+				if name != "" {
+					m.ioNames[m.ioNameTarget] = name
+				} else {
+					delete(m.ioNames, m.ioNameTarget)
+				}
+				m.ioNaming = false
+				m.ioNameInput.Blur()
+				return m, nil
+			case tea.KeyEsc:
+				m.ioNaming = false
+				m.ioNameInput.Blur()
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.ioNameInput, cmd = m.ioNameInput.Update(msg)
+				return m, cmd
+			}
+		}
+
 		// Handle chat tab specially - forward most keys to chat view
 		if m.activeTab == TabChat && m.chat.IsFocused() {
 			// Only capture tab switching from chat (let all other keys through including 'q')
@@ -227,9 +292,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = m.provider.GetState()
 			return m, nil
 
+		case key.Matches(msg, m.keys.Filter):
+			if m.activeTab == TabIoDebug {
+				m.ioDebugFilter = (m.ioDebugFilter + 1) % 3
+				m.cursor = 0
+				return m, nil
+			}
+
+		case key.Matches(msg, m.keys.Name):
+			if m.activeTab == TabIoDebug && m.ioDebugFilter != IoFilterAll {
+				points := m.ioDebugByType(m.ioDebugFilter)
+				if m.cursor >= 0 && m.cursor < len(points) {
+					pt := points[m.cursor]
+					k := ioPointKey(pt)
+					m.ioNameTarget = k
+					m.ioNameInput.SetValue(m.ioNames[k])
+					m.ioNameInput.Focus()
+					m.ioNaming = true
+					return m, textinput.Blink
+				}
+			}
+
+		case key.Matches(msg, m.keys.Export):
+			if m.activeTab == TabIoDebug && len(m.ioNames) > 0 {
+				exportMsg, cmd := m.doExportIoNames()
+				m.ioExportMsg = exportMsg
+				return m, cmd
+			}
+
 		case key.Matches(msg, m.keys.Enter):
 			if m.activeTab == TabDevices {
 				return m, m.toggleSelectedDevice()
+			}
+			if m.activeTab == TabIoDebug && m.ioDebugFilter == IoFilterOutputs {
+				return m, m.toggleSelectedIoOutput()
 			}
 			if m.activeTab == TabChat && !m.chat.IsFocused() {
 				m.chat.Focus()
@@ -279,6 +375,66 @@ func (m Model) toggleSelectedDevice() tea.Cmd {
 	}
 }
 
+// toggleSelectedIoOutput sends a toggle command for the selected IO output
+func (m Model) toggleSelectedIoOutput() tea.Cmd {
+	controller, ok := m.provider.(app.IoOutputController)
+	if !ok {
+		return nil
+	}
+	outputs := m.ioDebugByType(IoFilterOutputs)
+	if m.cursor < 0 || m.cursor >= len(outputs) {
+		return nil
+	}
+	pt := outputs[m.cursor]
+	return func() tea.Msg {
+		_ = controller.ToggleIoOutput(pt.DriverName, pt.Index)
+		return nil
+	}
+}
+
+// doExportIoNames writes named IO points to a JSON file, returns status message and clear cmd
+func (m Model) doExportIoNames() (string, tea.Cmd) {
+	type namedPoint struct {
+		Driver string `json:"driver"`
+		Type   string `json:"type"`
+		Index  int    `json:"index"`
+		HwName string `json:"hw_name"`
+		Name   string `json:"name"`
+	}
+
+	var points []namedPoint
+	for _, pt := range m.state.IoDebug {
+		k := ioPointKey(pt)
+		if name, ok := m.ioNames[k]; ok {
+			points = append(points, namedPoint{
+				Driver: pt.DriverName,
+				Type:   pt.Type,
+				Index:  pt.Index,
+				HwName: pt.Name,
+				Name:   name,
+			})
+		}
+	}
+
+	data, err := json.MarshalIndent(points, "", "  ")
+	if err != nil {
+		return "Export error: " + err.Error(), clearExportMsg()
+	}
+
+	filename := "io_names.json"
+	if err := os.WriteFile(filename, data, 0644); err != nil {
+		return "Export error: " + err.Error(), clearExportMsg()
+	}
+
+	return fmt.Sprintf("Exported %d names to %s", len(points), filename), clearExportMsg()
+}
+
+func clearExportMsg() tea.Cmd {
+	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return ioExportClearMsg{}
+	})
+}
+
 // getMaxItems returns the max navigable items for current tab
 func (m Model) getMaxItems() int {
 	switch m.activeTab {
@@ -286,9 +442,29 @@ func (m Model) getMaxItems() int {
 		return len(m.state.Drivers)
 	case TabDevices:
 		return len(m.state.Devices)
+	case TabIoDebug:
+		if m.ioDebugFilter == IoFilterAll {
+			return 0 // side-by-side view, no cursor
+		}
+		return len(m.ioDebugByType(m.ioDebugFilter))
 	default:
 		return 0
 	}
+}
+
+// ioDebugByType returns IO debug points filtered to a specific type
+func (m Model) ioDebugByType(filter IoDebugFilter) []app.IoPointDebugState {
+	filterType := "input"
+	if filter == IoFilterOutputs {
+		filterType = "output"
+	}
+	var filtered []app.IoPointDebugState
+	for _, pt := range m.state.IoDebug {
+		if pt.Type == filterType {
+			filtered = append(filtered, pt)
+		}
+	}
+	return filtered
 }
 
 // View renders the UI
@@ -314,6 +490,8 @@ func (m Model) View() string {
 		b.WriteString(m.renderDevices())
 	case TabHomeKit:
 		b.WriteString(m.renderHomeKit())
+	case TabIoDebug:
+		b.WriteString(m.renderIoDebug())
 	case TabChat:
 		b.WriteString(m.chat.View())
 	}
@@ -386,10 +564,10 @@ func (m Model) renderDrivers() string {
 
 	var lines []string
 	for i, driver := range m.state.Drivers {
-		prefix := "  "
+		prefix := "   "
 		style := m.theme.ListItem
 		if i == m.cursor {
-			prefix = "> "
+			prefix = " > "
 			style = m.theme.ListItemSelected
 		}
 
@@ -410,18 +588,26 @@ func (m Model) renderDrivers() string {
 	return m.theme.Box.Render(content)
 }
 
-// renderDevices renders the devices view
+// renderDevices renders the devices view with list and detail panel
 func (m Model) renderDevices() string {
 	if len(m.state.Devices) == 0 {
 		return m.theme.Muted.Render("No devices configured")
 	}
 
+	listBox := m.theme.Box.Render(m.renderDeviceList())
+	detailBox := m.theme.Box.Width(40).Render(m.renderDeviceDetail())
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, listBox, " ", detailBox)
+}
+
+// renderDeviceList renders the device list for the left column
+func (m Model) renderDeviceList() string {
 	var lines []string
 	for i, device := range m.state.Devices {
-		prefix := "  "
+		prefix := "   "
 		style := m.theme.ListItem
 		if i == m.cursor {
-			prefix = "> "
+			prefix = " > "
 			style = m.theme.ListItemSelected
 		}
 
@@ -454,8 +640,71 @@ func (m Model) renderDevices() string {
 		lines = append(lines, style.Render(line))
 	}
 
-	content := strings.Join(lines, "\n")
-	return m.theme.Box.Render(content)
+	return strings.Join(lines, "\n")
+}
+
+// renderDeviceDetail renders the detail panel for the selected device
+func (m Model) renderDeviceDetail() string {
+	if m.cursor < 0 || m.cursor >= len(m.state.Devices) {
+		return m.theme.Muted.Render("No device selected")
+	}
+
+	device := m.state.Devices[m.cursor]
+	icon := deviceIcon(device.Type)
+
+	// Title
+	title := m.theme.Primary.Render(icon + " " + device.Name)
+
+	// Type
+	typeName := string(device.Type)
+	typeLabel := m.theme.Secondary.Render("Type: ") + typeName
+
+	// HomeKit status
+	hkLabel := m.theme.Secondary.Render("HomeKit: ")
+	if device.HomeKitEnabled {
+		hkLabel += m.theme.Success.Render("enabled")
+	} else {
+		hkLabel += m.theme.Muted.Render("disabled")
+	}
+
+	// Health status
+	healthLabel := m.theme.Secondary.Render("Health: ")
+	if device.IsFaulty {
+		healthLabel += m.theme.Faulty.Render("faulty")
+	} else if device.IsHealthy {
+		healthLabel += m.theme.Healthy.Render("healthy")
+	} else {
+		healthLabel += m.theme.Muted.Render("unknown")
+	}
+
+	lines := []string{title, "", typeLabel, hkLabel, healthLabel}
+
+	// IO Config section
+	hasIo := device.OutputIoId != "" || device.RgbwIoId != "" || device.EventInputId != ""
+	if hasIo {
+		lines = append(lines, "", m.theme.BoxTitle.Render("IO Config"))
+		if device.OutputIoId != "" {
+			lines = append(lines, m.theme.Secondary.Render("Output: ")+device.OutputIoId)
+		}
+		if device.RgbwIoId != "" {
+			lines = append(lines, m.theme.Secondary.Render("RGBW:   ")+device.RgbwIoId)
+		}
+		if device.EventInputId != "" {
+			lines = append(lines, m.theme.Secondary.Render("Input:  ")+device.EventInputId)
+		}
+	}
+
+	// Controls section (buttons only)
+	if len(device.ControlRelations) > 0 {
+		lines = append(lines, "", m.theme.BoxTitle.Render("Controls"))
+		for _, rel := range device.ControlRelations {
+			lines = append(lines, m.theme.Secondary.Render(rel.EventType)+" "+
+				m.theme.On.Render(rel.Action)+" "+
+				m.theme.Primary.Render(rel.DeviceName))
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // renderHomeKit renders the HomeKit view
@@ -476,6 +725,123 @@ func (m Model) renderHomeKit() string {
 	}
 
 	return m.theme.Box.Width(40).Render(content)
+}
+
+// renderIoDebug renders the IO debug view
+func (m Model) renderIoDebug() string {
+	if len(m.state.IoDebug) == 0 {
+		return m.theme.Muted.Render("No IO debug data available")
+	}
+
+	// Filter header
+	header := m.theme.Secondary.Render("View: ")
+	header += m.theme.Primary.Render(m.ioDebugFilter.String())
+	header += m.theme.Muted.Render("  (f to cycle)")
+	if m.ioDebugFilter != IoFilterAll {
+		header += m.theme.Muted.Render("  n: name  w: export")
+	}
+
+	var result string
+	if m.ioDebugFilter == IoFilterAll {
+		result = header + "\n" + m.renderIoDebugColumns()
+	} else {
+		points := m.ioDebugByType(m.ioDebugFilter)
+		if len(points) == 0 {
+			result = header + "\n" + m.theme.Muted.Render("No matching IO points")
+		} else {
+			content := m.renderIoDebugList(points, true)
+			result = header + "\n" + m.theme.Box.Render(content)
+		}
+	}
+
+	// Text input for naming
+	if m.ioNaming {
+		result += "\n" + m.theme.Secondary.Render("Name: ") + m.ioNameInput.View()
+	}
+
+	// Export status message
+	if m.ioExportMsg != "" {
+		result += "\n" + m.theme.Success.Render(m.ioExportMsg)
+	}
+
+	return result
+}
+
+// renderIoDebugColumns renders inputs and outputs side by side
+func (m Model) renderIoDebugColumns() string {
+	inputs := m.ioDebugByType(IoFilterInputs)
+	outputs := m.ioDebugByType(IoFilterOutputs)
+
+	inputTitle := m.theme.BoxTitle.Render("Inputs (" + itoa(len(inputs)) + ")")
+	outputTitle := m.theme.BoxTitle.Render("Outputs (" + itoa(len(outputs)) + ")")
+
+	inputContent := m.theme.Muted.Render("none")
+	if len(inputs) > 0 {
+		inputContent = m.renderIoDebugList(inputs, false)
+	}
+
+	outputContent := m.theme.Muted.Render("none")
+	if len(outputs) > 0 {
+		outputContent = m.renderIoDebugList(outputs, false)
+	}
+
+	inputBox := m.theme.Box.Render(inputTitle + "\n" + inputContent)
+	outputBox := m.theme.Box.Render(outputTitle + "\n" + outputContent)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, inputBox, "  ", outputBox)
+}
+
+// renderIoDebugList renders a list of IO points
+func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool) string {
+	now := m.state.Timestamp
+	var lines []string
+	for i, pt := range points {
+		prefix := "   "
+		style := m.theme.ListItem
+		if withCursor && i == m.cursor {
+			prefix = " > "
+			style = m.theme.ListItemSelected
+		}
+
+		// State indicator
+		stateText := m.theme.Off.Render(IconOff)
+		if pt.State {
+			stateText = m.theme.On.Render(IconOn)
+		}
+
+		// Health indicator
+		healthText := m.theme.Healthy.Render(IconHealthy)
+		if !pt.Healthy {
+			healthText = m.theme.Faulty.Render(IconFaulty)
+		}
+
+		// Last changed indicator (within 200s)
+		changedText := ""
+		if !pt.LastChanged.IsZero() {
+			ago := now.Sub(pt.LastChanged)
+			if ago < 200*time.Second {
+				secs := int(ago.Seconds())
+				changedText = " " + m.theme.On.Render(fmt.Sprintf("%ds", secs))
+			}
+		}
+
+		// Custom name
+		nameText := ""
+		if customName, ok := m.ioNames[ioPointKey(pt)]; ok {
+			nameText = " " + m.theme.Secondary.Render("["+customName+"]")
+		}
+
+		line := prefix +
+			m.theme.Primary.Render(padRight(pt.Name, 8)) + " " +
+			stateText + " " +
+			healthText +
+			changedText +
+			nameText
+
+		lines = append(lines, style.Render(line))
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // renderHelp renders the help bar
@@ -514,6 +880,22 @@ func padRight(s string, n int) string {
 		return s[:n]
 	}
 	return s + strings.Repeat(" ", n-len(s))
+}
+
+// ioExportClearMsg clears the export status message after a delay
+type ioExportClearMsg struct{}
+
+func newIoNameInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "Enter name..."
+	ti.CharLimit = 40
+	ti.Width = 30
+	return ti
+}
+
+// ioPointKey returns a unique key for an IO point (used as map key for names)
+func ioPointKey(pt app.IoPointDebugState) string {
+	return pt.DriverName + "|" + pt.Type + "|" + itoa(pt.Index)
 }
 
 func formatPin(pin string) string {

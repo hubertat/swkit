@@ -23,3 +23,8 @@ type DeviceController interface {
 	// SetDevice sets the device at the given index to the given state
 	SetDevice(index int, state bool) ControlResult
 }
+
+// IoOutputController extends StateProvider with raw IO output toggle
+type IoOutputController interface {
+	ToggleIoOutput(driverName string, outputIndex int) error
+}

@@ -9,6 +9,18 @@ type AppState struct {
 	Drivers   []DriverState
 	Devices   []DeviceState
 	HomeKit   HomeKitState
+	IoDebug   []IoPointDebugState
+}
+
+// IoPointDebugState represents the state of a single IO point for debug display
+type IoPointDebugState struct {
+	DriverName  string
+	Index       int
+	Name        string // e.g. "M1:DI3"
+	Type        string // "input" or "output"
+	State       bool
+	Healthy     bool
+	LastChanged time.Time // zero if never changed since startup
 }
 
 // DriverState represents the status of an IO driver
@@ -36,6 +48,18 @@ type DeviceState struct {
 	IsHealthy      bool
 	IsFaulty       bool
 	HomeKitEnabled bool
+
+	OutputIoId       string                 // lights, color lights, outlets
+	RgbwIoId         string                 // color lights only
+	EventInputId     string                 // buttons only
+	ControlRelations []ButtonControlRelation // buttons only
+}
+
+// ButtonControlRelation describes a button's control mapping
+type ButtonControlRelation struct {
+	EventType  string // "single_press", "double_press", etc.
+	Action     string // "toggle", "on", "off"
+	DeviceName string
 }
 
 // HomeKitState represents the HomeKit bridge status

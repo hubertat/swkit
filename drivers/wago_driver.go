@@ -27,15 +27,18 @@ const wagoRegisterDICount = 0x1025 // Number of digital input bits
 
 // wagoModuleSpec defines the IO counts for a Wago module
 type wagoModuleSpec struct {
-	di int // digital input count
-	do int // digital output count
+	di          int // digital input count
+	do          int // digital output count
+	description string
 }
 
 // wagoModuleSpecs maps module part numbers to their IO specifications
 var wagoModuleSpecs = map[string]wagoModuleSpec{
-	"750-436": {di: 8, do: 0}, // 8DI 24V
-	"750-512": {di: 0, do: 2}, // 2DO relay
-	"750-611": {di: 2, do: 0}, // Power supply with 2DI
+	"750-436": {di: 8, do: 0, description: "8DI 24V (-)"},
+	"750-512": {di: 0, do: 2, description: "2DO relay"},                                        // 2DO relay
+	"750-611": {di: 2, do: 0, description: "Fused power (230VAC) supply with diagnostics 2DI"}, // Power supply with 2DI
+	"750-610": {di: 2, do: 0, description: "Fused power (24VDC) supply with diagnostics 2DI"},  // Power supply with 2DI
+	"750-530": {di: 0, do: 8, description: "8DO output 24VDC (+)"},
 }
 
 // WagoIO implements IoDriver for Wago 750-3xx modbus controllers
@@ -59,11 +62,13 @@ type WagoIO struct {
 	totalDO int
 
 	// Local state cache
-	inputStates  []bool
-	outputStates []bool
-	lastPollOk   time.Time
-	pollTicker   *time.Ticker
-	stopPoll     chan struct{}
+	inputStates      []bool
+	outputStates     []bool
+	inputLastChanged []time.Time
+	outputLastChanged []time.Time
+	lastPollOk       time.Time
+	pollTicker       *time.Ticker
+	stopPoll         chan struct{}
 }
 
 // WagoDI implements DigitalInput for Wago digital inputs
@@ -120,6 +125,8 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 	// Initialize state caches
 	wio.inputStates = make([]bool, wio.totalDI)
 	wio.outputStates = make([]bool, wio.totalDO)
+	wio.inputLastChanged = make([]time.Time, wio.totalDI)
+	wio.outputLastChanged = make([]time.Time, wio.totalDO)
 
 	// Create modbus client
 	connString := fmt.Sprintf("tcp://%s:%d", wio.Address, wio.Port)
@@ -302,15 +309,26 @@ func (wio *WagoIO) refreshStates() error {
 	}
 
 	// Lock only for copying to state slices
+	now := time.Now()
 	wio.mu.Lock()
 	if inputs != nil {
+		for i, v := range inputs {
+			if i < len(wio.inputStates) && wio.inputStates[i] != v {
+				wio.inputLastChanged[i] = now
+			}
+		}
 		copy(wio.inputStates, inputs)
 	}
 	if outputs != nil {
+		for i, v := range outputs {
+			if i < len(wio.outputStates) && wio.outputStates[i] != v {
+				wio.outputLastChanged[i] = now
+			}
+		}
 		copy(wio.outputStates, outputs)
 	}
 	if errs == nil {
-		wio.lastPollOk = time.Now()
+		wio.lastPollOk = now
 	}
 	wio.mu.Unlock()
 
@@ -623,6 +641,81 @@ func (wdo *WagoDO) IsHealthy() bool {
 	wdo.driver.mu.RLock()
 	defer wdo.driver.mu.RUnlock()
 	return wdo.driver.isReady && !wdo.driver.isStateStale()
+}
+
+// GetIoDebugSnapshot returns a snapshot of all IO points for debug display
+func (wio *WagoIO) GetIoDebugSnapshot() IoDebugSnapshot {
+	wio.mu.RLock()
+	defer wio.mu.RUnlock()
+
+	healthy := wio.isReady && !wio.isStateStale()
+	var points []IoPointState
+
+	diIndex := 0
+	doIndex := 0
+	for mIdx, mod := range wio.modules {
+		moduleNum := mIdx + 1
+
+		for i := 0; i < mod.di; i++ {
+			state := false
+			var lastChanged time.Time
+			if diIndex < len(wio.inputStates) {
+				state = wio.inputStates[diIndex]
+				lastChanged = wio.inputLastChanged[diIndex]
+			}
+			points = append(points, IoPointState{
+				Index:       diIndex,
+				Name:        fmt.Sprintf("M%d:DI%d", moduleNum, i+1),
+				Type:        IoTypeDigitalInput,
+				State:       state,
+				Healthy:     healthy,
+				LastChanged: lastChanged,
+			})
+			diIndex++
+		}
+
+		for i := 0; i < mod.do; i++ {
+			state := false
+			var lastChanged time.Time
+			if doIndex < len(wio.outputStates) {
+				state = wio.outputStates[doIndex]
+				lastChanged = wio.outputLastChanged[doIndex]
+			}
+			points = append(points, IoPointState{
+				Index:       doIndex,
+				Name:        fmt.Sprintf("M%d:DO%d", moduleNum, i+1),
+				Type:        IoTypeDigitalOutput,
+				State:       state,
+				Healthy:     healthy,
+				LastChanged: lastChanged,
+			})
+			doIndex++
+		}
+	}
+
+	return IoDebugSnapshot{Points: points}
+}
+
+// ToggleOutput toggles a digital output by its global index
+func (wio *WagoIO) ToggleOutput(index int) error {
+	wio.mu.Lock()
+	defer wio.mu.Unlock()
+
+	if !wio.isReady {
+		return errors.New("wago driver: not ready")
+	}
+
+	if index < 0 || index >= wio.totalDO {
+		return fmt.Errorf("wago driver: output index %d out of range (0-%d)", index, wio.totalDO-1)
+	}
+
+	newState := !wio.outputStates[index]
+	err := wio.client.WriteCoil(uint16(index), newState)
+	if err != nil {
+		return fmt.Errorf("wago driver: failed to toggle output %d: %w", index, err)
+	}
+
+	return nil
 }
 
 // Status returns a summary of the driver's current state

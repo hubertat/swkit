@@ -14,6 +14,9 @@ type KeyMap struct {
 	Enter    key.Binding
 	Left     key.Binding
 	Right    key.Binding
+	Filter   key.Binding
+	Name     key.Binding
+	Export   key.Binding
 }
 
 // DefaultKeyMap returns the default key bindings
@@ -58,6 +61,18 @@ func DefaultKeyMap() KeyMap {
 		Right: key.NewBinding(
 			key.WithKeys("right", "l"),
 			key.WithHelp("→/l", "right"),
+		),
+		Filter: key.NewBinding(
+			key.WithKeys("f"),
+			key.WithHelp("f", "filter"),
+		),
+		Name: key.NewBinding(
+			key.WithKeys("n"),
+			key.WithHelp("n", "name IO"),
+		),
+		Export: key.NewBinding(
+			key.WithKeys("w"),
+			key.WithHelp("w", "export names"),
 		),
 	}
 }
