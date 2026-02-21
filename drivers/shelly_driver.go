@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"net/url"
 	"time"
@@ -72,6 +73,8 @@ type ShellyIO struct {
 	originUrl      *url.URL
 	unhealthyCount int
 	logger         *log.Logger
+
+	ioMu sync.RWMutex // protects outputs and inputs slices
 }
 
 func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
@@ -222,6 +225,9 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 // matchDevices() will match defined ios with actual devices
 // return error when device is not present and healthy or does not have specified io channel
 func (she *ShellyIO) matchDevices() error {
+	she.ioMu.Lock()
+	defer she.ioMu.Unlock()
+
 	var err error
 	for ix, output := range she.outputs {
 		if output.dev == nil {
@@ -232,7 +238,7 @@ func (she *ShellyIO) matchDevices() error {
 				if !dev.IsReady() {
 					err = errors.Join(err, fmt.Errorf("device %s is not ready", output.deviceId))
 				} else {
-					if len(dev.Switches) <= output.switchNo {
+					if dev.SwitchCount() <= output.switchNo {
 						err = errors.Join(err, fmt.Errorf("device %s does not have switch %d", output.deviceId, output.switchNo))
 					} else {
 						output.dev = dev
@@ -252,7 +258,7 @@ func (she *ShellyIO) matchDevices() error {
 				if !dev.IsReady() {
 					err = errors.Join(err, fmt.Errorf("device %s is not ready", input.deviceId))
 				} else {
-					if len(dev.Inputs) <= input.inputNo {
+					if dev.InputCount() <= input.inputNo {
 						err = errors.Join(err, fmt.Errorf("device %s does not have input %d", input.deviceId, input.inputNo))
 					} else {
 						input.dev = dev
@@ -329,6 +335,8 @@ func (she *ShellyIO) GetDigitalInput(id string) (DigitalInput, error) {
 }
 
 func (she *ShellyIO) GetDigitalOutput(id string) (DigitalOutput, error) {
+	she.ioMu.RLock()
+	defer she.ioMu.RUnlock()
 	for _, out := range she.outputs {
 		if strings.EqualFold(out.getStringId(), id) {
 			return out, nil
@@ -349,6 +357,8 @@ func (she *ShellyIO) GetRgbwOutput(id string) (RgbwOutput, error) {
 }
 
 func (she *ShellyIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
+	she.ioMu.RLock()
+	defer she.ioMu.RUnlock()
 	for _, in := range she.inputs {
 		if strings.EqualFold(in.getStringId(), id) {
 			return in, nil
@@ -359,6 +369,8 @@ func (she *ShellyIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
 }
 
 func (she *ShellyIO) GetAllIo() (inputs []string, outputs []string) {
+	she.ioMu.RLock()
+	defer she.ioMu.RUnlock()
 	for _, out := range she.outputs {
 		outputs = append(outputs, out.getStringId())
 	}
@@ -508,6 +520,8 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 // captureOutputStates captures current states for outputs belonging to a specific device
 func (she *ShellyIO) captureOutputStates(deviceId string) map[string]bool {
 	outStates := map[string]bool{}
+	she.ioMu.RLock()
+	defer she.ioMu.RUnlock()
 	for _, o := range she.outputs {
 		if o.deviceId == deviceId {
 			if state, err := o.dev.GetOutputState(o.switchNo); err == nil {
@@ -518,15 +532,30 @@ func (she *ShellyIO) captureOutputStates(deviceId string) map[string]bool {
 	return outStates
 }
 
-// notifyStateChanges compares current states with captured states and notifies callbacks
+// notifyStateChanges compares current states with captured states and notifies callbacks.
+// Callbacks are invoked outside the lock to avoid holding ioMu during user-provided handlers.
 func (she *ShellyIO) notifyStateChanges(oldStates map[string]bool, msgType, method string) {
+	type pendingNotification struct {
+		name     string
+		newState bool
+		callback func(bool)
+		oldState bool
+	}
+
+	she.ioMu.RLock()
+	var pending []pendingNotification
 	for _, o := range she.outputs {
 		if oldState, present := oldStates[o.String()]; present && o.onStateUpdate != nil {
 			if state, err := o.dev.GetOutputState(o.switchNo); err == nil && state != oldState {
-				log.Info("State change detected", "output", o.String(), "old", oldState, "new", state, "msgType", msgType, "method", method)
-				o.onStateUpdate(state)
+				pending = append(pending, pendingNotification{o.String(), state, o.onStateUpdate, oldState})
 			}
 		}
+	}
+	she.ioMu.RUnlock()
+
+	for _, n := range pending {
+		log.Info("State change detected", "output", n.name, "old", n.oldState, "new", n.newState, "msgType", msgType, "method", method)
+		n.callback(n.newState)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hubertat/swkit/drivers/shelly/components"
@@ -29,6 +30,8 @@ type ShellyDevice struct {
 	lastRefreshed time.Time
 
 	messenger mqtt.Messenger
+
+	mu sync.RWMutex
 }
 
 func NewShellyDevice(id string, messenger mqtt.Messenger) (*ShellyDevice, error) {
@@ -45,26 +48,33 @@ func NewShellyDevice(id string, messenger mqtt.Messenger) (*ShellyDevice, error)
 	}, nil
 }
 
-func (sd *ShellyDevice) HealthCheck() error {
+// healthCheckLocked must be called with mu held (read or write).
+func (sd *ShellyDevice) healthCheckLocked() error {
 	if sd.setError != nil {
 		return errors.Join(sd.setError, errors.New("set error present"))
 	}
 	if time.Since(sd.lastRefreshed) > maxTimeSinceRefresh {
 		return errors.New("device is not healthy, last refresh was too long ago")
 	}
-
 	return nil
 }
 
-func (sd *ShellyDevice) IsReady() bool {
-	if sd.lastRefreshed.IsZero() {
-		return false
-	}
+func (sd *ShellyDevice) HealthCheck() error {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+	return sd.healthCheckLocked()
+}
 
-	return true
+func (sd *ShellyDevice) IsReady() bool {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+	return !sd.lastRefreshed.IsZero()
 }
 
 func (sd *ShellyDevice) String() string {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+
 	str := strings.Builder{}
 
 	str.WriteString("__________________\n")
@@ -114,7 +124,6 @@ func (sd *ShellyDevice) String() string {
 }
 
 func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
-
 	req := mqtt.RpcRequest{
 		Method: "Switch.Set",
 		Params: map[string]interface{}{
@@ -123,17 +132,22 @@ func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
 		},
 		Dst: sd.Id,
 	}
+	// SendRequest is a network call; keep it outside the lock.
 	err := sd.messenger.SendRequest(sd.Id, req)
+
+	sd.mu.Lock()
 	sd.setError = err
+	sd.mu.Unlock()
 
 	if err != nil {
 		return errors.Join(errors.New("failed to send rpc Switch.Set message"), err)
 	}
-
 	return nil
 }
 
 func (sd *ShellyDevice) GetInputState(id int) (bool, error) {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
 	if len(sd.Inputs) <= id {
 		return false, errors.New("input id out of range")
 	}
@@ -141,13 +155,15 @@ func (sd *ShellyDevice) GetInputState(id int) (bool, error) {
 		return false, fmt.Errorf("input %d state not available (analog or not yet received)", id)
 	}
 	state := *sd.Inputs[id].Status.State
-	return state, sd.HealthCheck()
+	return state, sd.healthCheckLocked()
 }
 
 func (sd *ShellyDevice) GetOutputState(id int) (bool, error) {
 	if sd == nil {
 		return false, errors.New("shelly device is nil!")
 	}
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
 	if len(sd.Switches) <= id {
 		return false, errors.New("switch id out of range")
 	}
@@ -155,14 +171,22 @@ func (sd *ShellyDevice) GetOutputState(id int) (bool, error) {
 		return false, fmt.Errorf("switch %d output state not yet available", id)
 	}
 	state := *sd.Switches[id].Status.Output
-	return state, sd.HealthCheck()
+	return state, sd.healthCheckLocked()
 }
 
 func (sd *ShellyDevice) FillStatus(status GetStatus) error {
+	// Parse incoming data before acquiring the lock (no shared state accessed here).
 	switches := status.GetSwitches()
+	inputs := status.GetInputs()
+	wifiStatus := status.GetWifi()
+	ethernetStatus := status.GetEthernet()
+
+	sd.mu.Lock()
+	defer sd.mu.Unlock()
+
 	// Reject if response contains fewer switches than previously known — likely partial/corrupted data.
 	// Note: multi-profile devices changing profiles could legitimately change switch count, which would
-	// permanently block FillStatus until restart. (from claude code)
+	// permanently block FillStatus until restart.
 	if len(sd.Switches) > len(switches) {
 		return fmt.Errorf("rejecting GetStatus response: device %s has %d known switches but response contains only %d (partial or corrupted data?)", sd.Id, len(sd.Switches), len(switches))
 	}
@@ -172,32 +196,22 @@ func (sd *ShellyDevice) FillStatus(status GetStatus) error {
 		if len(sd.Switches) <= sw.ID {
 			return fmt.Errorf("FillStatus failed: switch id %d out of range", sw.ID)
 		}
-		sd.Switches[sw.ID] = components.Switch{
-			Status: sw,
-		}
+		sd.Switches[sw.ID] = components.Switch{Status: sw}
 	}
 
-	inputs := status.GetInputs()
 	sd.Inputs = make([]components.Input, len(inputs))
 	for _, in := range inputs {
 		if len(sd.Inputs) <= in.ID {
 			return fmt.Errorf("FillStatus failed: input id %d out of range", in.ID)
 		}
-		sd.Inputs[in.ID] = components.Input{
-			Status: in,
-		}
+		sd.Inputs[in.ID] = components.Input{Status: in}
 	}
 
-	if wifiStatus := status.GetWifi(); wifiStatus != nil {
-		sd.Wifi = &components.Wifi{
-			Status: *wifiStatus,
-		}
+	if wifiStatus != nil {
+		sd.Wifi = &components.Wifi{Status: *wifiStatus}
 	}
-
-	if ethernetStatus := status.GetEthernet(); ethernetStatus != nil {
-		sd.Ethernet = &components.Ethernet{
-			Status: *ethernetStatus,
-		}
+	if ethernetStatus != nil {
+		sd.Ethernet = &components.Ethernet{Status: *ethernetStatus}
 	}
 
 	sd.lastRefreshed = time.Now()
@@ -205,28 +219,37 @@ func (sd *ShellyDevice) FillStatus(status GetStatus) error {
 }
 
 func (sd *ShellyDevice) UpdateFromStatus(status GetStatus) error {
-	for _, sw := range status.GetSwitches() {
+	// Parse incoming data before acquiring the lock (no shared state accessed here).
+	switches := status.GetSwitches()
+	inputs := status.GetInputs()
+	wifiStatus := status.GetWifi()
+	ethernetStatus := status.GetEthernet()
+
+	sd.mu.Lock()
+	defer sd.mu.Unlock()
+
+	for _, sw := range switches {
 		if sw.ID >= len(sd.Switches) {
 			return errors.New("update from status failed, switch id out of range")
 		}
 		sd.Switches[sw.ID].Status.Update(sw)
 	}
 
-	for _, in := range status.GetInputs() {
+	for _, in := range inputs {
 		if in.ID >= len(sd.Inputs) {
 			return errors.New("update from status failed, input id out of range")
 		}
 		sd.Inputs[in.ID].Status = in
 	}
 
-	if wifiStatus := status.GetWifi(); wifiStatus != nil {
+	if wifiStatus != nil {
 		if sd.Wifi == nil {
 			sd.Wifi = &components.Wifi{}
 		}
 		sd.Wifi.Status = *wifiStatus
 	}
 
-	if ethernetStatus := status.GetEthernet(); ethernetStatus != nil {
+	if ethernetStatus != nil {
 		if sd.Ethernet == nil {
 			sd.Ethernet = &components.Ethernet{}
 		}
@@ -247,6 +270,20 @@ func (sd *ShellyDevice) GetStatus() error {
 	return sd.messenger.SendRequest(sd.Id, req)
 }
 
+func (sd *ShellyDevice) SwitchCount() int {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+	return len(sd.Switches)
+}
+
+func (sd *ShellyDevice) InputCount() int {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+	return len(sd.Inputs)
+}
+
 func (sd *ShellyDevice) SinceLastRefreshed() time.Duration {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
 	return time.Since(sd.lastRefreshed)
 }
