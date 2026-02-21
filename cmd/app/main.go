@@ -154,7 +154,8 @@ func main() {
 
 	// Run TUI or wait for signal
 	if *tuiEnabled {
-		p := tea.NewProgram(tui.NewModelWithAgent(provider, ag), tea.WithAltScreen())
+		configProvider := swkit.NewConfigProvider(sk, *config)
+		p := tea.NewProgram(tui.NewModelWithOptions(provider, configProvider, ag, nil), tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			logger.Error("TUI error", "err", err)
 		}

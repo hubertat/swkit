@@ -63,11 +63,12 @@ func main() {
 	}
 	defer sk.Close()
 
-	// Create state provider
+	// Create state and config providers
 	provider := swkit.NewStateProvider(sk)
+	configProvider := swkit.NewConfigProvider(sk, *config)
 
 	// Create and run TUI
-	model := tui.NewModel(provider)
+	model := tui.NewModelWithOptions(provider, configProvider, nil, nil)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
