@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -77,10 +78,11 @@ type ConfigEditor struct {
 	addTypeCursor int
 
 	// IO picker state (ConfigModeIoPicker)
-	ioPoints        []app.IoPointDebugState
-	ioPickerFilter  string     // "input" or "output"
-	ioPickerCursor  int
-	ioPickerField   int        // field index to populate (currently always 1)
+	ioPoints         []app.IoPointDebugState
+	ioDisplayNames   map[string]string // session-only names keyed by "driver|type|index"
+	ioPickerFilter   string            // "input" or "output"
+	ioPickerCursor   int
+	ioPickerField    int // field index to populate (currently always 1)
 	modeBeforePicker ConfigMode
 
 	// Status
@@ -112,6 +114,18 @@ func NewConfigEditor(provider app.ConfigProvider, theme Theme) ConfigEditor {
 // SetIoPoints updates the IO points available for the IO picker
 func (ce *ConfigEditor) SetIoPoints(pts []app.IoPointDebugState) {
 	ce.ioPoints = pts
+}
+
+// SetIoDisplayNames updates custom display names for IO points.
+func (ce *ConfigEditor) SetIoDisplayNames(names map[string]string) {
+	if len(names) == 0 {
+		ce.ioDisplayNames = nil
+		return
+	}
+	ce.ioDisplayNames = make(map[string]string, len(names))
+	for k, v := range names {
+		ce.ioDisplayNames[k] = v
+	}
 }
 
 // IsDirty returns true if there are unsaved changes
@@ -588,6 +602,20 @@ func ioPointToId(pt app.IoPointDebugState) string {
 	return pt.DriverName + "|" + typeStr + "|" + pt.Name
 }
 
+// ioPointDisplayKey returns the key format used for session IO names.
+func ioPointDisplayKey(pt app.IoPointDebugState) string {
+	return pt.DriverName + "|" + pt.Type + "|" + strconv.Itoa(pt.Index)
+}
+
+// ioPickerDisplayName returns the label shown in picker rows for a point.
+func (ce *ConfigEditor) ioPickerDisplayName(pt app.IoPointDebugState) string {
+	custom := strings.TrimSpace(ce.ioDisplayNames[ioPointDisplayKey(pt)])
+	if custom == "" {
+		return pt.Name
+	}
+	return custom + " [" + pt.Name + "]"
+}
+
 // applyIoSelection writes the selected IO ID into the appropriate config field
 func (ce *ConfigEditor) applyIoSelection(ioId string) {
 	if ce.cursor < 0 || ce.cursor >= len(ce.items) {
@@ -960,8 +988,9 @@ func (ce *ConfigEditor) viewIoPicker(theme Theme) string {
 
 	nameWidth := 8
 	for _, pt := range pts {
-		if len(pt.Name) > nameWidth {
-			nameWidth = len(pt.Name)
+		displayName := ce.ioPickerDisplayName(pt)
+		if len(displayName) > nameWidth {
+			nameWidth = len(displayName)
 		}
 	}
 
@@ -984,7 +1013,8 @@ func (ce *ConfigEditor) viewIoPicker(theme Theme) string {
 		}
 
 		ioId := theme.Muted.Render(ioPointToId(pt))
-		line := prefix + theme.Primary.Render(padRight(pt.Name, nameWidth)) + " " + stateIcon + " " + healthIcon + "  " + ioId
+		displayName := ce.ioPickerDisplayName(pt)
+		line := prefix + theme.Primary.Render(padRight(displayName, nameWidth)) + " " + stateIcon + " " + healthIcon + "  " + ioId
 		lines = append(lines, style.Render(line))
 	}
 

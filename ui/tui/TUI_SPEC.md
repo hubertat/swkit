@@ -30,7 +30,9 @@ This document describes the current TUI implementation, its scope, abstraction l
 - Edit lights and buttons (name, IO binding, disable HomeKit).
 - Add/remove lights and buttons.
 - `a` in list mode opens a device type selector (Light, Button) instead of adding a fixed type.
-- `p` on an IO field (field 2 of light/button edit) opens an IO point picker showing live detected points filtered by type (outputs for lights, inputs for buttons). Select to auto-fill the IO ID.
+- `p` on an IO field (field 2 of light/button edit) opens an IO point picker showing live detected points filtered by type (outputs for lights, inputs for buttons).
+- If an IO point has a custom in-session name from IO Debug, the picker shows `custom_name [hardware_name]`.
+- Selecting an IO point from the picker writes the raw IO ID string into config.
 - Button control mappings editable inline (event/action/device cycling).
 - `ctrl+s` saves via `ConfigProvider`.
 
@@ -128,11 +130,13 @@ This document describes the current TUI implementation, its scope, abstraction l
 
 ### IO Picker
 - IO picker shows live points from `AppState.IoDebug` fed to `ConfigEditor.SetIoPoints()` on each state update.
+- IO picker also receives in-session custom IO names from IO Debug (`Model.ioNames`) via `ConfigEditor.SetIoDisplayNames()` and uses them for labels only.
 - Only drivers that implement `IoDebugProvider` surface points here (e.g., Shelly, Wago); others show nothing.
 - The picker is filtered by type: "output" for lights, "input" for buttons.
 
 ## Known Limitations / Design Notes
 - IO naming is session-only unless exported; no import path exists.
+- IO picker custom labels are also session-only; persisted config still stores raw IO IDs.
 - Chat streaming UI exists, but current integration is not streaming.
 - List alignment can drift with emoji/wide glyphs due to byte-based padding.
 - IO picker only shows points from drivers implementing `IoDebugProvider` (e.g., Shelly, Wago). GPIO and MCP23017 do not currently surface debug points.
