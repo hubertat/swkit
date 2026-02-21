@@ -100,16 +100,18 @@ func (p *SwKitProvider) GetState() app.AppState {
 	return state
 }
 
-// Subscribe returns a channel that receives state updates at the specified interval
+// Subscribe returns a channel that receives state updates at the specified interval.
+// The channel is buffered (size 1): periodic sends are non-blocking so a slow consumer
+// never stalls the ticker goroutine.
 func (p *SwKitProvider) Subscribe(ctx context.Context, interval time.Duration) <-chan app.AppState {
-	ch := make(chan app.AppState)
+	ch := make(chan app.AppState, 1)
 
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		defer close(ch)
 
-		// Send initial state
+		// Initial send: blocking to guarantee first state is delivered.
 		select {
 		case ch <- p.GetState():
 		case <-ctx.Done():
@@ -119,10 +121,11 @@ func (p *SwKitProvider) Subscribe(ctx context.Context, interval time.Duration) <
 		for {
 			select {
 			case <-ticker.C:
+				state := p.GetState()
+				// Non-blocking: drop stale update if consumer is behind.
 				select {
-				case ch <- p.GetState():
-				case <-ctx.Done():
-					return
+				case ch <- state:
+				default:
 				}
 			case <-ctx.Done():
 				return

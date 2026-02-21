@@ -80,6 +80,7 @@ func AllTabs() []Tab {
 type Model struct {
 	provider      app.StateProvider
 	state         app.AppState
+	stateCh       <-chan app.AppState  // single long-lived subscription
 	activeTab     Tab
 	keys          KeyMap
 	theme         Theme
@@ -141,9 +142,9 @@ func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigPr
 	} else {
 		theme = DefaultTheme()
 	}
-	return Model{
+	m := Model{
 		provider:       provider,
-		state:          provider.GetState(),
+		state:          app.AppState{}, // populated by first subscription update
 		activeTab:      TabDashboard,
 		keys:           DefaultKeyMap(),
 		theme:          theme,
@@ -157,30 +158,19 @@ func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigPr
 		chat:           NewChatView(ag, theme),
 		configEditor:   NewConfigEditor(configProvider, theme),
 	}
+	m.stateCh = provider.Subscribe(ctx, 500*time.Millisecond)
+	return m
 }
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
-	return m.subscribeToState()
+	return m.waitForNextState()
 }
 
-// subscribeToState starts the state subscription
-func (m Model) subscribeToState() tea.Cmd {
-	return func() tea.Msg {
-		ch := m.provider.Subscribe(m.ctx, 500*time.Millisecond)
-		state, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return StateUpdateMsg{State: state}
-	}
-}
-
-// waitForNextState waits for the next state update
+// waitForNextState returns a command that blocks until the next state arrives on the shared channel.
 func (m Model) waitForNextState() tea.Cmd {
 	return func() tea.Msg {
-		ch := m.provider.Subscribe(m.ctx, 500*time.Millisecond)
-		state, ok := <-ch
+		state, ok := <-m.stateCh
 		if !ok {
 			return nil
 		}
