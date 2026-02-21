@@ -66,3 +66,87 @@ func TestConfigEditorSetIoDisplayNamesCopiesInputMap(t *testing.T) {
 	}
 }
 
+func TestIoPointToIdShellyInputUsesNumericPort(t *testing.T) {
+	pt := app.IoPointDebugState{
+		DriverName: "shelly",
+		Type:       "input",
+		Name:       "shellyi4g3-e4b063d3f118:input1",
+	}
+
+	got := ioPointToId(pt)
+	want := "shelly|d_in|shellyi4g3-e4b063d3f118:1"
+	if got != want {
+		t.Fatalf("unexpected io id: got %q, want %q", got, want)
+	}
+}
+
+func TestIoPointToIdShellyOutputUsesNumericPort(t *testing.T) {
+	pt := app.IoPointDebugState{
+		DriverName: "shelly",
+		Type:       "output",
+		Name:       "shelly1pm-ABCDEF123456:switch0",
+	}
+
+	got := ioPointToId(pt)
+	want := "shelly|d_out|shelly1pm-ABCDEF123456:0"
+	if got != want {
+		t.Fatalf("unexpected io id: got %q, want %q", got, want)
+	}
+}
+
+func TestIoPointToIdWagoUsesGlobalIndex(t *testing.T) {
+	pt := app.IoPointDebugState{
+		DriverName: "wago",
+		Type:       "input",
+		Index:      5,
+		Name:       "M2:DI1",
+	}
+
+	got := ioPointToId(pt)
+	want := "wago|d_in|5"
+	if got != want {
+		t.Fatalf("unexpected io id: got %q, want %q", got, want)
+	}
+}
+
+func TestIoPointToIdForCurrentFieldButtonUsesPushEvent(t *testing.T) {
+	ce := NewConfigEditor(nil, DefaultTheme())
+	ce.items = []configListItem{
+		{itemType: configItemButton, index: 0},
+	}
+	ce.cursor = 0
+	ce.ioPickerField = 1
+
+	pt := app.IoPointDebugState{
+		DriverName: "shelly",
+		Type:       "input",
+		Name:       "shellyi4g3-e4b063d3f118:input1",
+	}
+
+	got := ce.ioPointToIdForCurrentField(pt)
+	want := "shelly|push_event|shellyi4g3-e4b063d3f118:1"
+	if got != want {
+		t.Fatalf("unexpected io id for button picker field: got %q, want %q", got, want)
+	}
+}
+
+func TestIoPointToIdForCurrentFieldLightUsesDigitalOutput(t *testing.T) {
+	ce := NewConfigEditor(nil, DefaultTheme())
+	ce.items = []configListItem{
+		{itemType: configItemLight, index: 0},
+	}
+	ce.cursor = 0
+	ce.ioPickerField = 1
+
+	pt := app.IoPointDebugState{
+		DriverName: "shelly",
+		Type:       "output",
+		Name:       "shelly1pm-ABCDEF123456:switch0",
+	}
+
+	got := ce.ioPointToIdForCurrentField(pt)
+	want := "shelly|d_out|shelly1pm-ABCDEF123456:0"
+	if got != want {
+		t.Fatalf("unexpected io id for light picker field: got %q, want %q", got, want)
+	}
+}

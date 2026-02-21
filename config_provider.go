@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hubertat/swkit/app"
+	"github.com/hubertat/swkit/drivers"
 )
 
 // SwKitConfigProvider implements app.ConfigProvider for SwKit
@@ -81,7 +82,7 @@ func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
 	for i, b := range config.Buttons {
 		bc := ButtonConfig{
 			Name:           b.Name,
-			EventInputName: b.EventInputName,
+			EventInputName: normalizeButtonEventInputIoType(b.EventInputName),
 			DisableHomekit: b.DisableHomekit,
 		}
 		for _, cd := range b.ControlDevices {
@@ -90,8 +91,8 @@ func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
 		p.sw.Buttons[i] = bc
 	}
 
-	// Marshal and write
-	data, err := json.MarshalIndent(p.sw, "", "  ")
+	// Marshal and write (drop nil values so they are not persisted as explicit null)
+	data, err := marshalWithoutNilIndent(p.sw)
 	if err != nil {
 		return fmt.Errorf("marshal failed: %w", err)
 	}
@@ -101,6 +102,19 @@ func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
 	}
 
 	return nil
+}
+
+// normalizeButtonEventInputIoType migrates button input type d_in -> push_event.
+// Invalid or already-correct values are returned unchanged.
+func normalizeButtonEventInputIoType(ioId string) string {
+	driverName, ioType, ioName, err := drivers.ResolveIoIdString(ioId)
+	if err != nil {
+		return ioId
+	}
+	if ioType != drivers.IoTypeDigitalInput {
+		return ioId
+	}
+	return drivers.GetIoIdString(driverName, drivers.IoTypePushEventEmitter, ioName)
 }
 
 func (p *SwKitConfigProvider) backupConfig() error {
@@ -142,4 +156,49 @@ func parseControlDeviceToEdit(s string) app.ControlDeviceEdit {
 	}
 
 	return cd
+}
+
+// marshalWithoutNilIndent marshals v to pretty JSON after removing nil values.
+func marshalWithoutNilIndent(v interface{}) ([]byte, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+
+	var decoded interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, err
+	}
+
+	cleaned, _ := pruneNilJSONValue(decoded)
+	return json.MarshalIndent(cleaned, "", "  ")
+}
+
+// pruneNilJSONValue removes nil values from maps/slices recursively.
+// It returns the cleaned value and a keep flag (false only when value is nil).
+func pruneNilJSONValue(v interface{}) (interface{}, bool) {
+	switch t := v.(type) {
+	case nil:
+		return nil, false
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(t))
+		for k, child := range t {
+			cleanedChild, keep := pruneNilJSONValue(child)
+			if keep {
+				out[k] = cleanedChild
+			}
+		}
+		return out, true
+	case []interface{}:
+		out := make([]interface{}, 0, len(t))
+		for _, child := range t {
+			cleanedChild, keep := pruneNilJSONValue(child)
+			if keep {
+				out = append(out, cleanedChild)
+			}
+		}
+		return out, true
+	default:
+		return v, true
+	}
 }

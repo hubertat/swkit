@@ -599,7 +599,33 @@ func ioPointToId(pt app.IoPointDebugState) string {
 	if pt.Type == "output" {
 		typeStr = "d_out"
 	}
-	return pt.DriverName + "|" + typeStr + "|" + pt.Name
+	return ioPointToIdWithType(pt, typeStr)
+}
+
+func ioPointToIdWithType(pt app.IoPointDebugState, typeStr string) string {
+	return pt.DriverName + "|" + typeStr + "|" + ioPointNameForConfig(pt)
+}
+
+// ioPointNameForConfig converts debug display name into a driver-compatible IO name.
+func ioPointNameForConfig(pt app.IoPointDebugState) string {
+	switch pt.DriverName {
+	case "shelly":
+		parts := strings.SplitN(pt.Name, ":", 2)
+		if len(parts) != 2 {
+			return pt.Name
+		}
+		portPart := strings.TrimPrefix(parts[1], "input")
+		portPart = strings.TrimPrefix(portPart, "switch")
+		if _, err := strconv.Atoi(portPart); err == nil {
+			return parts[0] + ":" + portPart
+		}
+		return pt.Name
+	case "wago":
+		// Wago accepts global index format and pt.Index is stable for this.
+		return strconv.Itoa(pt.Index)
+	default:
+		return pt.Name
+	}
 }
 
 // ioPointDisplayKey returns the key format used for session IO names.
@@ -636,6 +662,19 @@ func (ce *ConfigEditor) applyIoSelection(ioId string) {
 	}
 }
 
+func (ce *ConfigEditor) ioPointToIdForCurrentField(pt app.IoPointDebugState) string {
+	if ce.cursor >= 0 && ce.cursor < len(ce.items) && ce.ioPickerField == 1 {
+		item := ce.items[ce.cursor]
+		switch item.itemType {
+		case configItemLight:
+			return ioPointToIdWithType(pt, "d_out")
+		case configItemButton:
+			return ioPointToIdWithType(pt, "push_event")
+		}
+	}
+	return ioPointToId(pt)
+}
+
 // updateIoPicker handles keys in IO picker mode
 func (ce *ConfigEditor) updateIoPicker(msg tea.KeyMsg) tea.Cmd {
 	pts := ce.filteredIoPoints()
@@ -650,7 +689,7 @@ func (ce *ConfigEditor) updateIoPicker(msg tea.KeyMsg) tea.Cmd {
 		}
 	case "enter":
 		if len(pts) > 0 && ce.ioPickerCursor < len(pts) {
-			ce.applyIoSelection(ioPointToId(pts[ce.ioPickerCursor]))
+			ce.applyIoSelection(ce.ioPointToIdForCurrentField(pts[ce.ioPickerCursor]))
 		}
 		ce.mode = ce.modeBeforePicker
 	case "esc":
@@ -1012,7 +1051,7 @@ func (ce *ConfigEditor) viewIoPicker(theme Theme) string {
 			healthIcon = theme.Faulty.Render(IconFaulty)
 		}
 
-		ioId := theme.Muted.Render(ioPointToId(pt))
+		ioId := theme.Muted.Render(ce.ioPointToIdForCurrentField(pt))
 		displayName := ce.ioPickerDisplayName(pt)
 		line := prefix + theme.Primary.Render(padRight(displayName, nameWidth)) + " " + stateIcon + " " + healthIcon + "  " + ioId
 		lines = append(lines, style.Render(line))
