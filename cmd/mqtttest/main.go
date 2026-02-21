@@ -16,11 +16,11 @@
 package main
 
 import (
+	"context"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/eclipse/paho.golang/paho"
-	"github.com/hubertat/swkit/drivers/shelly"
 	"github.com/hubertat/swkit/mqtt"
 )
 
@@ -53,19 +53,11 @@ func main() {
 
 	tHan := &Handler{topic: "testTopic"}
 
-	shels := []*shelly.ShellyDevice{
-		{
-			Id: "shellypro4pm-083af2be0f68",
-		},
-	}
-
-	shelM := shelly.NewShellyMqtt(shels, mc)
-
 	mqttHandlers := []mqtt.MqttHandler{
-		shelM,
+		tHan,
 	}
 
-	err = mc.Connect(mqttHandlers)
+	err = mc.Connect(context.Background(), mqttHandlers)
 	if err != nil {
 		log.Error("failed to connect to mqtt broker", "error", err)
 		return

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/eclipse/paho.golang/paho"
 
 	"github.com/hubertat/swkit/drivers/shelly"
 	"github.com/hubertat/swkit/drivers/shelly/components"
@@ -57,11 +58,13 @@ func getShellyIoId(deviceId string, inputNo int) string {
 type ShellyIO struct {
 	MqttBroker   string
 	MqttClientId string
+	DiscoverAll  bool // when true, auto-discover all devices on the MQTT broker
 
 	outputs []*ShellyOutput
 	inputs  []*ShellyInput
 
-	devices []*shelly.ShellyDevice
+	devices    []*shelly.ShellyDevice
+	topicRoots map[string]string // topicRoot → deviceId for non-default topic roots
 
 	messenger *mqtt.JsonRpcMessenger
 
@@ -74,7 +77,13 @@ type ShellyIO struct {
 	unhealthyCount int
 	logger         *log.Logger
 
-	ioMu sync.RWMutex // protects outputs and inputs slices
+	ioMu      sync.RWMutex // protects outputs and inputs slices
+	devicesMu sync.RWMutex // protects devices slice and topicRoots map
+	stateMu   sync.RWMutex // protects outputLastChanged and inputLastEvent maps
+
+	outputLastChanged map[string]time.Time // key: "deviceId:switchNo"
+	inputLastEvent    map[string]time.Time // key: "deviceId:inputNo"
+	prevSwitchStates  map[string]bool      // key: "deviceId:switchNo", last known state for change detection
 }
 
 func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
@@ -102,10 +111,10 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 		logger.Debug("will process io", "id", ioId, "type", ioType.String())
 
 		switch ioType {
-		case IoTypeDigitalInput:
+		case IoTypeDigitalInput, IoTypePushEventEmitter:
 			devicesMap[actualDeviceId] = true
 			she.inputs = append(she.inputs, &ShellyInput{deviceId: actualDeviceId, inputNo: ioNo})
-			logger.Debug("adding d_in", "dev id:", actualDeviceId, "io no:", ioNo)
+			logger.Debug("adding input", "type", ioType.String(), "dev id:", actualDeviceId, "io no:", ioNo)
 
 		case IoTypeDigitalOutput:
 			devicesMap[actualDeviceId] = true
@@ -120,10 +129,15 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 
 	logger.Debug("mapped devices", "deviceIds", devicesMap)
 
-	if len(devicesMap) == 0 {
+	if len(devicesMap) == 0 && !she.DiscoverAll {
 		err = errors.Join(err, errors.New("no device ids parsed from ios"))
 		return
 	}
+
+	she.topicRoots = make(map[string]string)
+	she.outputLastChanged = make(map[string]time.Time)
+	she.inputLastEvent = make(map[string]time.Time)
+	she.prevSwitchStates = make(map[string]bool)
 
 	logger.Debug("creating mqtt client")
 	mqttCli, mqErr := mqtt.NewMqttClient(she.MqttBroker, she.MqttClientId)
@@ -141,19 +155,33 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 		return
 	}
 
+	she.devicesMu.Lock()
 	for deviceId := range devicesMap {
-		dev, err := shelly.NewShellyDevice(deviceId, she.messenger)
-		if err != nil {
-			err = errors.Join(err, errors.New("failed to create shelly device "+deviceId))
-			return err
+		dev, devErr := shelly.NewShellyDevice(deviceId, she.messenger)
+		if devErr != nil {
+			she.devicesMu.Unlock()
+			return errors.Join(devErr, errors.New("failed to create shelly device "+deviceId))
 		}
 		she.devices = append(she.devices, dev)
 	}
+	she.devicesMu.Unlock()
 
-	err = she.messenger.ConnectMqttClient(ctx)
+	var extraHandlers []mqtt.MqttHandler
+	if she.DiscoverAll {
+		extraHandlers = append(extraHandlers, &shellyDiscoveryHandler{ctx: ctx, parent: she})
+	}
+
+	err = she.messenger.ConnectMqttClientWithHandlers(ctx, extraHandlers)
 	if err != nil {
 		err = errors.Join(err, errors.New("failed to connect mqtt client"))
 		return err
+	}
+
+	if she.DiscoverAll {
+		logger.Info("DiscoverAll enabled, sending announce command")
+		if pubErr := she.messenger.Publish("shellies/command", []byte("announce")); pubErr != nil {
+			logger.Warn("failed to publish announce command", "err", pubErr)
+		}
 	}
 
 	logger.Info("getting devices status")
@@ -190,24 +218,35 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 			case <-she.done:
 				return
 			case <-she.matchTicker.C:
+				she.devicesMu.RLock()
+				needsMatch := false
 				for _, d := range she.devices {
 					if !d.IsReady() {
-						log.Info("healthTicker: found unititialized device, will try to match", "id", d.Id)
-
-						matchErr = she.matchDevices()
-						if matchErr != nil {
-							logger.Warn("failed to match devices", "err", matchErr)
-						}
+						log.Info("matchTicker: found uninitialized device, will try to match", "id", d.Id)
+						needsMatch = true
+					}
+				}
+				she.devicesMu.RUnlock()
+				if needsMatch {
+					matchErr = she.matchDevices()
+					if matchErr != nil {
+						logger.Warn("failed to match devices", "err", matchErr)
 					}
 				}
 
 			case <-she.healthTicker.C:
+				she.devicesMu.RLock()
+				var toRefresh []*shelly.ShellyDevice
 				for _, d := range she.devices {
 					if d.IsReady() && d.SinceLastRefreshed() > stateUpToDateDuration {
-						log.Debug("healthTicker: refreshing device", "id", d.Id)
-						if err := d.GetStatus(); err != nil {
-							logger.Warn("healthTicker: failed to send GetStatus", "id", d.Id, "err", err)
-						}
+						toRefresh = append(toRefresh, d)
+					}
+				}
+				she.devicesMu.RUnlock()
+				for _, d := range toRefresh {
+					log.Debug("healthTicker: refreshing device", "id", d.Id)
+					if err := d.GetStatus(); err != nil {
+						logger.Warn("healthTicker: failed to send GetStatus", "id", d.Id, "err", err)
 					}
 				}
 			}
@@ -273,6 +312,13 @@ func (she *ShellyIO) matchDevices() error {
 }
 
 func (she *ShellyIO) getDevice(id string) *shelly.ShellyDevice {
+	she.devicesMu.RLock()
+	defer she.devicesMu.RUnlock()
+	return she.getDeviceLocked(id)
+}
+
+// getDeviceLocked must be called with devicesMu held (at least read-locked).
+func (she *ShellyIO) getDeviceLocked(id string) *shelly.ShellyDevice {
 	for _, dev := range she.devices {
 		if strings.EqualFold(dev.Id, id) {
 			return dev
@@ -282,12 +328,18 @@ func (she *ShellyIO) getDevice(id string) *shelly.ShellyDevice {
 }
 
 func (she *ShellyIO) getDeviceByTopic(topic string) *shelly.ShellyDevice {
+	she.devicesMu.RLock()
+	defer she.devicesMu.RUnlock()
 	for _, dev := range she.devices {
 		if strings.HasPrefix(topic, dev.Id) {
 			return dev
 		}
 	}
-
+	for topicRoot, devId := range she.topicRoots {
+		if strings.HasPrefix(topic, topicRoot) {
+			return she.getDeviceLocked(devId)
+		}
+	}
 	return nil
 }
 
@@ -315,9 +367,11 @@ func (she *ShellyIO) Close() error {
 	if she.healthTicker != nil {
 		she.healthTicker.Stop()
 	}
+	she.devicesMu.RLock()
 	for _, dev := range she.devices {
 		dev.Close()
 	}
+	she.devicesMu.RUnlock()
 	she.isReady = false
 	return nil
 }
@@ -378,9 +432,14 @@ func (she *ShellyIO) GetAllIo() (inputs []string, outputs []string) {
 }
 
 func (she *ShellyIO) MqttTopicRoots() []string {
-	roots := make([]string, len(she.devices))
-	for ix, dev := range she.devices {
-		roots[ix] = dev.Id
+	she.devicesMu.RLock()
+	defer she.devicesMu.RUnlock()
+	var roots []string
+	for _, dev := range she.devices {
+		roots = append(roots, dev.Id)
+	}
+	for topicRoot := range she.topicRoots {
+		roots = append(roots, topicRoot)
 	}
 	return roots
 }
@@ -435,6 +494,7 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			}
 
 			she.notifyStateChanges(outStates, msg.MsgType.String(), msg.Method)
+			she.detectSwitchChanges(dev)
 
 			return true
 		case "Switch.Set":
@@ -472,6 +532,7 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			}
 
 			she.notifyStateChanges(outStates, msg.MsgType.String(), msg.Method)
+			she.detectSwitchChanges(dev)
 
 			return true
 		case "NotifyEvent":
@@ -491,11 +552,19 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			for _, e := range evs {
 				switch e.ComponentType {
 				case components.ComponentTypeInput:
+					she.ioMu.RLock()
 					for _, in := range she.inputs {
-						if uint(in.inputNo) == e.ComponentId {
-							in.findAndFireEvent(e.EventType)
+						if in.deviceId == dev.Id && uint(in.inputNo) == e.ComponentId {
+							if !in.findAndFireEvent(e.EventType) {
+								log.Debug("shelly input event not handled (no matching subscription)", "device", dev.Id, "input", in.inputNo, "event", e.EventType)
+							}
 						}
 					}
+					she.ioMu.RUnlock()
+					key := fmt.Sprintf("%s:%d", dev.Id, e.ComponentId)
+					she.stateMu.Lock()
+					she.inputLastEvent[key] = time.Now()
+					she.stateMu.Unlock()
 				default:
 					log.Debug("unsupported component type", "device", dev.Id, "componentType", e.ComponentType)
 				}
@@ -537,6 +606,7 @@ func (she *ShellyIO) captureOutputStates(deviceId string) map[string]bool {
 func (she *ShellyIO) notifyStateChanges(oldStates map[string]bool, msgType, method string) {
 	type pendingNotification struct {
 		name     string
+		key      string
 		newState bool
 		callback func(bool)
 		oldState bool
@@ -547,16 +617,61 @@ func (she *ShellyIO) notifyStateChanges(oldStates map[string]bool, msgType, meth
 	for _, o := range she.outputs {
 		if oldState, present := oldStates[o.String()]; present && o.onStateUpdate != nil {
 			if state, err := o.dev.GetOutputState(o.switchNo); err == nil && state != oldState {
-				pending = append(pending, pendingNotification{o.String(), state, o.onStateUpdate, oldState})
+				key := fmt.Sprintf("%s:%d", o.deviceId, o.switchNo)
+				pending = append(pending, pendingNotification{
+					name:     o.String(),
+					key:      key,
+					newState: state,
+					callback: o.onStateUpdate,
+					oldState: oldState,
+				})
 			}
 		}
 	}
 	she.ioMu.RUnlock()
 
+	if len(pending) > 0 {
+		now := time.Now()
+		she.stateMu.Lock()
+		for _, n := range pending {
+			she.outputLastChanged[n.key] = now
+		}
+		she.stateMu.Unlock()
+	}
+
 	for _, n := range pending {
 		log.Info("State change detected", "output", n.name, "old", n.oldState, "new", n.newState, "msgType", msgType, "method", method)
 		n.callback(n.newState)
 	}
+}
+
+// detectSwitchChanges compares each switch's current state against the last recorded state
+// and updates outputLastChanged for any that changed. Works for all discovered devices,
+// regardless of whether they have entries in she.outputs.
+// It also snapshots the current state into prevSwitchStates for the next comparison.
+func (she *ShellyIO) detectSwitchChanges(dev *shelly.ShellyDevice) {
+	type kv struct {
+		key   string
+		state bool
+	}
+	var current []kv
+	for i := 0; i < dev.SwitchCount(); i++ {
+		if state, err := dev.GetOutputState(i); err == nil {
+			current = append(current, kv{fmt.Sprintf("%s:%d", dev.Id, i), state})
+		}
+	}
+	if len(current) == 0 {
+		return
+	}
+	now := time.Now()
+	she.stateMu.Lock()
+	for _, s := range current {
+		if prev, ok := she.prevSwitchStates[s.key]; ok && prev != s.state {
+			she.outputLastChanged[s.key] = now
+		}
+		she.prevSwitchStates[s.key] = s.state
+	}
+	she.stateMu.Unlock()
 }
 
 type ShellyOutput struct {
@@ -629,40 +744,37 @@ func (sin *ShellyInput) getStringId() string {
 	return fmt.Sprintf("%s%s%d", sin.deviceId, idSeparator, sin.inputNo)
 }
 
-func (sin *ShellyInput) Subscribe(eventType PushEvent, handler func(PushEvent)) error {
-	// TODO: make sure its not required and delete
-	// if sin.dev == nil {
-	// 	return errors.New("shelly input internal InputStatus/Device nil error")
-	// }
+var shellyEventMap = map[PushEvent]events.ShellyEventType{
+	PushEventSinglePress: events.ShellyEventSinglePush,
+	PushEventDoublePress: events.ShellyEventDoublePush,
+	PushEventTriplePress: events.ShellyEventTriplePush,
+	PushEventLongPress:   events.ShellyEventLongPush,
+}
 
-	var shellE events.ShellyEventType
-	switch eventType {
-	case PushEventSinglePress:
-		shellE = events.ShellyEventSinglePush
-
-	case PushEventDoublePress:
-		shellE = events.ShellyEventDoublePush
-
-	case PushEventTriplePress:
-		shellE = events.ShellyEventTriplePush
-
-	case PushEventLongPress:
-		shellE = events.ShellyEventLongPush
-
-	default:
-		return errors.New("unsupported event type for shelly input: " + eventType.String())
+func (sin *ShellyInput) Subscribe(eventTypes PushEvent, handler func(PushEvent)) error {
+	registered := 0
+	for _, evt := range AllPushEvents() {
+		if eventTypes&evt != evt {
+			continue
+		}
+		shellE, ok := shellyEventMap[evt]
+		if !ok {
+			return errors.New("unsupported event type for shelly input: " + evt.String())
+		}
+		sin.subscriptions = append(sin.subscriptions, struct {
+			shellyEvent events.ShellyEventType
+			swkitEvent  PushEvent
+			handler     func(PushEvent)
+		}{
+			shellyEvent: shellE,
+			swkitEvent:  evt,
+			handler:     handler,
+		})
+		registered++
 	}
-
-	sin.subscriptions = append(sin.subscriptions, struct {
-		shellyEvent events.ShellyEventType
-		swkitEvent  PushEvent
-		handler     func(PushEvent)
-	}{
-		shellyEvent: shellE,
-		swkitEvent:  eventType,
-		handler:     handler,
-	})
-
+	if registered == 0 {
+		return errors.New("no valid event types in bitmask")
+	}
 	return nil
 }
 
@@ -670,6 +782,7 @@ func (sin *ShellyInput) findAndFireEvent(shellyEventType events.ShellyEventType)
 	fired := false
 	for _, sub := range sin.subscriptions {
 		if sub.shellyEvent == shellyEventType {
+			log.Debug("shelly input event fired", "device", sin.deviceId, "input", sin.inputNo, "event", shellyEventType)
 			sub.handler(sub.swkitEvent)
 			fired = true
 		}
@@ -699,25 +812,171 @@ func (sin *ShellyInput) IsHealthy() bool {
 
 // PrintStatus() string prints status of device and its io in a readable way
 func (sio *ShellyIO) PrintStatus() string {
-	s := ""
+	sio.devicesMu.RLock()
+	defer sio.devicesMu.RUnlock()
+	var sb strings.Builder
 	for _, dev := range sio.devices {
-		s += fmt.Sprintf("%s\n", dev.String())
+		sb.WriteString(dev.String())
+		sb.WriteByte('\n')
 	}
-
-	return s
+	return sb.String()
 }
 
 // Status returns a summary of the driver's current state
 func (sio *ShellyIO) Status() string {
+	sio.devicesMu.RLock()
 	readyCount := 0
+	total := len(sio.devices)
 	for _, dev := range sio.devices {
 		if dev.IsReady() {
 			readyCount++
 		}
 	}
+	sio.devicesMu.RUnlock()
 	broker := sio.MqttBroker
 	if len(broker) > 25 {
 		broker = broker[:22] + "..."
 	}
-	return fmt.Sprintf("devices:%d/%d broker:%s", readyCount, len(sio.devices), broker)
+	return fmt.Sprintf("devices:%d/%d broker:%s", readyCount, total, broker)
+}
+
+// GetIoDebugSnapshot returns a snapshot of all IO points from discovered Shelly devices.
+// Satisfies drivers.IoDebugProvider.
+func (she *ShellyIO) GetIoDebugSnapshot() IoDebugSnapshot {
+	she.devicesMu.RLock()
+	defer she.devicesMu.RUnlock()
+	she.stateMu.RLock()
+	defer she.stateMu.RUnlock()
+
+	var points []IoPointState
+	outputIdx := 0
+	inputIdx := 0
+	for _, dev := range she.devices {
+		healthy := dev.HealthCheck() == nil && dev.IsReady()
+		for i := 0; i < dev.SwitchCount(); i++ {
+			state := false
+			if s, err := dev.GetOutputState(i); err == nil {
+				state = s
+			}
+			key := fmt.Sprintf("%s:%d", dev.Id, i)
+			points = append(points, IoPointState{
+				Index:       outputIdx,
+				Name:        fmt.Sprintf("%s:switch%d", dev.Id, i),
+				Type:        IoTypeDigitalOutput,
+				State:       state,
+				Healthy:     healthy,
+				LastChanged: she.outputLastChanged[key],
+			})
+			outputIdx++
+		}
+		for i := 0; i < dev.InputCount(); i++ {
+			state := false
+			if s, err := dev.GetInputState(i); err == nil {
+				state = s
+			}
+			key := fmt.Sprintf("%s:%d", dev.Id, i)
+			eventTime := she.inputLastEvent[key]
+			points = append(points, IoPointState{
+				Index:       inputIdx,
+				Name:        fmt.Sprintf("%s:input%d", dev.Id, i),
+				Type:        IoTypeDigitalInput,
+				State:       state,
+				Healthy:     healthy,
+				LastChanged: eventTime,
+				LastEvent:   eventTime,
+			})
+			inputIdx++
+		}
+	}
+	return IoDebugSnapshot{Points: points}
+}
+
+// ToggleOutput toggles a Shelly relay by its global output index.
+// Satisfies drivers.IoOutputToggler.
+func (she *ShellyIO) ToggleOutput(index int) error {
+	she.devicesMu.RLock()
+	defer she.devicesMu.RUnlock()
+	outputIdx := 0
+	for _, dev := range she.devices {
+		for i := 0; i < dev.SwitchCount(); i++ {
+			if outputIdx == index {
+				state, err := dev.GetOutputState(i)
+				if err != nil {
+					return fmt.Errorf("shelly: get state for toggle: %w", err)
+				}
+				return dev.SetSwitch(i, !state)
+			}
+			outputIdx++
+		}
+	}
+	return fmt.Errorf("shelly: output index %d out of range", index)
+}
+
+// shellyDiscoveryHandler handles MQTT announce messages for automatic device discovery.
+type shellyDiscoveryHandler struct {
+	ctx    context.Context
+	parent *ShellyIO
+}
+
+func (h *shellyDiscoveryHandler) MqttSubscribeTopics() []string {
+	return []string{"shellies/announce", "+/announce"}
+}
+
+func (h *shellyDiscoveryHandler) MqttHandle(pub paho.PublishReceived) (bool, error) {
+	topic := pub.Packet.Topic
+	if !strings.HasSuffix(topic, "/announce") {
+		return false, nil
+	}
+
+	ap, err := shelly.ParseAnnounce(pub.Packet.Payload)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse announce payload: %w", err)
+	}
+	if ap.Id == "" {
+		return false, fmt.Errorf("announce payload has empty device id")
+	}
+
+	// Extract topicRoot: everything before "/announce"
+	topicRoot := strings.TrimSuffix(topic, "/announce")
+	if topicRoot == "" || topicRoot == topic {
+		topicRoot = ap.Id
+	}
+
+	h.parent.logger.Info("discovered shelly device via announce", "id", ap.Id, "topicRoot", topicRoot, "model", ap.Model)
+	go h.parent.onDeviceDiscovered(h.ctx, ap.Id, topicRoot)
+	return true, nil
+}
+
+// onDeviceDiscovered registers a newly discovered Shelly device and subscribes to its topics.
+func (she *ShellyIO) onDeviceDiscovered(ctx context.Context, deviceId, topicRoot string) {
+	she.devicesMu.Lock()
+	if she.getDeviceLocked(deviceId) != nil {
+		she.devicesMu.Unlock()
+		she.logger.Debug("device already known, skipping discovery", "id", deviceId)
+		return
+	}
+
+	dev, err := shelly.NewShellyDevice(deviceId, she.messenger)
+	if err != nil {
+		she.devicesMu.Unlock()
+		she.logger.Error("failed to create discovered shelly device", "id", deviceId, "err", err)
+		return
+	}
+	she.devices = append(she.devices, dev)
+	if topicRoot != deviceId {
+		she.topicRoots[topicRoot] = deviceId
+	}
+	she.devicesMu.Unlock()
+
+	if subErr := she.messenger.SubscribeToDevice(ctx, topicRoot); subErr != nil {
+		she.logger.Warn("failed to subscribe to discovered device topics", "id", deviceId, "err", subErr)
+	}
+
+	if statusErr := dev.GetStatus(); statusErr != nil {
+		she.logger.Warn("failed to request status for discovered device", "id", deviceId, "err", statusErr)
+	}
+
+	if matchErr := she.matchDevices(); matchErr != nil {
+		she.logger.Debug("match after discovery had errors (expected if ios not configured)", "err", matchErr)
+	}
 }

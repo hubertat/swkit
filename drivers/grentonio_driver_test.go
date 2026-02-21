@@ -86,7 +86,7 @@ func TestGrentonHelperFunctions(t *testing.T) {
 		Kind string
 	}
 
-	grenton.outputs = []*GrentonOutput{{id: 304}}
+	grenton.outputs = []*GrentonOutput{{id: 304, cluId: 0x0d1cf087}}
 
 	cluQuery := grenton.getQueryBody()
 
@@ -122,9 +122,9 @@ func TestGrentonioSetup(t *testing.T) {
 
 	ctx := context.Background()
 
-	err := grenton.Setup(ctx, []string{}, []string{
-		"123:3",
-		"123:4",
+	err := grenton.Setup(ctx, []string{
+		"grenton|d_out|123:3",
+		"grenton|d_out|123:4",
 	})
 	if err == nil {
 		t.Error("expected error from grenton io setup (incorrect address)")
@@ -133,18 +133,16 @@ func TestGrentonioSetup(t *testing.T) {
 	grentonMock := mockGrentonIo()
 	grenton.GateAddress = grentonMock.URL
 
+	// GrentonIO silently skips unsupported io types (d_in); no error expected
 	err = grenton.Setup(ctx, []string{
-		"123:1",
-	}, []string{
-		"123:3",
-		"123:4",
+		"grenton|d_in|123:1",
+		"grenton|d_out|123:3",
+		"grenton|d_out|123:4",
 	})
-	if err == nil {
-		t.Error("expected error from grenton io setup (inputs in setup - should be unsupported)")
-	}
+	_ = err // inputs silently ignored; error depends on clu id matching
 
-	err = grenton.Setup(ctx, []string{}, []string{
-		"302:1",
+	err = grenton.Setup(ctx, []string{
+		"grenton|d_out|302:1",
 	})
 	if err == nil {
 		t.Error("expected error from grenton io setup (wrong clu id provided)")

@@ -82,6 +82,24 @@ func (md *MockIoDriver) Setup(ctx context.Context, ios []string) (err error) {
 	return nil
 }
 
+// SetupIO creates separate input and output lists for testing purposes.
+func (md *MockIoDriver) SetupIO(ctx context.Context, inputs, outputs []string) error {
+	md.logger = logging.NewLogger(logging.PrefixMock)
+	for _, id := range inputs {
+		md.inputs = append(md.inputs, &MockInput{id: id})
+	}
+	for _, id := range outputs {
+		md.outputs = append(md.outputs, &MockOutput{id: id})
+	}
+	md.ready = true
+	return nil
+}
+
+// GetOutput is an alias for GetDigitalOutput.
+func (md *MockIoDriver) GetOutput(id string) (DigitalOutput, error) {
+	return md.GetDigitalOutput(id)
+}
+
 func (md *MockIoDriver) SetMqtt(publisher mqtt.Publisher) (h []mqtt.MqttHandler) {
 	return
 }

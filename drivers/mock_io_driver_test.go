@@ -83,7 +83,7 @@ func TestMockIoSetup(t *testing.T) {
 	got := md.IsReady()
 	assertBools(t, got, want)
 
-	md.Setup(ctx, []string{"1", "3", "5"}, []string{"2", "4"})
+	md.SetupIO(ctx, []string{"1", "3", "5"}, []string{"2", "4"})
 	want = true
 	got = md.IsReady()
 	assertBools(t, got, want)
@@ -95,7 +95,7 @@ func TestMockIoGetAllIo(t *testing.T) {
 
 	outputs := []string{"2", "4"}
 	inputs := []string{"1", "3", "5"}
-	md.Setup(ctx, inputs, outputs)
+	md.SetupIO(ctx, inputs, outputs)
 
 	ins, outs := md.GetAllIo()
 	for _, val := range ins {
@@ -140,7 +140,7 @@ func TestMockIoGetUniqueId(t *testing.T) {
 func TestMockGetOutput(t *testing.T) {
 	md := MockIoDriver{}
 	ctx := context.Background()
-	md.Setup(ctx, []string{"1", "3"}, []string{"2", "Xy"})
+	md.SetupIO(ctx, []string{"1", "3"}, []string{"2", "Xy"})
 
 	output, err := md.GetOutput("2")
 	if err != nil {
@@ -154,7 +154,7 @@ func TestMockGetOutput(t *testing.T) {
 
 	anotherOut, _ := md.GetOutput("Xy")
 	got, _ = anotherOut.GetState()
-	assertBools(t, got, want)
+	assertBools(t, got, false) // initial state is false, anotherOut was never Set
 
 	want = false
 	output.Set(want)

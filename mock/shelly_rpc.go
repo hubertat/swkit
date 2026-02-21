@@ -10,6 +10,7 @@ import (
 	_ "embed"
 
 	"github.com/charmbracelet/log"
+	"github.com/eclipse/paho.golang/paho"
 	"github.com/hubertat/swkit/mqtt"
 )
 
@@ -94,8 +95,16 @@ func (fs *FakeShellyMqttRpc) processRequest(topic string, payload []byte) {
 	}
 
 	fs.l.Debug("publishing response", "response", string(response))
+	// Send response to req.Src/rpc (the client's response topic)
+	responseTopic := req.Src + responseTopicSuffix
 	for _, h := range fs.handlers {
-		h.HandleMqttMessage(topic+responseTopicSuffix, response)
+		fakePub := paho.PublishReceived{
+			Packet: &paho.Publish{
+				Topic:   responseTopic,
+				Payload: response,
+			},
+		}
+		h.MqttHandle(fakePub) //nolint:errcheck
 	}
 }
 

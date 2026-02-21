@@ -31,6 +31,7 @@ type Theme struct {
 	Faulty   lipgloss.Style
 	On       lipgloss.Style
 	Off      lipgloss.Style
+	Event    lipgloss.Style // brief flash on input event
 
 	// List styles
 	ListItem         lipgloss.Style
@@ -53,6 +54,7 @@ var (
 	ColorMuted     = lipgloss.Color("241") // Darker gray
 	ColorOn        = lipgloss.Color("220") // Yellow - on state
 	ColorOff       = lipgloss.Color("244") // Gray - off state
+	ColorEvent     = lipgloss.Color("208") // Orange - event flash
 )
 
 // DefaultTheme creates the default TUI theme using the default renderer
@@ -133,6 +135,10 @@ func ThemeWithRenderer(r *lipgloss.Renderer) Theme {
 		Off: r.NewStyle().
 			Foreground(ColorOff),
 
+		Event: r.NewStyle().
+			Foreground(ColorEvent).
+			Bold(true),
+
 		ListItem: r.NewStyle().
 			PaddingLeft(0),
 
@@ -167,6 +173,6 @@ const (
 	IconIoDebug    = "🔍"
 	IconHealthy    = "✓"
 	IconFaulty     = "✗"
-	IconOn         = "●"
-	IconOff        = "○"
+	IconOn  = "●"
+	IconOff = "○"
 )

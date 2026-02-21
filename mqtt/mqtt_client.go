@@ -65,6 +65,25 @@ func (mc *MqttClient) Connect(ctx context.Context, handlers []MqttHandler) (err 
 	return
 }
 
+// Subscribe adds subscriptions to additional topics after the initial connection.
+func (mc *MqttClient) Subscribe(ctx context.Context, topics []string) error {
+	subs := make([]paho.SubscribeOptions, 0, len(topics))
+	for _, topic := range topics {
+		subs = append(subs, paho.SubscribeOptions{
+			QoS:   1,
+			Topic: topic,
+		})
+	}
+
+	subCtx, cancel := context.WithTimeout(ctx, subscribeTimeout)
+	defer cancel()
+
+	_, err := mc.conn.Subscribe(subCtx, &paho.Subscribe{
+		Subscriptions: subs,
+	})
+	return err
+}
+
 func (mc *MqttClient) Disconnect(ctx context.Context) error {
 	mc.handlers = []MqttHandler{}
 

@@ -78,11 +78,15 @@ func (p *SwKitProvider) GetState() app.AppState {
 				State:       pt.State,
 				Healthy:     pt.Healthy,
 				LastChanged: pt.LastChanged,
+				LastEvent:   pt.LastEvent,
 			})
 		}
 	}
 	if p.sw.Wago != nil {
 		collectIoDebug(p.sw.Wago.String(), p.sw.Wago)
+	}
+	if p.sw.Shelly != nil {
+		collectIoDebug(p.sw.Shelly.String(), p.sw.Shelly)
 	}
 
 	// Collect HomeKit state

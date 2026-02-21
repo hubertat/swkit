@@ -84,7 +84,9 @@ type Model struct {
 	showHelp      bool
 	cursor        int // For list navigation within tabs
 	ioDebugFilter IoDebugFilter
-	ioNames       map[string]string // session-only custom names, key: "driver|type|index"
+	ioNames        map[string]string    // session-only custom names, key: "driver|type|index"
+	ioPrevStates   map[string]bool      // last seen State per IO point for TUI-side change detection
+	ioStateChanged map[string]time.Time // when TUI last observed a state change for an IO point
 	ioNaming      bool              // true when text input is active for naming
 	ioNameInput   textinput.Model
 	ioNameTarget  string // key of the IO point being named
@@ -115,17 +117,19 @@ func NewModelWithAgent(provider app.StateProvider, ag *agent.Agent) Model {
 	ctx, cancel := context.WithCancel(context.Background())
 	theme := DefaultTheme()
 	return Model{
-		provider:    provider,
-		state:       provider.GetState(),
-		activeTab:   TabDashboard,
-		keys:        DefaultKeyMap(),
-		theme:       theme,
-		ioNames:     make(map[string]string),
-		ioNameInput: newIoNameInput(),
-		ctx:         ctx,
-		cancel:      cancel,
-		agent:       ag,
-		chat:        NewChatView(ag, theme),
+		provider:       provider,
+		state:          provider.GetState(),
+		activeTab:      TabDashboard,
+		keys:           DefaultKeyMap(),
+		theme:          theme,
+		ioNames:        make(map[string]string),
+		ioPrevStates:   make(map[string]bool),
+		ioStateChanged: make(map[string]time.Time),
+		ioNameInput:    newIoNameInput(),
+		ctx:            ctx,
+		cancel:         cancel,
+		agent:          ag,
+		chat:           NewChatView(ag, theme),
 	}
 }
 
@@ -140,17 +144,19 @@ func NewModelWithRendererAndAgent(provider app.StateProvider, renderer *lipgloss
 	ctx, cancel := context.WithCancel(context.Background())
 	theme := ThemeWithRenderer(renderer)
 	return Model{
-		provider:    provider,
-		state:       provider.GetState(),
-		activeTab:   TabDashboard,
-		keys:        DefaultKeyMap(),
-		theme:       theme,
-		ioNames:     make(map[string]string),
-		ioNameInput: newIoNameInput(),
-		ctx:         ctx,
-		cancel:      cancel,
-		agent:       ag,
-		chat:        NewChatView(ag, theme),
+		provider:       provider,
+		state:          provider.GetState(),
+		activeTab:      TabDashboard,
+		keys:           DefaultKeyMap(),
+		theme:          theme,
+		ioNames:        make(map[string]string),
+		ioPrevStates:   make(map[string]bool),
+		ioStateChanged: make(map[string]time.Time),
+		ioNameInput:    newIoNameInput(),
+		ctx:            ctx,
+		cancel:         cancel,
+		agent:          ag,
+		chat:           NewChatView(ag, theme),
 	}
 }
 
@@ -352,6 +358,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case StateUpdateMsg:
+		m.detectIoStateChanges(msg.State.IoDebug)
 		m.state = msg.State
 		return m, m.waitForNextState()
 
@@ -449,6 +456,20 @@ func (m Model) getMaxItems() int {
 		return len(m.ioDebugByType(m.ioDebugFilter))
 	default:
 		return 0
+	}
+}
+
+// detectIoStateChanges compares incoming IO point states against the last seen values.
+// When a state change is detected, it records the current time in ioStateChanged.
+// Both maps are reference types so mutations persist across BubbleTea model copies.
+func (m Model) detectIoStateChanges(pts []app.IoPointDebugState) {
+	now := time.Now()
+	for _, pt := range pts {
+		k := ioPointKey(pt)
+		if prev, ok := m.ioPrevStates[k]; ok && prev != pt.State {
+			m.ioStateChanged[k] = now
+		}
+		m.ioPrevStates[k] = pt.State
 	}
 }
 
@@ -794,6 +815,12 @@ func (m Model) renderIoDebugColumns() string {
 // renderIoDebugList renders a list of IO points
 func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool) string {
 	now := m.state.Timestamp
+	nameWidth := 8
+	for _, pt := range points {
+		if len(pt.Name) > nameWidth {
+			nameWidth = len(pt.Name)
+		}
+	}
 	var lines []string
 	for i, pt := range points {
 		prefix := "   "
@@ -803,10 +830,13 @@ func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool
 			style = m.theme.ListItemSelected
 		}
 
-		// State indicator
+		// State indicator — orange for 2s after an explicit event, then back to normal
 		stateText := m.theme.Off.Render(IconOff)
 		if pt.State {
 			stateText = m.theme.On.Render(IconOn)
+		}
+		if !pt.LastEvent.IsZero() && now.Sub(pt.LastEvent) < 2*time.Second {
+			stateText = m.theme.Event.Render(IconOn)
 		}
 
 		// Health indicator
@@ -815,13 +845,20 @@ func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool
 			healthText = m.theme.Faulty.Render(IconFaulty)
 		}
 
-		// Last changed indicator (within 200s)
+		// Activity timer: counts up (seconds since last state change or event), visible for 200s
 		changedText := ""
-		if !pt.LastChanged.IsZero() {
-			ago := now.Sub(pt.LastChanged)
-			if ago < 200*time.Second {
-				secs := int(ago.Seconds())
-				changedText = " " + m.theme.On.Render(fmt.Sprintf("%ds", secs))
+		activityTime := pt.LastChanged
+		if !pt.LastEvent.IsZero() && pt.LastEvent.After(activityTime) {
+			activityTime = pt.LastEvent
+		}
+		if tuiChange, ok := m.ioStateChanged[ioPointKey(pt)]; ok && tuiChange.After(activityTime) {
+			activityTime = tuiChange
+		}
+		if !activityTime.IsZero() {
+			const timerDuration = 200 * time.Second
+			ago := now.Sub(activityTime)
+			if ago < timerDuration {
+				changedText = " " + m.theme.On.Render(fmt.Sprintf("%ds", int(ago.Seconds())))
 			}
 		}
 
@@ -832,7 +869,7 @@ func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool
 		}
 
 		line := prefix +
-			m.theme.Primary.Render(padRight(pt.Name, 8)) + " " +
+			m.theme.Primary.Render(padRight(pt.Name, nameWidth)) + " " +
 			stateText + " " +
 			healthText +
 			changedText +

@@ -21,6 +21,7 @@ type IoPointDebugState struct {
 	State       bool
 	Healthy     bool
 	LastChanged time.Time // zero if never changed since startup
+	LastEvent   time.Time // zero if no explicit event received (e.g. button press)
 }
 
 // DriverState represents the status of an IO driver

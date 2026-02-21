@@ -83,7 +83,7 @@ func (gro *GrentonOutput) Set(state bool) error {
 func (gro *GrentonOutput) parseId(id string) error {
 	idSlice := strings.Split(id, ":")
 	if len(idSlice) != 2 {
-		return errors.Errorf("invalid id format, expected: %d:%d")
+		return errors.Errorf("invalid id format, expected: cluId:outputId")
 	}
 
 	cluId, err := strconv.ParseUint(idSlice[0], 10, 32)

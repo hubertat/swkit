@@ -9,14 +9,14 @@ import (
 
 type RawEvents struct {
 	Events []shellyEvent `json:"events"`
-	Ts     int           `json:"ts"`
+	Ts     float64       `json:"ts"`
 }
 
 type shellyEvent struct {
-	Ts        int    `json:"ts"`
-	Component string `json:"component"`
-	Id        uint   `json:"id"`
-	Event     string `json:"event"`
+	Ts        float64 `json:"ts"`
+	Component string  `json:"component"`
+	Id        uint    `json:"id"`
+	Event     string  `json:"event"`
 }
 
 type Event struct {

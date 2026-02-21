@@ -40,12 +40,28 @@ func NewJsonRpcMessenger(ctx context.Context, mqttClient *MqttClient, handler Mq
 }
 
 func (jrm *JsonRpcMessenger) ConnectMqttClient(ctx context.Context) error {
-	err := jrm.mqttClient.Connect(ctx, []MqttHandler{jrm})
-	if err != nil {
-		return errors.Join(err, errors.New("JsonRpcMessneger failed to connect to mqtt broker"))
-	}
+	return jrm.ConnectMqttClientWithHandlers(ctx, nil)
+}
 
+// ConnectMqttClientWithHandlers connects the MQTT client, registering jrm plus any extra handlers.
+func (jrm *JsonRpcMessenger) ConnectMqttClientWithHandlers(ctx context.Context, extraHandlers []MqttHandler) error {
+	handlers := []MqttHandler{jrm}
+	handlers = append(handlers, extraHandlers...)
+	err := jrm.mqttClient.Connect(ctx, handlers)
+	if err != nil {
+		return errors.Join(err, errors.New("JsonRpcMessenger failed to connect to mqtt broker"))
+	}
 	return nil
+}
+
+// SubscribeToDevice subscribes to all RPC topics for a newly discovered device.
+func (jrm *JsonRpcMessenger) SubscribeToDevice(ctx context.Context, topicRoot string) error {
+	topics := []string{
+		topicRoot + publishRequestTopicSuffix,
+		topicRoot + notificationTopicSuffix,
+		topicRoot + onlineStatusTopicSuffix,
+	}
+	return jrm.mqttClient.Subscribe(ctx, topics)
 }
 
 // MqttSubscribeTopics() []string returns the topics to subscribe to
@@ -121,6 +137,11 @@ func (jrm *JsonRpcMessenger) MqttHandle(pub paho.PublishReceived) (bool, error) 
 		return false, nil
 	}
 
+}
+
+// Publish sends a raw MQTT message to the given topic.
+func (jrm *JsonRpcMessenger) Publish(topic string, payload []byte) error {
+	return jrm.mqttClient.Publish(topic, payload)
 }
 
 // SendRequest(dst string, method string, params map[string]interface{}) error sends new rpc json request over mqtt

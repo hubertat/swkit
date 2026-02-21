@@ -193,6 +193,7 @@ type IoPointState struct {
 	State       bool
 	Healthy     bool
 	LastChanged time.Time // zero value if never changed since startup
+	LastEvent   time.Time // zero value if no event received; set for explicit button-press events
 }
 
 // IoDebugSnapshot contains the state of all IO points from a driver
