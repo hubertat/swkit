@@ -402,6 +402,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StateUpdateMsg:
 		m.detectIoStateChanges(msg.State.IoDebug)
+		m.configEditor.SetIoPoints(msg.State.IoDebug)
 		m.state = msg.State
 		return m, m.waitForNextState()
 

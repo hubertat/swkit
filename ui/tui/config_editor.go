@@ -17,6 +17,8 @@ const (
 	ConfigModeList ConfigMode = iota
 	ConfigModeEditLight
 	ConfigModeEditButton
+	ConfigModeAddSelector // inline device type picker when pressing 'a'
+	ConfigModeIoPicker    // inline IO point browser for IO field assignment
 )
 
 // configListItemType identifies what kind of item is in the list
@@ -32,6 +34,17 @@ type configListItem struct {
 	itemType configListItemType
 	index    int    // index within the Lights or Buttons array
 	name     string // display name
+}
+
+// addableDeviceType defines a device type that can be added via the type selector
+type addableDeviceType struct {
+	label    string
+	itemType configListItemType
+}
+
+var addableDeviceTypes = []addableDeviceType{
+	{label: IconLight + " Light", itemType: configItemLight},
+	{label: IconButton + " Button", itemType: configItemButton},
 }
 
 // ConfigSaveMsg is sent when config is saved
@@ -60,6 +73,16 @@ type ConfigEditor struct {
 	ctrlEditing     bool
 	ctrlFieldCursor int // 0=event, 1=action, 2=device
 
+	// Type selector state (ConfigModeAddSelector)
+	addTypeCursor int
+
+	// IO picker state (ConfigModeIoPicker)
+	ioPoints        []app.IoPointDebugState
+	ioPickerFilter  string     // "input" or "output"
+	ioPickerCursor  int
+	ioPickerField   int        // field index to populate (currently always 1)
+	modeBeforePicker ConfigMode
+
 	// Status
 	statusMsg string
 
@@ -84,6 +107,11 @@ func NewConfigEditor(provider app.ConfigProvider, theme Theme) ConfigEditor {
 	}
 
 	return ce
+}
+
+// SetIoPoints updates the IO points available for the IO picker
+func (ce *ConfigEditor) SetIoPoints(pts []app.IoPointDebugState) {
+	ce.ioPoints = pts
 }
 
 // IsDirty returns true if there are unsaved changes
@@ -132,14 +160,6 @@ func (ce *ConfigEditor) rebuildItems() {
 	}
 }
 
-// currentSection returns what section the cursor is in
-func (ce *ConfigEditor) currentSection() configListItemType {
-	if ce.cursor < len(ce.config.Lights) {
-		return configItemLight
-	}
-	return configItemButton
-}
-
 // lightFieldCount returns the number of editable fields for a Light
 func lightFieldCount() int { return 3 } // Name, DigitalOutName, DisableHomekit
 
@@ -155,6 +175,18 @@ func (ce *ConfigEditor) Update(msg tea.Msg) tea.Cmd {
 		return ce.updateEditLight(msg)
 	case ConfigModeEditButton:
 		return ce.updateEditButton(msg)
+	case ConfigModeAddSelector:
+		keyMsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return nil
+		}
+		return ce.updateAddSelector(keyMsg)
+	case ConfigModeIoPicker:
+		keyMsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return nil
+		}
+		return ce.updateIoPicker(keyMsg)
 	}
 	return nil
 }
@@ -189,7 +221,8 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 			}
 		}
 	case "a":
-		return ce.addItem()
+		ce.addTypeCursor = 0
+		ce.mode = ConfigModeAddSelector
 	case "d", "delete":
 		return ce.deleteItem()
 	}
@@ -197,27 +230,36 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-// addItem adds a new Light or Button depending on cursor position
-func (ce *ConfigEditor) addItem() tea.Cmd {
-	section := ce.currentSection()
-	if len(ce.items) == 0 {
-		// Default to adding a light when list is empty
-		section = configItemLight
+// addDeviceOfType adds a new device of the given type
+func (ce *ConfigEditor) addDeviceOfType(itemType configListItemType) {
+	switch itemType {
+	case configItemLight:
+		ce.config.Lights = append(ce.config.Lights, app.LightEditConfig{Name: "New Light"})
+	case configItemButton:
+		ce.config.Buttons = append(ce.config.Buttons, app.ButtonEditConfig{Name: "New Button"})
 	}
-
-	if section == configItemLight {
-		ce.config.Lights = append(ce.config.Lights, app.LightEditConfig{
-			Name: "New Light",
-		})
-	} else {
-		ce.config.Buttons = append(ce.config.Buttons, app.ButtonEditConfig{
-			Name: "New Button",
-		})
-	}
-
 	ce.dirty = true
 	ce.rebuildItems()
 	ce.cursor = len(ce.items) - 1
+}
+
+// updateAddSelector handles keys in the add-type selector mode
+func (ce *ConfigEditor) updateAddSelector(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "up", "k":
+		if ce.addTypeCursor > 0 {
+			ce.addTypeCursor--
+		}
+	case "down", "j":
+		if ce.addTypeCursor < len(addableDeviceTypes)-1 {
+			ce.addTypeCursor++
+		}
+	case "enter":
+		ce.addDeviceOfType(addableDeviceTypes[ce.addTypeCursor].itemType)
+		ce.mode = ConfigModeList
+	case "esc":
+		ce.mode = ConfigModeList
+	}
 	return nil
 }
 
@@ -284,6 +326,10 @@ func (ce *ConfigEditor) updateEditLight(msg tea.Msg) tea.Cmd {
 		}
 	case "enter":
 		return ce.startEditingLightField(light)
+	case "p":
+		if ce.fieldCursor == 1 { // DigitalOutName field
+			ce.openIoPicker("output", 1)
+		}
 	case " ":
 		if ce.fieldCursor == 2 { // DisableHomekit
 			light.DisableHomekit = !light.DisableHomekit
@@ -407,6 +453,10 @@ func (ce *ConfigEditor) updateEditButton(msg tea.Msg) tea.Cmd {
 			ce.ctrlFieldCursor = 0
 			ce.ctrlEditing = true
 		}
+	case "p":
+		if ce.fieldCursor == 1 { // EventInputName field
+			ce.openIoPicker("input", 1)
+		}
 	case " ":
 		if ce.fieldCursor == 2 { // DisableHomekit
 			button.DisableHomekit = !button.DisableHomekit
@@ -509,6 +559,78 @@ func (ce *ConfigEditor) cycleCtrlField(ctrl *app.ControlDeviceEdit, direction in
 	}
 }
 
+// openIoPicker transitions to IO picker mode for the given filter type and field index
+func (ce *ConfigEditor) openIoPicker(filterType string, fieldIdx int) {
+	ce.ioPickerFilter = filterType
+	ce.ioPickerField = fieldIdx
+	ce.ioPickerCursor = 0
+	ce.modeBeforePicker = ce.mode
+	ce.mode = ConfigModeIoPicker
+}
+
+// filteredIoPoints returns IO points matching the current picker filter
+func (ce *ConfigEditor) filteredIoPoints() []app.IoPointDebugState {
+	var pts []app.IoPointDebugState
+	for _, pt := range ce.ioPoints {
+		if pt.Type == ce.ioPickerFilter {
+			pts = append(pts, pt)
+		}
+	}
+	return pts
+}
+
+// ioPointToId converts an IO point debug state to an IO ID string
+func ioPointToId(pt app.IoPointDebugState) string {
+	typeStr := "d_in"
+	if pt.Type == "output" {
+		typeStr = "d_out"
+	}
+	return pt.DriverName + "|" + typeStr + "|" + pt.Name
+}
+
+// applyIoSelection writes the selected IO ID into the appropriate config field
+func (ce *ConfigEditor) applyIoSelection(ioId string) {
+	if ce.cursor < 0 || ce.cursor >= len(ce.items) {
+		return
+	}
+	item := ce.items[ce.cursor]
+	switch item.itemType {
+	case configItemLight:
+		if ce.ioPickerField == 1 {
+			ce.config.Lights[item.index].DigitalOutName = ioId
+			ce.dirty = true
+		}
+	case configItemButton:
+		if ce.ioPickerField == 1 {
+			ce.config.Buttons[item.index].EventInputName = ioId
+			ce.dirty = true
+		}
+	}
+}
+
+// updateIoPicker handles keys in IO picker mode
+func (ce *ConfigEditor) updateIoPicker(msg tea.KeyMsg) tea.Cmd {
+	pts := ce.filteredIoPoints()
+	switch msg.String() {
+	case "up", "k":
+		if ce.ioPickerCursor > 0 {
+			ce.ioPickerCursor--
+		}
+	case "down", "j":
+		if ce.ioPickerCursor < len(pts)-1 {
+			ce.ioPickerCursor++
+		}
+	case "enter":
+		if len(pts) > 0 && ce.ioPickerCursor < len(pts) {
+			ce.applyIoSelection(ioPointToId(pts[ce.ioPickerCursor]))
+		}
+		ce.mode = ce.modeBeforePicker
+	case "esc":
+		ce.mode = ce.modeBeforePicker
+	}
+	return nil
+}
+
 // cycleOption cycles through a list of options
 func cycleOption(options []string, current string, direction int) string {
 	if len(options) == 0 {
@@ -539,6 +661,10 @@ func (ce *ConfigEditor) View(theme Theme) string {
 		return ce.viewEditLight(theme)
 	case ConfigModeEditButton:
 		return ce.viewEditButton(theme)
+	case ConfigModeAddSelector:
+		return ce.viewAddSelector(theme)
+	case ConfigModeIoPicker:
+		return ce.viewIoPicker(theme)
 	}
 	return ""
 }
@@ -790,6 +916,87 @@ func (ce *ConfigEditor) renderControlDeviceEditor(theme Theme, cd app.ControlDev
 	return strings.Join(lines, "\n")
 }
 
+// viewAddSelector renders the device type picker
+func (ce *ConfigEditor) viewAddSelector(theme Theme) string {
+	title := theme.BoxTitle.Render("Add device")
+	var lines []string
+	lines = append(lines, title, "")
+
+	for i, t := range addableDeviceTypes {
+		prefix := "  "
+		style := theme.ListItem
+		if i == ce.addTypeCursor {
+			prefix = "> "
+			style = theme.ListItemSelected
+		}
+		lines = append(lines, style.Render(prefix+t.label))
+	}
+
+	content := strings.Join(lines, "\n")
+	result := theme.Box.Width(30).Render(content)
+	result += "\n" + theme.Help.Render(
+		theme.HelpKey.Render("enter")+" "+theme.HelpDesc.Render("confirm")+"  "+
+			theme.HelpKey.Render("esc")+" "+theme.HelpDesc.Render("cancel"),
+	)
+	return result
+}
+
+// viewIoPicker renders the IO point picker
+func (ce *ConfigEditor) viewIoPicker(theme Theme) string {
+	pts := ce.filteredIoPoints()
+
+	titleLabel := "Select IO Inputs"
+	if ce.ioPickerFilter == "output" {
+		titleLabel = "Select IO Outputs"
+	}
+	title := theme.BoxTitle.Render(titleLabel)
+
+	var lines []string
+	lines = append(lines, title, "")
+
+	if len(pts) == 0 {
+		lines = append(lines, theme.Muted.Render("No IO points available — check IO Debug tab"))
+	}
+
+	nameWidth := 8
+	for _, pt := range pts {
+		if len(pt.Name) > nameWidth {
+			nameWidth = len(pt.Name)
+		}
+	}
+
+	for i, pt := range pts {
+		prefix := "  "
+		style := theme.ListItem
+		if i == ce.ioPickerCursor {
+			prefix = "> "
+			style = theme.ListItemSelected
+		}
+
+		stateIcon := theme.Off.Render(IconOff)
+		if pt.State {
+			stateIcon = theme.On.Render(IconOn)
+		}
+
+		healthIcon := theme.Healthy.Render(IconHealthy)
+		if !pt.Healthy {
+			healthIcon = theme.Faulty.Render(IconFaulty)
+		}
+
+		ioId := theme.Muted.Render(ioPointToId(pt))
+		line := prefix + theme.Primary.Render(padRight(pt.Name, nameWidth)) + " " + stateIcon + " " + healthIcon + "  " + ioId
+		lines = append(lines, style.Render(line))
+	}
+
+	content := strings.Join(lines, "\n")
+	result := theme.Box.Render(content)
+	result += "\n" + theme.Help.Render(
+		theme.HelpKey.Render("enter")+" "+theme.HelpDesc.Render("select")+"  "+
+			theme.HelpKey.Render("esc")+" "+theme.HelpDesc.Render("cancel"),
+	)
+	return result
+}
+
 // viewStatus renders the status bar below the form
 func (ce *ConfigEditor) viewStatus(theme Theme) string {
 	var parts []string
@@ -811,18 +1018,24 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 	case ConfigModeList:
 		parts := []string{
 			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("edit"),
-			theme.HelpKey.Render("a") + " " + theme.HelpDesc.Render("add"),
+			theme.HelpKey.Render("a") + " " + theme.HelpDesc.Render("add device"),
 			theme.HelpKey.Render("d") + " " + theme.HelpDesc.Render("delete"),
 		}
 		if ce.dirty {
 			parts = append(parts, theme.HelpKey.Render("ctrl+s")+" "+theme.HelpDesc.Render("save"))
 		}
 		return strings.Join(parts, "  ")
+	case ConfigModeAddSelector:
+		return theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("confirm") + "  " +
+			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
 	case ConfigModeEditLight, ConfigModeEditButton:
 		parts := []string{
 			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("edit"),
 			theme.HelpKey.Render("space") + " " + theme.HelpDesc.Render("toggle"),
 			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("back"),
+		}
+		if ce.fieldCursor == 1 {
+			parts = append(parts, theme.HelpKey.Render("p")+" "+theme.HelpDesc.Render("pick IO"))
 		}
 		if ce.mode == ConfigModeEditButton {
 			parts = append(parts,
@@ -834,6 +1047,9 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 			parts = append(parts, theme.HelpKey.Render("ctrl+s")+" "+theme.HelpDesc.Render("save"))
 		}
 		return strings.Join(parts, "  ")
+	case ConfigModeIoPicker:
+		return theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("select") + "  " +
+			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
 	}
 	return ""
 }
