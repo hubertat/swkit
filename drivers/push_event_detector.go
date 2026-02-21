@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/charmbracelet/log"
+	"github.com/hubertat/swkit/logging"
 )
 
 const (
@@ -23,8 +26,9 @@ const (
 // PushEventDetector detects button press patterns (single, double, triple, long press)
 // by polling a DigitalInput and running a state machine.
 type PushEventDetector struct {
-	name  string
-	input DigitalInput
+	name   string
+	input  DigitalInput
+	logger *log.Logger
 
 	// Configuration
 	pollInterval      time.Duration
@@ -60,10 +64,16 @@ type PushEventDetectorConfig struct {
 
 // NewPushEventDetector creates a new push event detector for the given input.
 // If config is nil, default timing values are used.
-func NewPushEventDetector(input DigitalInput, name string, config *PushEventDetectorConfig) *PushEventDetector {
+// If logger is nil, a default logger with PrefixPushEvt is created.
+func NewPushEventDetector(input DigitalInput, name string, config *PushEventDetectorConfig, logger *log.Logger) *PushEventDetector {
+	if logger == nil {
+		logger = logging.NewLogger(logging.PrefixPushEvt)
+	}
+
 	ped := &PushEventDetector{
 		name:              name,
 		input:             input,
+		logger:            logger,
 		pollInterval:      defaultPollInterval,
 		doubleClickWindow: defaultDoubleClickWindow,
 		longPressDuration: defaultLongPressDuration,
@@ -129,13 +139,12 @@ func (ped *PushEventDetector) Subscribe(eventTypes PushEvent, handler func(PushE
 	ped.subMutex.Lock()
 	defer ped.subMutex.Unlock()
 
-	// DEBUG
-	// fmt.Println("[D] {pushEventDetector} subscribing")
+	ped.logger.Debug("subscribing", "name", ped.name)
 
 	// Subscribe to each event type in the bitmask
 	for _, evt := range AllPushEvents() {
 		if eventTypes&evt == evt {
-			// fmt.Println("[D] {pushEventDetector} subscribing to ", evt.String())
+			ped.logger.Debug("subscribing to event", "event", evt.String())
 			ped.subscribers[evt] = append(ped.subscribers[evt], handler)
 		}
 	}
@@ -267,15 +276,13 @@ func (ped *PushEventDetector) emitClickEvent() {
 
 // emit sends an event to all subscribed handlers.
 func (ped *PushEventDetector) emit(event PushEvent) {
-	// DEBUG
-	// fmt.Printf("[D] {push e} \temitting \t[%s]\n", event.String())
+	ped.logger.Debug("emitting event", "event", event.String(), "name", ped.name)
 
 	ped.subMutex.RLock()
 	handlers, exists := ped.subscribers[event]
 	ped.subMutex.RUnlock()
 
-	// DEBUG
-	// fmt.Printf("[D] {push e} \t handlers exist:%t len:%d\n", exists, len(handlers))
+	ped.logger.Debug("handlers status", "exists", exists, "count", len(handlers))
 	if !exists || len(handlers) == 0 {
 		return
 	}

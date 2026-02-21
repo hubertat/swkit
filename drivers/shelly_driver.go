@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/hubertat/swkit/drivers/shelly"
 	"github.com/hubertat/swkit/drivers/shelly/components"
 	"github.com/hubertat/swkit/drivers/shelly/events"
+	"github.com/hubertat/swkit/logging"
 	"github.com/hubertat/swkit/mqtt"
 )
 
@@ -71,14 +71,13 @@ type ShellyIO struct {
 	done           chan bool
 	originUrl      *url.URL
 	unhealthyCount int
+	logger         *log.Logger
 }
 
 func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 	she.isReady = false
-	logger := log.NewWithOptions(os.Stderr, log.Options{
-		Prefix: "she🐢y",
-		Level:  log.GetLevel(),
-	})
+	she.logger = logging.NewLogger(logging.PrefixShelly)
+	logger := she.logger
 
 	devicesMap := make(map[string]bool)
 	for _, io := range ios {
@@ -665,4 +664,19 @@ func (sio *ShellyIO) PrintStatus() string {
 	}
 
 	return s
+}
+
+// Status returns a summary of the driver's current state
+func (sio *ShellyIO) Status() string {
+	readyCount := 0
+	for _, dev := range sio.devices {
+		if dev.IsReady() {
+			readyCount++
+		}
+	}
+	broker := sio.MqttBroker
+	if len(broker) > 25 {
+		broker = broker[:22] + "..."
+	}
+	return fmt.Sprintf("devices:%d/%d broker:%s", readyCount, len(sio.devices), broker)
 }

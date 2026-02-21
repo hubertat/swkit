@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/hubertat/swkit/logging"
 	"github.com/simonvetter/modbus"
 )
 
@@ -26,15 +27,18 @@ const wagoRegisterDICount = 0x1025 // Number of digital input bits
 
 // wagoModuleSpec defines the IO counts for a Wago module
 type wagoModuleSpec struct {
-	di int // digital input count
-	do int // digital output count
+	di          int // digital input count
+	do          int // digital output count
+	description string
 }
 
 // wagoModuleSpecs maps module part numbers to their IO specifications
 var wagoModuleSpecs = map[string]wagoModuleSpec{
-	"750-436": {di: 8, do: 0}, // 8DI 24V
-	"750-512": {di: 0, do: 2}, // 2DO relay
-	"750-611": {di: 2, do: 0}, // Power supply with 2DI
+	"750-436": {di: 8, do: 0, description: "8DI 24V (-)"},
+	"750-512": {di: 0, do: 2, description: "2DO relay"},                                        // 2DO relay
+	"750-611": {di: 2, do: 0, description: "Fused power (230VAC) supply with diagnostics 2DI"}, // Power supply with 2DI
+	"750-610": {di: 2, do: 0, description: "Fused power (24VDC) supply with diagnostics 2DI"},  // Power supply with 2DI
+	"750-530": {di: 0, do: 8, description: "8DO output 24VDC (+)"},
 }
 
 // WagoIO implements IoDriver for Wago 750-3xx modbus controllers
@@ -47,7 +51,9 @@ type WagoIO struct {
 	client  *modbus.ModbusClient
 	mu      sync.RWMutex
 	isReady bool
+	logger  *log.Logger
 
+	modules []wagoModuleSpec
 	inputs  []WagoDI
 	outputs []WagoDO
 	pushers []*PushEventDetector
@@ -56,11 +62,13 @@ type WagoIO struct {
 	totalDO int
 
 	// Local state cache
-	inputStates  []bool
-	outputStates []bool
-	lastPollOk   time.Time
-	pollTicker   *time.Ticker
-	stopPoll     chan struct{}
+	inputStates      []bool
+	outputStates     []bool
+	inputLastChanged []time.Time
+	outputLastChanged []time.Time
+	lastPollOk       time.Time
+	pollTicker       *time.Ticker
+	stopPoll         chan struct{}
 }
 
 // WagoDI implements DigitalInput for Wago digital inputs
@@ -87,6 +95,8 @@ func (wio *WagoIO) IsReady() bool {
 }
 
 func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
+	wio.logger = logging.NewLogger(logging.PrefixWago)
+
 	if wio.Address == "" {
 		return errors.New("wago driver: address is required")
 	}
@@ -99,12 +109,15 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 		wio.PollIntervalMs = wagoDefaultPollIntervalMs
 	}
 
+	wio.logger.Debug("setup starting", "address", wio.Address, "port", wio.Port)
+
 	// Calculate total DI and DO counts from installed modules
 	for _, modulePartNo := range wio.ModulesInstalled {
 		spec, ok := wagoModuleSpecs[modulePartNo]
 		if !ok {
 			return fmt.Errorf("wago driver: unknown module %s", modulePartNo)
 		}
+		wio.modules = append(wio.modules, spec)
 		wio.totalDI += spec.di
 		wio.totalDO += spec.do
 	}
@@ -112,6 +125,8 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 	// Initialize state caches
 	wio.inputStates = make([]bool, wio.totalDI)
 	wio.outputStates = make([]bool, wio.totalDO)
+	wio.inputLastChanged = make([]time.Time, wio.totalDI)
+	wio.outputLastChanged = make([]time.Time, wio.totalDO)
 
 	// Create modbus client
 	connString := fmt.Sprintf("tcp://%s:%d", wio.Address, wio.Port)
@@ -147,13 +162,20 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 			return fmt.Errorf("wago driver: driver name mismatch, expected %s, got %s", wio.String(), driver)
 		}
 
-		index, err := strconv.Atoi(ioId)
+		moduleNo, relIndex, err := wio.parseIoId(ioId)
 		if err != nil {
 			return errors.Join(err, fmt.Errorf("wago driver: failed to parse io index: %s", ioId))
 		}
 
 		switch ioType {
 		case IoTypeDigitalInput:
+			index := relIndex
+			if moduleNo != 0 {
+				index = wio.getInGlobalIndex(moduleNo, relIndex)
+				if index < 0 {
+					return fmt.Errorf("wago driver: failed to get global input index (module: %d, rel index: %d)", moduleNo, relIndex)
+				}
+			}
 			if index < 0 || index >= wio.totalDI {
 				return fmt.Errorf("wago driver: digital input index %d out of range (0-%d)", index, wio.totalDI-1)
 			}
@@ -162,16 +184,14 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 				index:  uint16(index),
 			})
 
-		case IoTypeDigitalOutput:
-			if index < 0 || index >= wio.totalDO {
-				return fmt.Errorf("wago driver: digital output index %d out of range (0-%d)", index, wio.totalDO-1)
-			}
-			wio.outputs = append(wio.outputs, WagoDO{
-				driver: wio,
-				index:  uint16(index),
-			})
-
 		case IoTypePushEventEmitter:
+			index := relIndex
+			if moduleNo != 0 {
+				index = wio.getInGlobalIndex(moduleNo, relIndex)
+				if index < 0 {
+					return fmt.Errorf("wago driver: failed to get global input index (module: %d, rel index: %d)", moduleNo, relIndex)
+				}
+			}
 			if index < 0 || index >= wio.totalDI {
 				return fmt.Errorf("wago driver: push event emitter (di) index %d out of range (0-%d)", index, wio.totalDI-1)
 			}
@@ -179,9 +199,24 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 				driver: wio,
 				index:  uint16(index),
 			}
-
 			wio.inputs = append(wio.inputs, dIn)
-			wio.pushers = append(wio.pushers, NewPushEventDetector(&dIn, fmt.Sprintf("%d", index), nil))
+			wio.pushers = append(wio.pushers, NewPushEventDetector(&wio.inputs[len(wio.inputs)-1], fmt.Sprintf("%d", index), nil, wio.logger))
+
+		case IoTypeDigitalOutput:
+			index := relIndex
+			if moduleNo != 0 {
+				index = wio.getOutGlobalIndex(moduleNo, relIndex)
+				if index < 0 {
+					return fmt.Errorf("wago driver: failed to get global output index (module: %d, rel index: %d)", moduleNo, relIndex)
+				}
+			}
+			if index < 0 || index >= wio.totalDO {
+				return fmt.Errorf("wago driver: digital output index %d out of range (0-%d)", index, wio.totalDO-1)
+			}
+			wio.outputs = append(wio.outputs, WagoDO{
+				driver: wio,
+				index:  uint16(index),
+			})
 
 		default:
 			return fmt.Errorf("wago driver: unsupported io type: %s", ioType.String())
@@ -205,6 +240,7 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 	}
 
 	wio.isReady = true
+	wio.logger.Info("setup complete", "totalDI", wio.totalDI, "totalDO", wio.totalDO)
 	return nil
 }
 
@@ -321,8 +357,34 @@ func (wio *WagoIO) refreshStates() error {
 		}
 	}
 
+	// Debug log active inputs
+	for ix, in := range inputs {
+		if in {
+			wio.logger.Debug("input is ON", "index", ix)
+		}
+	}
+
+	// Lock only for copying to state slices
+	now := time.Now()
+	wio.mu.Lock()
+	if inputs != nil {
+		for i, v := range inputs {
+			if i < len(wio.inputStates) && wio.inputStates[i] != v {
+				wio.inputLastChanged[i] = now
+			}
+		}
+		copy(wio.inputStates, inputs)
+	}
+	if outputs != nil {
+		for i, v := range outputs {
+			if i < len(wio.outputStates) && wio.outputStates[i] != v {
+				wio.outputLastChanged[i] = now
+			}
+		}
+		copy(wio.outputStates, outputs)
+	}
 	if errs == nil {
-		wio.lastPollOk = time.Now()
+		wio.lastPollOk = now
 	}
 
 	return errs
@@ -330,6 +392,94 @@ func (wio *WagoIO) refreshStates() error {
 
 func (wio *WagoIO) isStateStale() bool {
 	return time.Since(wio.lastPollOk) > wagoStaleThreshold
+}
+
+// parseIoId parses an IO ID string and returns an error if it's invalid.
+// it can parse different formats and response accordingly
+// - integer index of io (int)
+// - module number and relative io number for specific module (int, int): 2:1
+// - module number and relative io number for specific module (int, string): 2:a, 2:A
+func (wio *WagoIO) parseIoId(id string) (module int, index int, err error) {
+	intIndex, err := strconv.Atoi(id)
+	if err == nil {
+		// It is integer index, no module no provided
+		return 0, intIndex, nil
+	}
+
+	idParts := strings.Split(id, ":")
+	if len(idParts) == 2 {
+		modulePart := strings.ToLower(idParts[0])
+		indexPart := strings.ToLower(idParts[1])
+		moduleIndex, err := strconv.Atoi(modulePart)
+		if err == nil && moduleIndex > 0 {
+			// moduleIndex is integer - we got it
+		}
+		if moduleIndex == 0 {
+			// moduleIndex is not integer, try to parse letter (a to z)
+			moduleIndex = int(modulePart[0] - 'a' + 1)
+			if moduleIndex < 1 || moduleIndex > 26 {
+				return 0, 0, fmt.Errorf("invalid module number: %s", modulePart)
+			}
+		}
+		// same for indexPart
+		indexIndex, err := strconv.Atoi(indexPart)
+		if err == nil && indexIndex > 0 {
+			// indexIndex is integer - we got it
+		}
+		if indexIndex == 0 {
+			// indexIndex is not integer, try to parse letter (a to z)
+			indexIndex = int(indexPart[0] - 'a' + 1)
+			if indexIndex < 1 || indexIndex > 26 {
+				return 0, 0, fmt.Errorf("invalid io number: %s", indexPart)
+			}
+		}
+		return moduleIndex, indexIndex, nil
+	}
+
+	// invalid io id format
+	return 0, 0, fmt.Errorf("invalid io id format: %s", id)
+}
+
+func (wio *WagoIO) getInGlobalIndex(moduleNo int, ioIndex int) int {
+	if moduleNo > len(wio.modules) {
+		return -1
+	}
+	module := wio.modules[moduleNo-1]
+	if ioIndex > module.di {
+		return -1
+	}
+
+	// Count all inputs until we get to our moduleNo and ioIndex (our values are 1 based!)
+	inCount := 0
+	for ix, m := range wio.modules {
+		if ix+1 == moduleNo {
+			return inCount + ioIndex - 1
+		}
+		inCount += m.di
+	}
+
+	return -1
+}
+
+func (wio *WagoIO) getOutGlobalIndex(moduleNo int, ioIndex int) int {
+	if moduleNo > len(wio.modules) {
+		return -1
+	}
+	module := wio.modules[moduleNo-1]
+	if ioIndex > module.do {
+		return -1
+	}
+
+	// Count all outputs until we get to our moduleNo and ioIndex (our values are 1 based!)
+	outCount := 0
+	for ix, m := range wio.modules {
+		if ix+1 == moduleNo {
+			return outCount + ioIndex - 1
+		}
+		outCount += m.do
+	}
+
+	return -1
 }
 
 func (wio *WagoIO) Close() error {
@@ -361,30 +511,66 @@ func (wio *WagoIO) Close() error {
 	return wio.client.Close()
 }
 
+// GetDigitalInput retrieves a digital input by its ID.
+// use naming patter
 func (wio *WagoIO) GetDigitalInput(id string) (DigitalInput, error) {
-	index, err := strconv.Atoi(id)
+	moduleNo, index, err := wio.parseIoId(id)
 	if err != nil {
 		return nil, errors.Join(err, fmt.Errorf("wago driver: failed to parse input id: %s", id))
 	}
 
-	for ix := range wio.inputs {
-		if wio.inputs[ix].index == uint16(index) {
-			return &wio.inputs[ix], nil
+	if moduleNo == 0 {
+		for ix := range wio.inputs {
+			if wio.inputs[ix].index == uint16(index) {
+				return &wio.inputs[ix], nil
+			}
 		}
+	} else {
+		if moduleNo > len(wio.modules) {
+			return nil, fmt.Errorf("wago driver: digital input not found, module %d not found", moduleNo)
+		}
+		module := wio.modules[moduleNo-1]
+		if index > module.di {
+			return nil, fmt.Errorf("wago driver: digital input %d not found, selected module (%d) has %d inputs", index, moduleNo, module.di)
+		}
+		globIndex := wio.getInGlobalIndex(moduleNo, index)
+		if globIndex < 0 {
+			return nil, fmt.Errorf("wago driver: digital input %d not found, failed to get global index", index)
+		}
+		return &wio.inputs[globIndex], nil
 	}
 
 	return nil, fmt.Errorf("wago driver: digital input %d not found", index)
 }
 
 func (wio *WagoIO) GetDigitalOutput(id string) (DigitalOutput, error) {
-	index, err := strconv.Atoi(id)
+	moduleNo, index, err := wio.parseIoId(id)
 	if err != nil {
 		return nil, errors.Join(err, fmt.Errorf("wago driver: failed to parse output id: %s", id))
 	}
 
-	for ix := range wio.outputs {
-		if wio.outputs[ix].index == uint16(index) {
-			return &wio.outputs[ix], nil
+	if moduleNo == 0 {
+		for ix := range wio.outputs {
+			if wio.outputs[ix].index == uint16(index) {
+				return &wio.outputs[ix], nil
+			}
+		}
+	} else {
+		if moduleNo > len(wio.modules) {
+			return nil, fmt.Errorf("wago driver: digital output not found, module %d not found", moduleNo)
+		}
+		module := wio.modules[moduleNo-1]
+		if index > module.do {
+			return nil, fmt.Errorf("wago driver: digital output %d not found, selected module (%d) has %d outputs", index, moduleNo, module.do)
+		}
+		globIndex := wio.getOutGlobalIndex(moduleNo, index)
+		if globIndex < 0 {
+			return nil, fmt.Errorf("wago driver: digital output %d not found, failed to get global index", index)
+		}
+		for ix := range wio.outputs {
+			if wio.outputs[ix].index == uint16(globIndex) {
+				return &wio.outputs[ix], nil
+			}
 		}
 	}
 
@@ -400,18 +586,36 @@ func (wio *WagoIO) GetRgbwOutput(id string) (RgbwOutput, error) {
 }
 
 func (wio *WagoIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
-	index, err := strconv.Atoi(id)
+	moduleNo, index, err := wio.parseIoId(id)
 	if err != nil {
 		return nil, errors.Join(err, fmt.Errorf("wago driver: failed to parse push event emitter id: %s", id))
 	}
 
+	// Convert to global index if module specified
+	globIndex := index
+	if moduleNo != 0 {
+		if moduleNo > len(wio.modules) {
+			return nil, fmt.Errorf("wago driver: push event emitter not found, module %d not found", moduleNo)
+		}
+		module := wio.modules[moduleNo-1]
+		if index > module.di {
+			return nil, fmt.Errorf("wago driver: push event emitter %d not found, selected module (%d) has %d inputs", index, moduleNo, module.di)
+		}
+		globIndex = wio.getInGlobalIndex(moduleNo, index)
+		if globIndex < 0 {
+			return nil, fmt.Errorf("wago driver: push event emitter %d not found, failed to get global index", index)
+		}
+	}
+
+	// Pushers are named by their global index
+	globIndexStr := fmt.Sprintf("%d", globIndex)
 	for ix := range wio.pushers {
-		if strings.EqualFold(wio.pushers[ix].name, id) {
+		if strings.EqualFold(wio.pushers[ix].name, globIndexStr) {
 			return wio.pushers[ix], nil
 		}
 	}
 
-	return nil, fmt.Errorf("wago driver: push event emitter %d not found", index)
+	return nil, fmt.Errorf("wago driver: push event emitter %d (global index %d) not found", index, globIndex)
 }
 
 // WagoDI methods
@@ -492,4 +696,88 @@ func (wdo *WagoDO) IsHealthy() bool {
 	wdo.driver.mu.RLock()
 	defer wdo.driver.mu.RUnlock()
 	return wdo.driver.isReady && !wdo.driver.isStateStale()
+}
+
+// GetIoDebugSnapshot returns a snapshot of all IO points for debug display
+func (wio *WagoIO) GetIoDebugSnapshot() IoDebugSnapshot {
+	wio.mu.RLock()
+	defer wio.mu.RUnlock()
+
+	healthy := wio.isReady && !wio.isStateStale()
+	var points []IoPointState
+
+	diIndex := 0
+	doIndex := 0
+	for mIdx, mod := range wio.modules {
+		moduleNum := mIdx + 1
+
+		for i := 0; i < mod.di; i++ {
+			state := false
+			var lastChanged time.Time
+			if diIndex < len(wio.inputStates) {
+				state = wio.inputStates[diIndex]
+				lastChanged = wio.inputLastChanged[diIndex]
+			}
+			points = append(points, IoPointState{
+				Index:       diIndex,
+				Name:        fmt.Sprintf("M%d:DI%d", moduleNum, i+1),
+				Type:        IoTypeDigitalInput,
+				State:       state,
+				Healthy:     healthy,
+				LastChanged: lastChanged,
+			})
+			diIndex++
+		}
+
+		for i := 0; i < mod.do; i++ {
+			state := false
+			var lastChanged time.Time
+			if doIndex < len(wio.outputStates) {
+				state = wio.outputStates[doIndex]
+				lastChanged = wio.outputLastChanged[doIndex]
+			}
+			points = append(points, IoPointState{
+				Index:       doIndex,
+				Name:        fmt.Sprintf("M%d:DO%d", moduleNum, i+1),
+				Type:        IoTypeDigitalOutput,
+				State:       state,
+				Healthy:     healthy,
+				LastChanged: lastChanged,
+			})
+			doIndex++
+		}
+	}
+
+	return IoDebugSnapshot{Points: points}
+}
+
+// ToggleOutput toggles a digital output by its global index
+func (wio *WagoIO) ToggleOutput(index int) error {
+	wio.mu.Lock()
+	defer wio.mu.Unlock()
+
+	if !wio.isReady {
+		return errors.New("wago driver: not ready")
+	}
+
+	if index < 0 || index >= wio.totalDO {
+		return fmt.Errorf("wago driver: output index %d out of range (0-%d)", index, wio.totalDO-1)
+	}
+
+	newState := !wio.outputStates[index]
+	err := wio.client.WriteCoil(uint16(index), newState)
+	if err != nil {
+		return fmt.Errorf("wago driver: failed to toggle output %d: %w", index, err)
+	}
+
+	return nil
+}
+
+// Status returns a summary of the driver's current state
+func (wio *WagoIO) Status() string {
+	modules := strings.Join(wio.ModulesInstalled, ",")
+	if len(modules) > 30 {
+		modules = modules[:27] + "..."
+	}
+	return fmt.Sprintf("%s:%d DI:%d DO:%d [%s]", wio.Address, wio.Port, wio.totalDI, wio.totalDO, modules)
 }

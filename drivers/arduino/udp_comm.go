@@ -3,8 +3,10 @@ package arduino
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net"
+
+	"github.com/charmbracelet/log"
+	"github.com/hubertat/swkit/logging"
 )
 
 const packetSizeLimit uint = 512
@@ -24,10 +26,13 @@ type rpixelDevice struct {
 type UdpComm struct {
 	devices []remoteDevice
 	rpixels []rpixelDevice
+	logger  *log.Logger
 }
 
 func NewUdpComm() *UdpComm {
-	return &UdpComm{}
+	return &UdpComm{
+		logger: logging.NewLogger(logging.PrefixArduino),
+	}
 }
 
 func (uc *UdpComm) AddDevice(arduinoPro *ArduinoPro) error {
@@ -49,7 +54,7 @@ func (uc *UdpComm) AddDevice(arduinoPro *ArduinoPro) error {
 		return errors.Join(errors.New("failed to dial UDP connection"), err)
 	}
 
-	log.Println("[D] connection OK, adding to slice and will listen on: ", conn.LocalAddr().String())
+	uc.logger.Debug("connection OK, adding to slice", "localAddr", conn.LocalAddr().String())
 
 	uc.devices = append(uc.devices, remoteDevice{
 		arduinoPro,
@@ -79,7 +84,7 @@ func (uc *UdpComm) AddPixel(rpi *RPixel) error {
 		return errors.Join(errors.New("failed to dial UDP connection"), err)
 	}
 
-	log.Println("[D] connection OK, adding to slice and will listen on: ", conn.LocalAddr().String())
+	uc.logger.Debug("connection OK, adding pixel", "localAddr", conn.LocalAddr().String())
 
 	uc.rpixels = append(uc.rpixels, rpixelDevice{
 		rpi,
@@ -147,7 +152,7 @@ func (uc *UdpComm) SendConfigs() error {
 		if writeErr != nil {
 			errs = errors.Join(errs, writeErr)
 		} else {
-			log.Println("[D] device " + dev.ArduinoPro.address.String() + " config sent OK, waiting for response")
+			uc.logger.Debug("device config sent OK, waiting for response", "device", dev.ArduinoPro.address.String())
 			dev.ready = true
 			uc.devices[ix] = dev
 		}
@@ -163,20 +168,20 @@ func (uc *UdpComm) ListenLoop() {
 				buf := make([]byte, packetSizeLimit)
 				n, addr, err := dev.Conn.ReadFromUDP(buf)
 				if err != nil {
-					log.Println("[E] failed to read from UDP connection for " + dev.ArduinoPro.address.String())
+					uc.logger.Error("failed to read from UDP connection", "device", dev.ArduinoPro.address.String())
 					continue
 				}
 
-				log.Println("[D] received", n, "bytes from", addr, ":", buf[:n])
+				uc.logger.Debug("received data", "bytes", n, "from", addr, "data", buf[:n])
 				packet, err := ParsePacket(buf[:n])
 				if err != nil {
-					log.Println("failed to parse packet: ", err)
+					uc.logger.Warn("failed to parse packet", "err", err)
 				} else {
 					err = dev.ArduinoPro.ReadStatusPacket(packet)
 					if err != nil {
-						log.Println("[E] failed to read status packet for "+dev.ArduinoPro.address.String(), err)
+						uc.logger.Error("failed to read status packet", "device", dev.ArduinoPro.address.String(), "err", err)
 					} else {
-						log.Println("[D] status packet read OK for " + dev.ArduinoPro.address.String())
+						uc.logger.Debug("status packet read OK", "device", dev.ArduinoPro.address.String())
 					}
 				}
 			}

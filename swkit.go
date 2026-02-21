@@ -5,11 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/signal"
-	"syscall"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
 
 	dnslog "github.com/brutella/dnssd/log"
@@ -45,6 +44,9 @@ type SwKit struct {
 	HkAddress   string
 	HkDebug     bool
 
+	SshServer *SshServerConfig `json:",omitempty"`
+	Agent     *AgentConfig     `json:",omitempty"`
+
 	Mcp23017   *drivers.McpIO
 	Gpio       *drivers.GpIO
 	Grenton    *drivers.GrentonIO
@@ -56,6 +58,19 @@ type SwKit struct {
 	mqttClient *mqtt.MqttClient
 	ticker     *time.Ticker
 	logger     *log.Logger
+}
+
+// SshServerConfig configures the SSH TUI server
+type SshServerConfig struct {
+	Enabled     bool
+	Port        int    // default 2222
+	HostKeyPath string // default ".ssh/swkit_host_key"
+}
+
+// AgentConfig configures the AI chat agent
+type AgentConfig struct {
+	Model        string // default: claude-sonnet-4-5-20250514
+	SystemPrompt string // optional custom system prompt
 }
 
 type Device interface {
@@ -236,7 +251,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			return errors.Join(err, fmt.Errorf("failed to get digital output for light %s", light.Name))
 		}
 
-		sw.lights = append(sw.lights, NewLight(light, dOut))
+		sw.lights = append(sw.lights, NewLight(light, dOut, logger))
 	}
 
 	for _, outlet := range sw.Outlets {
@@ -250,7 +265,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			return errors.Join(err, fmt.Errorf("failed to get digital output for outlet %s", outlet.Name))
 		}
 
-		sw.outlets = append(sw.outlets, NewOutlet(outlet, dOut))
+		sw.outlets = append(sw.outlets, NewOutlet(outlet, dOut, logger))
 	}
 
 	for _, coloLight := range sw.ColorLights {
@@ -274,7 +289,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			return errors.Join(err, fmt.Errorf("failed to get rgbw for color light %s", coloLight.Name))
 		}
 
-		sw.colorLights = append(sw.colorLights, NewColorLight(coloLight, dOut, rgbw))
+		sw.colorLights = append(sw.colorLights, NewColorLight(coloLight, dOut, rgbw, logger))
 	}
 
 	for _, button := range sw.Buttons {
@@ -313,7 +328,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			}
 		}
 
-		sw.buttons = append(sw.buttons, NewButton(button, eventEmitter, ctrlDevs))
+		sw.buttons = append(sw.buttons, NewButton(button, eventEmitter, ctrlDevs, logger))
 	}
 
 	return nil
@@ -326,7 +341,7 @@ func (sw *SwKit) getDriverAndNameForIo(ioIdString string, expectedType drivers.I
 	}
 
 	if outType != expectedType {
-		return "", nil, fmt.Errorf("invalid io type for digital output: %s, wanted: %d, got: %s", ioIdString, expectedType.String(), outType.String())
+		return "", nil, fmt.Errorf("invalid io type for digital output: %s, wanted: %s, got: %s", ioIdString, expectedType.String(), outType.String())
 	}
 
 	driver, driverPresent := sw.ioDrivers[driverName]
@@ -337,21 +352,22 @@ func (sw *SwKit) getDriverAndNameForIo(ioIdString string, expectedType drivers.I
 	return ioName, driver, nil
 }
 
-func (sw *SwKit) StartTicker(interval time.Duration, forceEachCount int) {
-
+func (sw *SwKit) StartTicker(ctx context.Context, interval time.Duration, forceEachCount int) {
 	counter := 0
 	sw.ticker = time.NewTicker(interval)
+	defer sw.ticker.Stop()
 
 	for {
 		select {
+		case <-ctx.Done():
+			sw.logger.Info("ticker stopped")
+			return
 		case <-sw.ticker.C:
 			force := counter%forceEachCount == 0
-			{
-				for _, io := range sw.getDevices() {
-					err := io.Sync(force)
-					if err != nil {
-						log.Printf("Received error(s) from syncing io:\n%v", err)
-					}
+			for _, io := range sw.getDevices() {
+				err := io.Sync(force)
+				if err != nil {
+					sw.logger.Error("received error(s) from syncing io", "err", err)
 				}
 			}
 			counter++
@@ -373,19 +389,70 @@ func (sw *SwKit) Close() (err error) {
 }
 
 func (sw *SwKit) PrintIoStatus(writer io.Writer) {
-	fmt.Fprintln(writer)
-	fmt.Fprintln(writer, "=== active io drivers ===")
-	for driverName, _ := range sw.ioDrivers {
-		fmt.Fprintln(writer, "________")
-		fmt.Fprintf(writer, "| driver: %s\n", driverName)
-		fmt.Fprintln(writer)
-		fmt.Fprintln(writer, "--------")
+	// Define styles
+	headerStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("86")).
+		MarginBottom(1)
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1)
+
+	driverNameStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("39"))
+
+	readyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("42")).
+		Bold(true)
+
+	notReadyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("196")).
+		Bold(true)
+
+	// Build content
+	var lines []string
+	for driverName, driver := range sw.ioDrivers {
+		statusText := readyStyle.Render("Ready")
+		if !driver.IsReady() {
+			statusText = notReadyStyle.Render("Not Ready")
+		}
+
+		// Get status info if available
+		statusInfo := ""
+		if statusProvider, ok := driver.(DriverStatusProvider); ok {
+			statusInfo = statusProvider.Status()
+			if statusInfo != "" {
+				statusInfo = "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(statusInfo)
+			}
+		}
+
+		line := fmt.Sprintf("%s  %s%s",
+			driverNameStyle.Render(fmt.Sprintf("%-10s", driverName)),
+			statusText,
+			statusInfo,
+		)
+		lines = append(lines, line)
 	}
-	fmt.Fprintln(writer, "-----------------------------")
+
+	header := headerStyle.Render("Active IO Drivers")
+	content := strings.Join(lines, "\n")
+	box := boxStyle.Render(content)
+
+	fmt.Fprintln(writer)
+	fmt.Fprintln(writer, header)
+	fmt.Fprintln(writer, box)
 	fmt.Fprintln(writer)
 }
 
-func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error {
+// DriverStatusProvider is an optional interface for drivers to provide status info
+type DriverStatusProvider interface {
+	Status() string
+}
+
+func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) (cancel func(), errCh <-chan error, err error) {
 	hkName := sw.Name
 	if len(hkName) < 1 {
 		hkName = homeKitBridgeName
@@ -414,7 +481,7 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 	}
 	hkServer, err := hap.NewServer(store, bridge.A, acc...)
 	if err != nil {
-		return errors.Join(err, errors.New("failed to create HomeKit server"))
+		return nil, nil, errors.Join(err, errors.New("failed to create HomeKit server"))
 	}
 	hkServer.Pin = sw.HkPin
 	if len(sw.HkAddress) > 0 {
@@ -426,18 +493,13 @@ func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) error
 		dnslog.Debug.Enable()
 	}
 
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt)
-	signal.Notify(c, syscall.SIGTERM)
+	hkCtx, hkCancel := context.WithCancel(ctx)
+	resultCh := make(chan error, 1)
 
-	ctx, cancel := context.WithCancel(ctx)
 	go func() {
-		<-c
-		// Stop delivering signals.
-		signal.Stop(c)
-		// Cancel the context to stop the server.
-		cancel()
+		resultCh <- hkServer.ListenAndServe(hkCtx)
+		close(resultCh)
 	}()
 
-	return hkServer.ListenAndServe(ctx)
+	return hkCancel, resultCh, nil
 }

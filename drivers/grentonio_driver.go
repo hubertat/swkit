@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/log"
+	"github.com/hubertat/swkit/logging"
 	"github.com/pkg/errors"
 )
 
@@ -130,6 +132,7 @@ type GrentonIO struct {
 	outputs         []*GrentonOutput
 	gateLock        *sync.Mutex
 	objectFreshness time.Duration
+	logger          *log.Logger
 }
 
 func (gio *GrentonIO) getQueryBody() (b []byte) {
@@ -275,8 +278,11 @@ func (gio *GrentonIO) setState(state bool, output *GrentonOutput) (err error) {
 }
 
 func (gio *GrentonIO) Setup(ctx context.Context, ios []string) (err error) {
+	gio.logger = logging.NewLogger(logging.PrefixGrenton)
 	gio.ready = false
 	gio.gateLock = &sync.Mutex{}
+
+	gio.logger.Debug("setup starting", "gateAddress", gio.GateAddress)
 
 	gio.objectFreshness = grentonObjectFreshness
 	if len(gio.ObjectFreshnessDuration) > 0 {
@@ -389,4 +395,13 @@ func (gio *GrentonIO) GetAllIo() (inputs []string, outputs []string) {
 	}
 
 	return
+}
+
+// Status returns a summary of the driver's current state
+func (gio *GrentonIO) Status() string {
+	gate := gio.GateAddress
+	if len(gate) > 25 {
+		gate = gate[:22] + "..."
+	}
+	return fmt.Sprintf("outputs:%d gate:%s", len(gio.outputs), gate)
 }

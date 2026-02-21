@@ -8,6 +8,7 @@ import (
 	"github.com/brutella/hap/accessory"
 	"github.com/brutella/hap/characteristic"
 	"github.com/brutella/hap/service"
+	"github.com/charmbracelet/log"
 	drivers "github.com/hubertat/swkit/drivers"
 )
 
@@ -28,6 +29,7 @@ type Button struct {
 	controlThis []ControlDevice
 
 	emitter drivers.PushEventEmitter
+	logger  *log.Logger
 
 	hk    *accessory.A
 	fault *characteristic.StatusFault
@@ -79,12 +81,13 @@ func ParseControlDeviceString(s string) (e drivers.PushEvent, action string, dev
 	return
 }
 
-func NewButton(config ButtonConfig, emitter drivers.PushEventEmitter, control []ControlDevice) *Button {
+func NewButton(config ButtonConfig, emitter drivers.PushEventEmitter, control []ControlDevice, logger *log.Logger) *Button {
 	b := &Button{
 		name:           config.Name,
 		disableHomekit: config.DisableHomekit,
 		controlThis:    control,
 		emitter:        emitter,
+		logger:         logger,
 	}
 
 	var evs drivers.PushEvent
@@ -99,6 +102,7 @@ func NewButton(config ButtonConfig, emitter drivers.PushEventEmitter, control []
 		evs |= c.e
 	}
 
+	logger.Debug("button created", "name", config.Name, "emitter", emitter.String(), "controlDevices", len(control))
 	emitter.Subscribe(evs, b.HandlePushEvent)
 
 	return b
@@ -109,6 +113,8 @@ func (bu *Button) Name() string {
 }
 
 func (bu *Button) HandlePushEvent(e drivers.PushEvent) {
+	bu.logger.Debug("received push event", "button", bu.name, "event", e.String())
+
 	if !bu.disableHomekit {
 		switch e {
 		case drivers.PushEventSinglePress:
@@ -122,6 +128,11 @@ func (bu *Button) HandlePushEvent(e drivers.PushEvent) {
 
 	for _, ctrl := range bu.controlThis {
 		if ctrl.e == e {
+			action := ctrl.action
+			if action == "" {
+				action = "toggle"
+			}
+			bu.logger.Debug("executing control action", "button", bu.name, "device", ctrl.dev.Name(), "action", action)
 			switch ctrl.action {
 			case "on":
 				ctrl.dev.SetValue(true)
@@ -142,6 +153,7 @@ func (bu *Button) GetUniqueId() uint64 {
 
 func (bu *Button) InitHk() *accessory.A {
 	if bu.disableHomekit {
+		bu.logger.Debug("homekit disabled for button", "name", bu.name)
 		return nil
 	}
 
@@ -157,6 +169,7 @@ func (bu *Button) InitHk() *accessory.A {
 	bu.ss.AddC(bu.fault.C)
 	bu.hk.AddS(bu.ss.S)
 
+	bu.logger.Debug("homekit accessory initialized", "button", bu.name)
 	return bu.hk
 }
 

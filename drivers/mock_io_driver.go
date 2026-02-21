@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/charmbracelet/log"
+	"github.com/hubertat/swkit/logging"
 	"github.com/hubertat/swkit/mqtt"
 )
 
@@ -64,15 +66,19 @@ type MockIoDriver struct {
 	inputs  []*MockInput
 	outputs []*MockOutput
 	ready   bool
+	logger  *log.Logger
 }
 
 func (md *MockIoDriver) Setup(ctx context.Context, ios []string) (err error) {
+	md.logger = logging.NewLogger(logging.PrefixMock)
+
 	// For mock driver, treat all ios as both inputs and outputs for testing
 	for _, io := range ios {
 		md.inputs = append(md.inputs, &MockInput{id: io})
 		md.outputs = append(md.outputs, &MockOutput{id: io})
 	}
 	md.ready = true
+	md.logger.Debug("setup complete", "ioCount", len(ios))
 	return nil
 }
 
@@ -142,4 +148,9 @@ func (md *MockIoDriver) MonitorStateChanges(writer io.Writer) {
 		out.writeTo = writer
 		out.writeStateChange = true
 	}
+}
+
+// Status returns a summary of the driver's current state
+func (md *MockIoDriver) Status() string {
+	return fmt.Sprintf("in:%d out:%d (mock)", len(md.inputs), len(md.outputs))
 }

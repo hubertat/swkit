@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type PushEvent uint16
@@ -182,6 +183,33 @@ type RgbwOutput interface {
 	Set(uint8, uint8, uint8, uint8) error
 	String() string
 	IsHealthy() bool
+}
+
+// IoPointState represents the state of a single IO point for debug display
+type IoPointState struct {
+	Index       int
+	Name        string // e.g. "M1:DI3" (Module 1, Digital Input 3)
+	Type        IoType
+	State       bool
+	Healthy     bool
+	LastChanged time.Time // zero value if never changed since startup
+}
+
+// IoDebugSnapshot contains the state of all IO points from a driver
+type IoDebugSnapshot struct {
+	Points []IoPointState
+}
+
+// IoDebugProvider is an optional interface for drivers that can provide
+// real-time debug snapshots of all their IO points
+type IoDebugProvider interface {
+	GetIoDebugSnapshot() IoDebugSnapshot
+}
+
+// IoOutputToggler is an optional interface for drivers that support
+// toggling a digital output by its global index
+type IoOutputToggler interface {
+	ToggleOutput(index int) error
 }
 
 func ResolveIoIdString(ioId string) (driver string, ioType IoType, name string, err error) {
