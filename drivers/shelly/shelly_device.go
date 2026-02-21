@@ -29,8 +29,6 @@ type ShellyDevice struct {
 	lastRefreshed time.Time
 
 	messenger mqtt.Messenger
-
-	done chan bool
 }
 
 func NewShellyDevice(id string, messenger mqtt.Messenger) (*ShellyDevice, error) {
@@ -44,7 +42,6 @@ func NewShellyDevice(id string, messenger mqtt.Messenger) (*ShellyDevice, error)
 	return &ShellyDevice{
 		Id:        id,
 		messenger: messenger,
-		done:      make(chan bool),
 	}, nil
 }
 
@@ -140,8 +137,10 @@ func (sd *ShellyDevice) GetInputState(id int) (bool, error) {
 	if len(sd.Inputs) <= id {
 		return false, errors.New("input id out of range")
 	}
-	var state bool
-	state = *sd.Inputs[id].Status.State
+	if sd.Inputs[id].Status.State == nil {
+		return false, fmt.Errorf("input %d state not available (analog or not yet received)", id)
+	}
+	state := *sd.Inputs[id].Status.State
 	return state, sd.HealthCheck()
 }
 
@@ -152,14 +151,20 @@ func (sd *ShellyDevice) GetOutputState(id int) (bool, error) {
 	if len(sd.Switches) <= id {
 		return false, errors.New("switch id out of range")
 	}
+	if sd.Switches[id].Status.Output == nil {
+		return false, fmt.Errorf("switch %d output state not yet available", id)
+	}
 	state := *sd.Switches[id].Status.Output
 	return state, sd.HealthCheck()
 }
 
 func (sd *ShellyDevice) FillStatus(status GetStatus) error {
 	switches := status.GetSwitches()
+	// Reject if response contains fewer switches than previously known — likely partial/corrupted data.
+	// Note: multi-profile devices changing profiles could legitimately change switch count, which would
+	// permanently block FillStatus until restart. (from claude code)
 	if len(sd.Switches) > len(switches) {
-		return fmt.Errorf("FillStatus failed: tried to fill %d switched from GetStatus into existing Switches array len = %d", len(switches), len(sd.Switches))
+		return fmt.Errorf("rejecting GetStatus response: device %s has %d known switches but response contains only %d (partial or corrupted data?)", sd.Id, len(sd.Switches), len(switches))
 	}
 
 	sd.Switches = make([]components.Switch, len(switches))
@@ -215,10 +220,16 @@ func (sd *ShellyDevice) UpdateFromStatus(status GetStatus) error {
 	}
 
 	if wifiStatus := status.GetWifi(); wifiStatus != nil {
+		if sd.Wifi == nil {
+			sd.Wifi = &components.Wifi{}
+		}
 		sd.Wifi.Status = *wifiStatus
 	}
 
 	if ethernetStatus := status.GetEthernet(); ethernetStatus != nil {
+		if sd.Ethernet == nil {
+			sd.Ethernet = &components.Ethernet{}
+		}
 		sd.Ethernet.Status = *ethernetStatus
 	}
 
@@ -226,9 +237,7 @@ func (sd *ShellyDevice) UpdateFromStatus(status GetStatus) error {
 	return nil
 }
 
-func (sd *ShellyDevice) Close() {
-	sd.done <- true
-}
+func (sd *ShellyDevice) Close() {}
 
 func (sd *ShellyDevice) GetStatus() error {
 	req := mqtt.RpcRequest{

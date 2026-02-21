@@ -76,6 +76,7 @@ type ShellyIO struct {
 
 func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 	she.isReady = false
+	she.done = make(chan bool, 1)
 	she.logger = logging.NewLogger(logging.PrefixShelly)
 	logger := she.logger
 
@@ -201,7 +202,9 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 				for _, d := range she.devices {
 					if d.IsReady() && d.SinceLastRefreshed() > stateUpToDateDuration {
 						log.Debug("healthTicker: refreshing device", "id", d.Id)
-						d.GetStatus()
+						if err := d.GetStatus(); err != nil {
+							logger.Warn("healthTicker: failed to send GetStatus", "id", d.Id, "err", err)
+						}
 					}
 				}
 			}
@@ -249,7 +252,7 @@ func (she *ShellyIO) matchDevices() error {
 				if !dev.IsReady() {
 					err = errors.Join(err, fmt.Errorf("device %s is not ready", input.deviceId))
 				} else {
-					if len(dev.Switches) <= input.inputNo {
+					if len(dev.Inputs) <= input.inputNo {
 						err = errors.Join(err, fmt.Errorf("device %s does not have input %d", input.deviceId, input.inputNo))
 					} else {
 						input.dev = dev
@@ -297,6 +300,15 @@ func (she *ShellyIO) parseIoId(id string) (string, int, error) {
 }
 
 func (she *ShellyIO) Close() error {
+	if she.done != nil {
+		she.done <- true
+	}
+	if she.matchTicker != nil {
+		she.matchTicker.Stop()
+	}
+	if she.healthTicker != nil {
+		she.healthTicker.Stop()
+	}
 	for _, dev := range she.devices {
 		dev.Close()
 	}
