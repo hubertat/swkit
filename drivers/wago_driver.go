@@ -336,24 +336,24 @@ func (wio *WagoIO) refreshStates() error {
 	}
 
 	var errs error
+	var inputs []bool
+	var outputs []bool
 
 	// FC2 - batch read all discrete inputs
 	if wio.totalDI > 0 {
-		inputs, err := wio.client.ReadDiscreteInputs(0, uint16(wio.totalDI))
+		var err error
+		inputs, err = wio.client.ReadDiscreteInputs(0, uint16(wio.totalDI))
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("failed to read discrete inputs: %w", err))
-		} else {
-			copy(wio.inputStates, inputs)
 		}
 	}
 
 	// FC1 - batch read all coils at offset 512
 	if wio.totalDO > 0 {
-		outputs, err := wio.client.ReadCoils(wagoOutputReadOffset, uint16(wio.totalDO))
+		var err error
+		outputs, err = wio.client.ReadCoils(wagoOutputReadOffset, uint16(wio.totalDO))
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("failed to read coils: %w", err))
-		} else {
-			copy(wio.outputStates, outputs)
 		}
 	}
 
@@ -364,9 +364,7 @@ func (wio *WagoIO) refreshStates() error {
 		}
 	}
 
-	// Lock only for copying to state slices
 	now := time.Now()
-	wio.mu.Lock()
 	if inputs != nil {
 		for i, v := range inputs {
 			if i < len(wio.inputStates) && wio.inputStates[i] != v {
