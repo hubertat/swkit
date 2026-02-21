@@ -269,35 +269,91 @@ func (wio *WagoIO) verifyIOCounts() error {
 }
 
 func (wio *WagoIO) pollLoop() {
+	consecutiveErrors := 0
+	const maxConsecutiveErrors = 5
+
 	for {
 		select {
 		case <-wio.stopPoll:
 			return
 		case <-wio.pollTicker.C:
-			_ = wio.refreshStates()
+			err := wio.refreshStates()
+			if err != nil {
+				consecutiveErrors++
+				if consecutiveErrors == 1 {
+					log.Warn("wago driver: poll error started", "error", err)
+				}
+				if consecutiveErrors >= maxConsecutiveErrors {
+					log.Error("wago driver: max consecutive errors reached, reconnecting", "errors", consecutiveErrors)
+					wio.reconnect()
+					consecutiveErrors = 0
+				}
+			} else {
+				if consecutiveErrors > 0 {
+					log.Info("wago driver: poll recovered after errors", "errorCount", consecutiveErrors)
+				}
+				consecutiveErrors = 0
+			}
 		}
 	}
 }
 
-func (wio *WagoIO) refreshStates() error {
-	var errs error
-	var inputs, outputs []bool
+func (wio *WagoIO) reconnect() {
+	wio.mu.Lock()
+	defer wio.mu.Unlock()
 
-	// FC2 - batch read all discrete inputs (outside lock)
+	connString := fmt.Sprintf("tcp://%s:%d", wio.Address, wio.Port)
+	log.Warn("wago driver: attempting reconnection", "address", connString)
+
+	if wio.client != nil {
+		_ = wio.client.Close()
+	}
+
+	client, err := modbus.NewClient(&modbus.ClientConfiguration{
+		URL:     connString,
+		Timeout: wagoDefaultModbusTimeoutMs * time.Millisecond,
+	})
+	if err != nil {
+		log.Error("wago driver: failed to create client during reconnect", "error", err)
+		return
+	}
+
+	if err = client.Open(); err != nil {
+		log.Error("wago driver: failed to open connection during reconnect", "error", err)
+		return
+	}
+
+	wio.client = client
+	log.Info("wago driver: reconnection successful", "address", connString)
+}
+
+func (wio *WagoIO) refreshStates() error {
+	wio.mu.Lock()
+	defer wio.mu.Unlock()
+
+	if wio.client == nil {
+		return errors.New("wago driver: client not initialized")
+	}
+
+	var errs error
+
+	// FC2 - batch read all discrete inputs
 	if wio.totalDI > 0 {
-		var err error
-		inputs, err = wio.client.ReadDiscreteInputs(0, uint16(wio.totalDI))
+		inputs, err := wio.client.ReadDiscreteInputs(0, uint16(wio.totalDI))
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("failed to read discrete inputs: %w", err))
+		} else {
+			copy(wio.inputStates, inputs)
 		}
 	}
 
-	// FC1 - batch read all coils at offset 512 (outside lock)
+	// FC1 - batch read all coils at offset 512
 	if wio.totalDO > 0 {
-		var err error
-		outputs, err = wio.client.ReadCoils(wagoOutputReadOffset, uint16(wio.totalDO))
+		outputs, err := wio.client.ReadCoils(wagoOutputReadOffset, uint16(wio.totalDO))
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("failed to read coils: %w", err))
+		} else {
+			copy(wio.outputStates, outputs)
 		}
 	}
 
@@ -330,7 +386,6 @@ func (wio *WagoIO) refreshStates() error {
 	if errs == nil {
 		wio.lastPollOk = now
 	}
-	wio.mu.Unlock()
 
 	return errs
 }
