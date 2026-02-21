@@ -44,6 +44,7 @@ const (
 	TabDashboard Tab = iota
 	TabDrivers
 	TabDevices
+	TabConfig
 	TabHomeKit
 	TabIoDebug
 	TabChat
@@ -57,6 +58,8 @@ func (t Tab) String() string {
 		return "Drivers"
 	case TabDevices:
 		return "Devices"
+	case TabConfig:
+		return "Config"
 	case TabHomeKit:
 		return "HomeKit"
 	case TabIoDebug:
@@ -70,7 +73,7 @@ func (t Tab) String() string {
 
 // AllTabs returns all available tabs
 func AllTabs() []Tab {
-	return []Tab{TabDashboard, TabDrivers, TabDevices, TabHomeKit, TabIoDebug, TabChat}
+	return []Tab{TabDashboard, TabDrivers, TabDevices, TabConfig, TabHomeKit, TabIoDebug, TabChat}
 }
 
 // Model is the main TUI model
@@ -95,6 +98,7 @@ type Model struct {
 	cancel        context.CancelFunc
 	chat          ChatView
 	agent         *agent.Agent
+	configEditor  ConfigEditor
 }
 
 // StateUpdateMsg is sent when state is updated
@@ -109,40 +113,34 @@ type ControlResultMsg struct {
 
 // NewModel creates a new TUI model using the default renderer
 func NewModel(provider app.StateProvider) Model {
-	return NewModelWithAgent(provider, nil)
+	return NewModelWithOptions(provider, nil, nil, nil)
 }
 
 // NewModelWithAgent creates a new TUI model with an optional agent
 func NewModelWithAgent(provider app.StateProvider, ag *agent.Agent) Model {
-	ctx, cancel := context.WithCancel(context.Background())
-	theme := DefaultTheme()
-	return Model{
-		provider:       provider,
-		state:          provider.GetState(),
-		activeTab:      TabDashboard,
-		keys:           DefaultKeyMap(),
-		theme:          theme,
-		ioNames:        make(map[string]string),
-		ioPrevStates:   make(map[string]bool),
-		ioStateChanged: make(map[string]time.Time),
-		ioNameInput:    newIoNameInput(),
-		ctx:            ctx,
-		cancel:         cancel,
-		agent:          ag,
-		chat:           NewChatView(ag, theme),
-	}
+	return NewModelWithOptions(provider, nil, ag, nil)
 }
 
 // NewModelWithRenderer creates a new TUI model with a custom renderer.
 // This is needed for SSH sessions where each connection has its own renderer.
 func NewModelWithRenderer(provider app.StateProvider, renderer *lipgloss.Renderer) Model {
-	return NewModelWithRendererAndAgent(provider, renderer, nil)
+	return NewModelWithOptions(provider, nil, nil, renderer)
 }
 
 // NewModelWithRendererAndAgent creates a new TUI model with a custom renderer and optional agent.
 func NewModelWithRendererAndAgent(provider app.StateProvider, renderer *lipgloss.Renderer, ag *agent.Agent) Model {
+	return NewModelWithOptions(provider, nil, ag, renderer)
+}
+
+// NewModelWithOptions creates a new TUI model with all optional dependencies.
+func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigProvider, ag *agent.Agent, renderer *lipgloss.Renderer) Model {
 	ctx, cancel := context.WithCancel(context.Background())
-	theme := ThemeWithRenderer(renderer)
+	var theme Theme
+	if renderer != nil {
+		theme = ThemeWithRenderer(renderer)
+	} else {
+		theme = DefaultTheme()
+	}
 	return Model{
 		provider:       provider,
 		state:          provider.GetState(),
@@ -157,6 +155,7 @@ func NewModelWithRendererAndAgent(provider app.StateProvider, renderer *lipgloss
 		cancel:         cancel,
 		agent:          ag,
 		chat:           NewChatView(ag, theme),
+		configEditor:   NewConfigEditor(configProvider, theme),
 	}
 }
 
@@ -198,6 +197,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ioExportMsg = ""
 		return m, nil
 
+	case ConfigSaveMsg:
+		if msg.Error != nil {
+			m.configEditor.statusMsg = "Save error: " + msg.Error.Error()
+		} else {
+			m.configEditor.statusMsg = "Config saved"
+			m.configEditor.dirty = false
+		}
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return configSaveClearMsg{}
+		})
+
+	case configSaveClearMsg:
+		m.configEditor.statusMsg = ""
+		return m, nil
+
 	case tea.KeyMsg:
 		// Handle IO naming mode - intercept all keys
 		if m.ioNaming {
@@ -219,6 +233,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				var cmd tea.Cmd
 				m.ioNameInput, cmd = m.ioNameInput.Update(msg)
+				return m, cmd
+			}
+		}
+
+		// Global Ctrl+S for config save
+		if msg.String() == "ctrl+s" && m.configEditor.IsDirty() {
+			return m, m.configEditor.Save()
+		}
+
+		// Handle config tab - forward most keys to config editor
+		if m.activeTab == TabConfig {
+			// Only capture tab switching and quit from config
+			switch {
+			case key.Matches(msg, m.keys.Tab):
+				m.activeTab = (m.activeTab + 1) % Tab(len(AllTabs()))
+				m.cursor = 0
+				if m.activeTab == TabChat {
+					m.chat.Focus()
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.ShiftTab):
+				if m.activeTab == 0 {
+					m.activeTab = Tab(len(AllTabs()) - 1)
+				} else {
+					m.activeTab--
+				}
+				m.cursor = 0
+				if m.activeTab == TabChat {
+					m.chat.Focus()
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.Quit):
+				m.cancel()
+				return m, tea.Quit
+			case key.Matches(msg, m.keys.Help):
+				m.showHelp = !m.showHelp
+				return m, nil
+			default:
+				cmd := m.configEditor.Update(msg)
 				return m, cmd
 			}
 		}
@@ -509,6 +562,8 @@ func (m Model) View() string {
 		b.WriteString(m.renderDrivers())
 	case TabDevices:
 		b.WriteString(m.renderDevices())
+	case TabConfig:
+		b.WriteString(m.configEditor.View(m.theme))
 	case TabHomeKit:
 		b.WriteString(m.renderHomeKit())
 	case TabIoDebug:
@@ -883,6 +938,10 @@ func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool
 
 // renderHelp renders the help bar
 func (m Model) renderHelp() string {
+	if m.activeTab == TabConfig {
+		configHelp := m.configEditor.ConfigHelpKeys(m.theme)
+		return m.theme.Help.Render(configHelp)
+	}
 	bindings := m.keys.ShortHelp()
 	var parts []string
 	for _, b := range bindings {
@@ -921,6 +980,9 @@ func padRight(s string, n int) string {
 
 // ioExportClearMsg clears the export status message after a delay
 type ioExportClearMsg struct{}
+
+// configSaveClearMsg clears the config save status message after a delay
+type configSaveClearMsg struct{}
 
 func newIoNameInput() textinput.Model {
 	ti := textinput.New()
