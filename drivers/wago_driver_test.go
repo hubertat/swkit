@@ -240,3 +240,115 @@ func TestWagoToggleOutputOutOfRange(t *testing.T) {
 		t.Error("expected error for index out of range")
 	}
 }
+
+func TestWagoGetDigitalInputModuleLookupUsesGlobalIndex(t *testing.T) {
+	wio := &WagoIO{
+		modules: []wagoModuleSpec{
+			{di: 4, do: 0, description: "M1"},
+			{di: 4, do: 0, description: "M2"},
+		},
+		totalDI: 8,
+		inputs: []WagoDI{
+			{driver: nil, index: 0}, // M1:DI1
+			{driver: nil, index: 4}, // M2:DI1
+			{driver: nil, index: 1}, // M1:DI2
+			{driver: nil, index: 5}, // M2:DI2
+		},
+	}
+
+	in, err := wio.GetDigitalInput("1:2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wdi, ok := in.(*WagoDI)
+	if !ok {
+		t.Fatalf("expected *WagoDI, got %T", in)
+	}
+
+	if wdi.index != 1 {
+		t.Fatalf("expected global index 1 for 1:2, got %d", wdi.index)
+	}
+}
+
+func TestWagoGetInGlobalIndexUsesPhysicalOrder(t *testing.T) {
+	wio := &WagoIO{
+		modules: []wagoModuleSpec{
+			{di: 8, do: 0, diOrder: []int{1, 3, 5, 7, 2, 4, 6, 8}, description: "750-436"},
+		},
+	}
+
+	tests := []struct {
+		moduleRel int
+		global    int
+	}{
+		{moduleRel: 1, global: 0},
+		{moduleRel: 2, global: 1},
+		{moduleRel: 3, global: 2},
+		{moduleRel: 4, global: 3},
+		{moduleRel: 5, global: 4},
+		{moduleRel: 6, global: 5},
+		{moduleRel: 7, global: 6},
+		{moduleRel: 8, global: 7},
+	}
+
+	for _, tc := range tests {
+		got := wio.getInGlobalIndex(1, tc.moduleRel)
+		if got != tc.global {
+			t.Fatalf("module rel %d: expected global %d, got %d", tc.moduleRel, tc.global, got)
+		}
+	}
+}
+
+func TestWagoGetOutGlobalIndexUsesPhysicalOrder(t *testing.T) {
+	wio := &WagoIO{
+		modules: []wagoModuleSpec{
+			{di: 0, do: 8, doOrder: []int{1, 3, 5, 7, 2, 4, 6, 8}, description: "750-530"},
+		},
+	}
+
+	tests := []struct {
+		moduleRel int
+		global    int
+	}{
+		{moduleRel: 1, global: 0},
+		{moduleRel: 2, global: 1},
+		{moduleRel: 3, global: 2},
+		{moduleRel: 4, global: 3},
+		{moduleRel: 5, global: 4},
+		{moduleRel: 6, global: 5},
+		{moduleRel: 7, global: 6},
+		{moduleRel: 8, global: 7},
+	}
+
+	for _, tc := range tests {
+		got := wio.getOutGlobalIndex(1, tc.moduleRel)
+		if got != tc.global {
+			t.Fatalf("module rel %d: expected global %d, got %d", tc.moduleRel, tc.global, got)
+		}
+	}
+}
+
+func TestWagoBuildPhysicalToProcessMapWithInterleavedModuleOrder(t *testing.T) {
+	wio := &WagoIO{
+		modules: []wagoModuleSpec{
+			{di: 8, do: 0, diOrder: []int{1, 3, 5, 7, 2, 4, 6, 8}, description: "750-436"},
+			{di: 0, do: 8, doOrder: []int{1, 3, 5, 7, 2, 4, 6, 8}, description: "750-530"},
+		},
+		totalDI: 8,
+		totalDO: 8,
+	}
+
+	inMap := wio.buildPhysicalToProcessMap(true)
+	outMap := wio.buildPhysicalToProcessMap(false)
+
+	expected := []int{0, 2, 4, 6, 1, 3, 5, 7}
+	for i := range expected {
+		if inMap[i] != expected[i] {
+			t.Fatalf("input map[%d]: expected %d, got %d", i, expected[i], inMap[i])
+		}
+		if outMap[i] != expected[i] {
+			t.Fatalf("output map[%d]: expected %d, got %d", i, expected[i], outMap[i])
+		}
+	}
+}

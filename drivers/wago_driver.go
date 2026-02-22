@@ -29,16 +29,21 @@ const wagoRegisterDICount = 0x1025 // Number of digital input bits
 type wagoModuleSpec struct {
 	di          int // digital input count
 	do          int // digital output count
+	diOrder     []int
+	doOrder     []int
 	description string
 }
 
 // wagoModuleSpecs maps module part numbers to their IO specifications
 var wagoModuleSpecs = map[string]wagoModuleSpec{
-	"750-436": {di: 8, do: 0, description: "8DI 24V (-)"},
+	// 750-436 front terminal/channel order is interleaved (1,5,2,6,3,7,4,8).
+	// The explicit order map makes module-relative IDs follow physical channel order.
+	"750-436": {di: 8, do: 0, diOrder: []int{1, 3, 5, 7, 2, 4, 6, 8}, description: "8DI 24V (-)"},
 	"750-512": {di: 0, do: 2, description: "2DO relay"},                                        // 2DO relay
 	"750-611": {di: 2, do: 0, description: "Fused power (230VAC) supply with diagnostics 2DI"}, // Power supply with 2DI
 	"750-610": {di: 2, do: 0, description: "Fused power (24VDC) supply with diagnostics 2DI"},  // Power supply with 2DI
-	"750-530": {di: 0, do: 8, description: "8DO output 24VDC (+)"},
+	// Keep output channel semantics consistent with 8-channel physical terminal order.
+	"750-530": {di: 0, do: 8, doOrder: []int{1, 3, 5, 7, 2, 4, 6, 8}, description: "8DO output 24VDC (+)"},
 }
 
 // WagoIO implements IoDriver for Wago 750-3xx modbus controllers
@@ -62,13 +67,17 @@ type WagoIO struct {
 	totalDO int
 
 	// Local state cache
-	inputStates      []bool
-	outputStates     []bool
-	inputLastChanged []time.Time
+	inputStates       []bool
+	outputStates      []bool
+	inputLastChanged  []time.Time
 	outputLastChanged []time.Time
 	lastPollOk       time.Time
 	pollTicker       *time.Ticker
 	stopPoll         chan struct{}
+
+	// Mapping between physical channel order (driver-facing) and coupler process-image order.
+	diPhysicalToProcess []int
+	doPhysicalToProcess []int
 }
 
 // WagoDI implements DigitalInput for Wago digital inputs
@@ -127,6 +136,8 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 	wio.outputStates = make([]bool, wio.totalDO)
 	wio.inputLastChanged = make([]time.Time, wio.totalDI)
 	wio.outputLastChanged = make([]time.Time, wio.totalDO)
+	wio.diPhysicalToProcess = wio.buildPhysicalToProcessMap(true)
+	wio.doPhysicalToProcess = wio.buildPhysicalToProcessMap(false)
 
 	// Create modbus client
 	connString := fmt.Sprintf("tcp://%s:%d", wio.Address, wio.Port)
@@ -357,8 +368,8 @@ func (wio *WagoIO) refreshStates() error {
 		}
 	}
 
-	// Debug log active inputs
-	for ix, in := range inputs {
+	// Debug log active inputs (driver-facing physical index)
+	for ix, in := range wio.remapInputsToPhysical(inputs) {
 		if in {
 			wio.logger.Debug("input is ON", "index", ix)
 		}
@@ -366,20 +377,22 @@ func (wio *WagoIO) refreshStates() error {
 
 	now := time.Now()
 	if inputs != nil {
-		for i, v := range inputs {
+		physicalInputs := wio.remapInputsToPhysical(inputs)
+		for i, v := range physicalInputs {
 			if i < len(wio.inputStates) && wio.inputStates[i] != v {
 				wio.inputLastChanged[i] = now
 			}
 		}
-		copy(wio.inputStates, inputs)
+		copy(wio.inputStates, physicalInputs)
 	}
 	if outputs != nil {
-		for i, v := range outputs {
+		physicalOutputs := wio.remapOutputsToPhysical(outputs)
+		for i, v := range physicalOutputs {
 			if i < len(wio.outputStates) && wio.outputStates[i] != v {
 				wio.outputLastChanged[i] = now
 			}
 		}
-		copy(wio.outputStates, outputs)
+		copy(wio.outputStates, physicalOutputs)
 	}
 	if errs == nil {
 		wio.lastPollOk = now
@@ -503,7 +516,8 @@ func (wio *WagoIO) Close() error {
 
 	// Turn off all outputs before closing
 	for i := range wio.outputs {
-		_ = wio.client.WriteCoil(wio.outputs[i].index, false)
+		processIndex := wio.mapOutputPhysicalToProcess(int(wio.outputs[i].index))
+		_ = wio.client.WriteCoil(uint16(processIndex), false)
 	}
 
 	return wio.client.Close()
@@ -535,7 +549,11 @@ func (wio *WagoIO) GetDigitalInput(id string) (DigitalInput, error) {
 		if globIndex < 0 {
 			return nil, fmt.Errorf("wago driver: digital input %d not found, failed to get global index", index)
 		}
-		return &wio.inputs[globIndex], nil
+		for ix := range wio.inputs {
+			if wio.inputs[ix].index == uint16(globIndex) {
+				return &wio.inputs[ix], nil
+			}
+		}
 	}
 
 	return nil, fmt.Errorf("wago driver: digital input %d not found", index)
@@ -669,7 +687,8 @@ func (wdo *WagoDO) Set(state bool) error {
 	}
 
 	// FC5 - Write Single Coil
-	err := wdo.driver.client.WriteCoil(wdo.index, state)
+	processIndex := wdo.driver.mapOutputPhysicalToProcess(int(wdo.index))
+	err := wdo.driver.client.WriteCoil(uint16(processIndex), state)
 	if err != nil {
 		return errors.Join(err, fmt.Errorf("wago driver: failed to write digital output %d", wdo.index))
 	}
@@ -763,7 +782,8 @@ func (wio *WagoIO) ToggleOutput(index int) error {
 	}
 
 	newState := !wio.outputStates[index]
-	err := wio.client.WriteCoil(uint16(index), newState)
+	processIndex := wio.mapOutputPhysicalToProcess(index)
+	err := wio.client.WriteCoil(uint16(processIndex), newState)
 	if err != nil {
 		return fmt.Errorf("wago driver: failed to toggle output %d: %w", index, err)
 	}
@@ -778,4 +798,84 @@ func (wio *WagoIO) Status() string {
 		modules = modules[:27] + "..."
 	}
 	return fmt.Sprintf("%s:%d DI:%d DO:%d [%s]", wio.Address, wio.Port, wio.totalDI, wio.totalDO, modules)
+}
+
+func (wio *WagoIO) buildPhysicalToProcessMap(isInput bool) []int {
+	total := wio.totalDO
+	if isInput {
+		total = wio.totalDI
+	}
+	if total == 0 {
+		return nil
+	}
+
+	mapping := make([]int, total)
+	physBase := 0
+	procBase := 0
+	for _, module := range wio.modules {
+		channelCount := module.do
+		order := module.doOrder
+		if isInput {
+			channelCount = module.di
+			order = module.diOrder
+		}
+		if channelCount == 0 {
+			continue
+		}
+
+		for i := 0; i < channelCount; i++ {
+			processLocal := i + 1
+			if len(order) == channelCount {
+				processLocal = order[i]
+			}
+			mapping[physBase+i] = procBase + processLocal - 1
+		}
+
+		physBase += channelCount
+		procBase += channelCount
+	}
+	return mapping
+}
+
+func (wio *WagoIO) remapInputsToPhysical(processInputs []bool) []bool {
+	if processInputs == nil {
+		return nil
+	}
+	if len(wio.diPhysicalToProcess) != len(processInputs) {
+		cp := make([]bool, len(processInputs))
+		copy(cp, processInputs)
+		return cp
+	}
+	physical := make([]bool, len(processInputs))
+	for physIx, processIx := range wio.diPhysicalToProcess {
+		if processIx >= 0 && processIx < len(processInputs) {
+			physical[physIx] = processInputs[processIx]
+		}
+	}
+	return physical
+}
+
+func (wio *WagoIO) remapOutputsToPhysical(processOutputs []bool) []bool {
+	if processOutputs == nil {
+		return nil
+	}
+	if len(wio.doPhysicalToProcess) != len(processOutputs) {
+		cp := make([]bool, len(processOutputs))
+		copy(cp, processOutputs)
+		return cp
+	}
+	physical := make([]bool, len(processOutputs))
+	for physIx, processIx := range wio.doPhysicalToProcess {
+		if processIx >= 0 && processIx < len(processOutputs) {
+			physical[physIx] = processOutputs[processIx]
+		}
+	}
+	return physical
+}
+
+func (wio *WagoIO) mapOutputPhysicalToProcess(physicalIndex int) int {
+	if physicalIndex < 0 || physicalIndex >= len(wio.doPhysicalToProcess) {
+		return physicalIndex
+	}
+	return wio.doPhysicalToProcess[physicalIndex]
 }
