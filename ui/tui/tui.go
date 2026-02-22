@@ -918,6 +918,12 @@ func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool
 			}
 		}
 
+		// Configured device name
+		configuredText := ""
+		if pt.ConfiguredAs != "" {
+			configuredText = " " + m.theme.Muted.Render("<"+pt.ConfiguredAs+">")
+		}
+
 		// Custom name
 		nameText := ""
 		if customName, ok := m.ioNames[ioPointKey(pt)]; ok {
@@ -929,6 +935,7 @@ func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool
 			stateText + " " +
 			healthText +
 			changedText +
+			configuredText +
 			nameText
 
 		lines = append(lines, style.Render(line))

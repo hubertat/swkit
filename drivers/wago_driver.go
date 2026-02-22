@@ -737,7 +737,7 @@ func (wio *WagoIO) GetIoDebugSnapshot() IoDebugSnapshot {
 			}
 			points = append(points, IoPointState{
 				Index:       diIndex,
-				Name:        fmt.Sprintf("M%d:DI%d", moduleNum, i+1),
+				Name:        fmt.Sprintf("M%d:DI%d[%d]", moduleNum, i+1, diIndex),
 				Type:        IoTypeDigitalInput,
 				State:       state,
 				Healthy:     healthy,
@@ -755,7 +755,7 @@ func (wio *WagoIO) GetIoDebugSnapshot() IoDebugSnapshot {
 			}
 			points = append(points, IoPointState{
 				Index:       doIndex,
-				Name:        fmt.Sprintf("M%d:DO%d", moduleNum, i+1),
+				Name:        fmt.Sprintf("M%d:DO%d[%d]", moduleNum, i+1, doIndex),
 				Type:        IoTypeDigitalOutput,
 				State:       state,
 				Healthy:     healthy,

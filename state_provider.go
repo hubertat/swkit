@@ -3,6 +3,7 @@ package swkit
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -38,8 +39,14 @@ func (p *SwKitProvider) GetState() app.AppState {
 		Timestamp: time.Now(),
 	}
 
-	// Collect driver states
-	for name, driver := range p.sw.ioDrivers {
+	// Collect driver states in stable alphabetical order
+	driverNames := make([]string, 0, len(p.sw.ioDrivers))
+	for name := range p.sw.ioDrivers {
+		driverNames = append(driverNames, name)
+	}
+	sort.Strings(driverNames)
+	for _, name := range driverNames {
+		driver := p.sw.ioDrivers[name]
 		ds := app.DriverState{
 			Name:  name,
 			Ready: driver.IsReady(),
@@ -99,6 +106,31 @@ func (p *SwKitProvider) GetState() app.AppState {
 	}
 	if p.sw.Shelly != nil {
 		collectIoDebug(p.sw.Shelly.String(), p.sw.Shelly)
+	}
+
+	// Build IO id → device name map for annotating IO debug points
+	ioDeviceMap := make(map[string]string)
+	for _, ds := range state.Devices {
+		if ds.OutputIoId != "" {
+			ioDeviceMap[ds.OutputIoId] = ds.Name
+		}
+		if ds.RgbwIoId != "" {
+			ioDeviceMap[ds.RgbwIoId] = ds.Name
+		}
+		if ds.EventInputId != "" {
+			ioDeviceMap[ds.EventInputId] = ds.Name
+		}
+	}
+	// Annotate each IO point with the device that uses it (if any)
+	for i, pt := range state.IoDebug {
+		ioTypeStr := "d_in"
+		if pt.Type == "output" {
+			ioTypeStr = "d_out"
+		}
+		ioId := fmt.Sprintf("%s|%s|%d", pt.DriverName, ioTypeStr, pt.Index)
+		if deviceName, ok := ioDeviceMap[ioId]; ok {
+			state.IoDebug[i].ConfiguredAs = deviceName
+		}
 	}
 
 	// Collect HomeKit state

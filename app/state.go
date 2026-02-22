@@ -14,14 +14,15 @@ type AppState struct {
 
 // IoPointDebugState represents the state of a single IO point for debug display
 type IoPointDebugState struct {
-	DriverName  string
-	Index       int
-	Name        string // e.g. "M1:DI3"
-	Type        string // "input" or "output"
-	State       bool
-	Healthy     bool
-	LastChanged time.Time // zero if never changed since startup
-	LastEvent   time.Time // zero if no explicit event received (e.g. button press)
+	DriverName   string
+	Index        int
+	Name         string // e.g. "M1:DI3[2]"
+	Type         string // "input" or "output"
+	State        bool
+	Healthy      bool
+	LastChanged  time.Time // zero if never changed since startup
+	LastEvent    time.Time // zero if no explicit event received (e.g. button press)
+	ConfiguredAs string    // name of device that uses this IO point, empty if unconfigured
 }
 
 // DriverState represents the status of an IO driver

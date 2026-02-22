@@ -40,7 +40,7 @@ func TestWagoGetIoDebugSnapshot(t *testing.T) {
 	// Verify Module 1 (8 DI)
 	for i := 0; i < 8; i++ {
 		pt := snapshot.Points[i]
-		expectedName := fmt.Sprintf("M1:DI%d", i+1)
+		expectedName := fmt.Sprintf("M1:DI%d[%d]", i+1, i)
 		if pt.Name != expectedName {
 			t.Errorf("point %d: expected name %q, got %q", i, expectedName, pt.Name)
 		}
@@ -65,8 +65,8 @@ func TestWagoGetIoDebugSnapshot(t *testing.T) {
 
 	// Module 2 (2 DO) - points at index 8, 9
 	pt8 := snapshot.Points[8]
-	if pt8.Name != "M2:DO1" {
-		t.Errorf("point 8: expected name M2:DO1, got %q", pt8.Name)
+	if pt8.Name != "M2:DO1[0]" {
+		t.Errorf("point 8: expected name M2:DO1[0], got %q", pt8.Name)
 	}
 	if pt8.Type != IoTypeDigitalOutput {
 		t.Errorf("point 8: expected type DigitalOutput, got %s", pt8.Type)
@@ -76,17 +76,17 @@ func TestWagoGetIoDebugSnapshot(t *testing.T) {
 	}
 
 	pt9 := snapshot.Points[9]
-	if pt9.Name != "M2:DO2" {
-		t.Errorf("point 9: expected name M2:DO2, got %q", pt9.Name)
+	if pt9.Name != "M2:DO2[1]" {
+		t.Errorf("point 9: expected name M2:DO2[1], got %q", pt9.Name)
 	}
 	if !pt9.State {
-		t.Error("point 9 (M2:DO2) should be ON (outputStates[1])")
+		t.Error("point 9 (M2:DO2[1]) should be ON (outputStates[1])")
 	}
 
 	// Module 3 (2 DI) - points at index 10, 11
 	pt10 := snapshot.Points[10]
-	if pt10.Name != "M3:DI1" {
-		t.Errorf("point 10: expected name M3:DI1, got %q", pt10.Name)
+	if pt10.Name != "M3:DI1[8]" {
+		t.Errorf("point 10: expected name M3:DI1[8], got %q", pt10.Name)
 	}
 	if pt10.Type != IoTypeDigitalInput {
 		t.Errorf("point 10: expected type DigitalInput, got %s", pt10.Type)
@@ -97,8 +97,8 @@ func TestWagoGetIoDebugSnapshot(t *testing.T) {
 
 	// Module 4 (8 DO) - points at index 12..19
 	pt12 := snapshot.Points[12]
-	if pt12.Name != "M4:DO1" {
-		t.Errorf("point 12: expected name M4:DO1, got %q", pt12.Name)
+	if pt12.Name != "M4:DO1[2]" {
+		t.Errorf("point 12: expected name M4:DO1[2], got %q", pt12.Name)
 	}
 	if pt12.Type != IoTypeDigitalOutput {
 		t.Errorf("point 12: expected type DigitalOutput, got %s", pt12.Type)
@@ -109,8 +109,8 @@ func TestWagoGetIoDebugSnapshot(t *testing.T) {
 
 	// Check output state at index 5 (M4:DO4, globalDoIndex=5)
 	pt15 := snapshot.Points[15]
-	if pt15.Name != "M4:DO4" {
-		t.Errorf("point 15: expected name M4:DO4, got %q", pt15.Name)
+	if pt15.Name != "M4:DO4[5]" {
+		t.Errorf("point 15: expected name M4:DO4[5], got %q", pt15.Name)
 	}
 	if !pt15.State {
 		t.Error("point 15 (M4:DO4) should be ON (outputStates[5])")
