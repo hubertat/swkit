@@ -55,15 +55,24 @@ type appServices struct {
 
 // loadSwKit reads the config file, unmarshals it, and calls Setup.
 func loadSwKit(configPath string, ctx context.Context, logger *log.Logger) (*swkit.SwKit, error) {
+	sk, err := parseSwKit(configPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := sk.Setup(ctx, logger); err != nil {
+		return nil, err
+	}
+	return sk, nil
+}
+
+// parseSwKit reads and unmarshals the config file without running Setup.
+func parseSwKit(configPath string) (*swkit.SwKit, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, err
 	}
 	sk := &swkit.SwKit{}
 	if err := json.Unmarshal(data, sk); err != nil {
-		return nil, err
-	}
-	if err := sk.Setup(ctx, logger); err != nil {
 		return nil, err
 	}
 	return sk, nil
@@ -100,13 +109,15 @@ func startServices(parentCtx context.Context, sk *swkit.SwKit, syncDuration time
 }
 
 // performReload loads the new config, stops old services, swaps the provider, and starts new services.
-// On failure, the old sk and svcs are returned unchanged so the app keeps running.
+// Config is parsed first for early validation; drivers (and MQTT) are only set up after old ones are torn down.
+// On config parse failure, the old sk and svcs are returned unchanged so the app keeps running.
 func performReload(configPath string, currentSk *swkit.SwKit, provider *swkit.SwKitProvider,
 	svcs *appServices, parentCtx context.Context, syncDuration time.Duration, forceEvery int, version string, logger *log.Logger) (*swkit.SwKit, *appServices) {
 
-	newSk, err := loadSwKit(configPath, parentCtx, logger)
+	// Parse config first for early validation — no drivers/MQTT yet.
+	newSk, err := parseSwKit(configPath)
 	if err != nil {
-		logger.Error("reload failed, keeping current config", "err", err)
+		logger.Error("reload failed (config parse error), keeping current config", "err", err)
 		return currentSk, svcs
 	}
 
@@ -117,9 +128,15 @@ func performReload(configPath string, currentSk *swkit.SwKit, provider *swkit.Sw
 	}
 	<-svcs.tickerDone
 
-	// Close old drivers.
+	// Close old drivers (including MQTT disconnect) before new ones connect.
 	if closeErr := currentSk.Close(); closeErr != nil {
 		logger.Error("error closing old SwKit drivers", "err", closeErr)
+	}
+
+	// Now set up new drivers and MQTT connections.
+	if err := newSk.Setup(parentCtx, logger); err != nil {
+		logger.Error("reload failed (setup error), no active config — restart required", "err", err)
+		return currentSk, svcs
 	}
 
 	// Swap the provider to point at the new SwKit.

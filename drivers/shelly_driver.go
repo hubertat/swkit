@@ -372,6 +372,13 @@ func (she *ShellyIO) Close() error {
 		dev.Close()
 	}
 	she.devicesMu.RUnlock()
+	if she.messenger != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := she.messenger.Disconnect(ctx); err != nil {
+			return err
+		}
+	}
 	she.isReady = false
 	return nil
 }

@@ -43,6 +43,10 @@ func (jrm *JsonRpcMessenger) ConnectMqttClient(ctx context.Context) error {
 	return jrm.ConnectMqttClientWithHandlers(ctx, nil)
 }
 
+func (jrm *JsonRpcMessenger) Disconnect(ctx context.Context) error {
+	return jrm.mqttClient.Disconnect(ctx)
+}
+
 // ConnectMqttClientWithHandlers connects the MQTT client, registering jrm plus any extra handlers.
 func (jrm *JsonRpcMessenger) ConnectMqttClientWithHandlers(ctx context.Context, extraHandlers []MqttHandler) error {
 	handlers := []MqttHandler{jrm}
