@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -254,17 +255,26 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-// addDeviceOfType adds a new device of the given type
-func (ce *ConfigEditor) addDeviceOfType(itemType configListItemType) {
+// addDeviceOfType adds a new device of the given type and opens the edit view
+// with the Name field focused so the user can enter a name immediately.
+func (ce *ConfigEditor) addDeviceOfType(itemType configListItemType) tea.Cmd {
+	ce.dirty = true
+	ce.fieldCursor = 0
 	switch itemType {
 	case configItemLight:
-		ce.config.Lights = append(ce.config.Lights, app.LightEditConfig{Name: "New Light"})
+		ce.config.Lights = append(ce.config.Lights, app.LightEditConfig{})
+		ce.rebuildItems()
+		ce.cursor = len(ce.items) - 1
+		ce.mode = ConfigModeEditLight
+		return ce.startEditingLightField(&ce.config.Lights[len(ce.config.Lights)-1])
 	case configItemButton:
-		ce.config.Buttons = append(ce.config.Buttons, app.ButtonEditConfig{Name: "New Button"})
+		ce.config.Buttons = append(ce.config.Buttons, app.ButtonEditConfig{})
+		ce.rebuildItems()
+		ce.cursor = len(ce.items) - 1
+		ce.mode = ConfigModeEditButton
+		return ce.startEditingButtonField(&ce.config.Buttons[len(ce.config.Buttons)-1])
 	}
-	ce.dirty = true
-	ce.rebuildItems()
-	ce.cursor = len(ce.items) - 1
+	return nil
 }
 
 // updateAddSelector handles keys in the add-type selector mode
@@ -279,8 +289,7 @@ func (ce *ConfigEditor) updateAddSelector(msg tea.KeyMsg) tea.Cmd {
 			ce.addTypeCursor++
 		}
 	case "enter":
-		ce.addDeviceOfType(addableDeviceTypes[ce.addTypeCursor].itemType)
-		ce.mode = ConfigModeList
+		return ce.addDeviceOfType(addableDeviceTypes[ce.addTypeCursor].itemType)
 	case "esc":
 		ce.mode = ConfigModeList
 	}
@@ -592,7 +601,9 @@ func (ce *ConfigEditor) openIoPicker(filterType string, fieldIdx int) {
 	ce.mode = ConfigModeIoPicker
 }
 
-// filteredIoPoints returns IO points matching the current picker filter
+// filteredIoPoints returns IO points matching the current picker filter,
+// sorted by most recent activity first (LastEvent or LastChanged), with
+// inactive points retaining their original order at the bottom.
 func (ce *ConfigEditor) filteredIoPoints() []app.IoPointDebugState {
 	var pts []app.IoPointDebugState
 	for _, pt := range ce.ioPoints {
@@ -600,6 +611,23 @@ func (ce *ConfigEditor) filteredIoPoints() []app.IoPointDebugState {
 			pts = append(pts, pt)
 		}
 	}
+	sort.SliceStable(pts, func(i, j int) bool {
+		ai := pts[i].LastEvent
+		if pts[i].LastChanged.After(ai) {
+			ai = pts[i].LastChanged
+		}
+		aj := pts[j].LastEvent
+		if pts[j].LastChanged.After(aj) {
+			aj = pts[j].LastChanged
+		}
+		if ai.IsZero() {
+			return false
+		}
+		if aj.IsZero() {
+			return true
+		}
+		return ai.After(aj)
+	})
 	return pts
 }
 
@@ -879,7 +907,10 @@ func (ce *ConfigEditor) viewEditButton(theme Theme) string {
 	fields = append(fields, "")
 	fields = append(fields, theme.BoxTitle.Render("Control Devices"))
 
-	if len(button.ControlDevices) == 0 {
+	if len(ce.config.OutputDeviceNames) == 0 {
+		fields = append(fields, theme.Muted.Render("  No controllable devices available."))
+		fields = append(fields, theme.Muted.Render("  Configure lights or outlets first."))
+	} else if len(button.ControlDevices) == 0 {
 		fields = append(fields, theme.Muted.Render("  No control devices configured"))
 	}
 
