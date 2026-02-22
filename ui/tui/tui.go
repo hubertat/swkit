@@ -228,16 +228,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Global Ctrl+S for config save
-		if msg.String() == "ctrl+s" && m.configEditor.IsDirty() {
-			return m, m.configEditor.Save()
+		// Global Ctrl+S: save (if dirty) then reload; or just reload if not dirty
+		if msg.String() == "ctrl+s" {
+			if m.configEditor.IsDirty() {
+				return m, m.configEditor.Save()
+			}
+			m.configEditor.TriggerReload()
+			return m, nil
 		}
 
-		// Global Ctrl+R to trigger a config reload from disk (without saving)
+		// Global Ctrl+R: trigger a config reload from disk (without saving)
 		if msg.String() == "ctrl+r" {
-			if cp, ok := m.provider.(interface{ TriggerReload() }); ok {
-				cp.TriggerReload()
-			}
+			m.configEditor.TriggerReload()
 			return m, nil
 		}
 

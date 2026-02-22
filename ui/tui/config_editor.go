@@ -155,6 +155,16 @@ func (ce *ConfigEditor) Save() tea.Cmd {
 	}
 }
 
+// TriggerReload sends a reload signal through the config provider if it supports it.
+func (ce *ConfigEditor) TriggerReload() {
+	if ce.provider == nil {
+		return
+	}
+	if tr, ok := ce.provider.(interface{ TriggerReload() }); ok {
+		tr.TriggerReload()
+	}
+}
+
 // rebuildItems rebuilds the flattened list from config
 func (ce *ConfigEditor) rebuildItems() {
 	ce.items = nil
