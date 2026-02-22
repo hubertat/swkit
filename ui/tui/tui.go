@@ -191,7 +191,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Error != nil {
 			m.configEditor.statusMsg = "Save error: " + msg.Error.Error()
 		} else {
-			m.configEditor.statusMsg = "Config saved"
+			m.configEditor.statusMsg = "Saved, reloading..."
 			m.configEditor.dirty = false
 		}
 		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
@@ -231,6 +231,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Global Ctrl+S for config save
 		if msg.String() == "ctrl+s" && m.configEditor.IsDirty() {
 			return m, m.configEditor.Save()
+		}
+
+		// Global Ctrl+R to trigger a config reload from disk (without saving)
+		if msg.String() == "ctrl+r" {
+			if cp, ok := m.provider.(interface{ TriggerReload() }); ok {
+				cp.TriggerReload()
+			}
+			return m, nil
 		}
 
 		// Handle config tab - forward most keys to config editor

@@ -3,6 +3,7 @@ package swkit
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/hubertat/swkit/app"
@@ -11,6 +12,7 @@ import (
 
 // SwKitProvider implements app.StateProvider for SwKit
 type SwKitProvider struct {
+	mu sync.RWMutex
 	sw *SwKit
 }
 
@@ -19,8 +21,18 @@ func NewStateProvider(sw *SwKit) *SwKitProvider {
 	return &SwKitProvider{sw: sw}
 }
 
+// Reload atomically swaps the underlying SwKit instance.
+// Called during config hot-reload after the new SwKit is set up.
+func (p *SwKitProvider) Reload(newSk *SwKit) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sw = newSk
+}
+
 // GetState returns the current application state snapshot
 func (p *SwKitProvider) GetState() app.AppState {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	state := app.AppState{
 		Name:      p.sw.Name,
 		Timestamp: time.Now(),
@@ -256,6 +268,8 @@ func isOutputHealthy(output drivers.DigitalOutput) bool {
 
 // ToggleDevice toggles the device at the given index
 func (p *SwKitProvider) ToggleDevice(index int) app.ControlResult {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	device, deviceName, _, err := p.getControllableByIndex(index)
 	if err != nil {
 		return app.ControlResult{Error: err}
@@ -282,6 +296,8 @@ func (p *SwKitProvider) ToggleDevice(index int) app.ControlResult {
 
 // SetDevice sets the device at the given index to the given state
 func (p *SwKitProvider) SetDevice(index int, state bool) app.ControlResult {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	device, deviceName, _, err := p.getControllableByIndex(index)
 	if err != nil {
 		return app.ControlResult{Error: err}
@@ -376,6 +392,8 @@ func actionName(state bool) string {
 
 // ToggleIoOutput toggles a raw IO output by driver name and output index
 func (p *SwKitProvider) ToggleIoOutput(driverName string, outputIndex int) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	driver, ok := p.sw.ioDrivers[driverName]
 	if !ok {
 		return fmt.Errorf("driver %q not found", driverName)

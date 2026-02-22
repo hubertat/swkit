@@ -16,11 +16,27 @@ import (
 type SwKitConfigProvider struct {
 	sw         *SwKit
 	configPath string
+	reloadCh   chan struct{}
 }
 
 // NewConfigProvider creates a new config provider for the given SwKit instance
 func NewConfigProvider(sw *SwKit, configPath string) *SwKitConfigProvider {
-	return &SwKitConfigProvider{sw: sw, configPath: configPath}
+	return &SwKitConfigProvider{
+		sw:         sw,
+		configPath: configPath,
+		reloadCh:   make(chan struct{}, 1),
+	}
+}
+
+// ReloadCh returns a channel that receives a signal when a config reload is requested.
+func (p *SwKitConfigProvider) ReloadCh() <-chan struct{} { return p.reloadCh }
+
+// TriggerReload sends a non-blocking reload signal. Safe to call from any goroutine.
+func (p *SwKitConfigProvider) TriggerReload() {
+	select {
+	case p.reloadCh <- struct{}{}:
+	default:
+	}
 }
 
 // GetEditableConfig returns the current editable config snapshot
@@ -101,6 +117,7 @@ func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
 		return fmt.Errorf("write failed: %w", err)
 	}
 
+	p.TriggerReload()
 	return nil
 }
 

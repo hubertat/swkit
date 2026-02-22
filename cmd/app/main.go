@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -46,8 +45,95 @@ var (
 	}
 )
 
+// appServices holds the lifecycle handles for services tied to a SwKit instance.
+type appServices struct {
+	serviceCancel func()
+	tickerDone    <-chan struct{}
+	hkCancel      func()
+	hkErrCh       <-chan error
+}
+
+// loadSwKit reads the config file, unmarshals it, and calls Setup.
+func loadSwKit(configPath string, ctx context.Context, logger *log.Logger) (*swkit.SwKit, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+	sk := &swkit.SwKit{}
+	if err := json.Unmarshal(data, sk); err != nil {
+		return nil, err
+	}
+	if err := sk.Setup(ctx, logger); err != nil {
+		return nil, err
+	}
+	return sk, nil
+}
+
+// startServices starts the sync ticker and HomeKit (if configured) for sk.
+func startServices(parentCtx context.Context, sk *swkit.SwKit, syncDuration time.Duration, forceEvery int, version string, logger *log.Logger) *appServices {
+	ctx, cancel := context.WithCancel(parentCtx)
+
+	done := make(chan struct{})
+	go func() {
+		sk.StartTicker(ctx, syncDuration, forceEvery)
+		close(done)
+	}()
+
+	var hkCancel func()
+	var hkErrCh <-chan error
+	if len(sk.HkPin) == 8 {
+		var err error
+		hkCancel, hkErrCh, err = sk.StartHomeKit(ctx, version)
+		if err != nil {
+			logger.Error("failed to start HomeKit", "err", err)
+		} else {
+			logger.Info("HomeKit started", "pin", sk.HkPin)
+		}
+	}
+
+	return &appServices{
+		serviceCancel: cancel,
+		tickerDone:    done,
+		hkCancel:      hkCancel,
+		hkErrCh:       hkErrCh,
+	}
+}
+
+// performReload loads the new config, stops old services, swaps the provider, and starts new services.
+// On failure, the old sk and svcs are returned unchanged so the app keeps running.
+func performReload(configPath string, currentSk *swkit.SwKit, provider *swkit.SwKitProvider,
+	svcs *appServices, parentCtx context.Context, syncDuration time.Duration, forceEvery int, version string, logger *log.Logger) (*swkit.SwKit, *appServices) {
+
+	newSk, err := loadSwKit(configPath, parentCtx, logger)
+	if err != nil {
+		logger.Error("reload failed, keeping current config", "err", err)
+		return currentSk, svcs
+	}
+
+	// Stop old services.
+	svcs.serviceCancel()
+	if svcs.hkCancel != nil {
+		svcs.hkCancel()
+	}
+	<-svcs.tickerDone
+
+	// Close old drivers.
+	if closeErr := currentSk.Close(); closeErr != nil {
+		logger.Error("error closing old SwKit drivers", "err", closeErr)
+	}
+
+	// Swap the provider to point at the new SwKit.
+	provider.Reload(newSk)
+
+	// Start services for the new SwKit.
+	newSvcs := startServices(parentCtx, newSk, syncDuration, forceEvery, version, logger)
+	logger.Info("config reloaded successfully")
+	return newSk, newSvcs
+}
+
 func main() {
 	flag.Parse()
+	_ = sensorsSyncInterval // declared for future use
 	if *debug {
 		log.SetLevel(log.DebugLevel)
 	}
@@ -76,53 +162,33 @@ func main() {
 		panic(err)
 	}
 
-	sk := &swkit.SwKit{}
-	configFile, err := os.Open(*config)
-	if err == nil {
-		cBuff, err := io.ReadAll(configFile)
-		if err != nil {
-			logger.Fatal("failed reading config file", "error", err)
-		}
-
-		err = json.Unmarshal(cBuff, sk)
-		if err != nil {
-			logger.Fatal("failed unmarshalling json config", "error", err)
-		}
-	} else {
-		logger.Fatal("can't find/open config file, will terminate.", "file", *config, "error", err)
-	}
-	logger.Info("will setup SwKit...")
-	err = sk.Setup(ctx, logger)
-	defer sk.Close()
+	sk, err := loadSwKit(*config, ctx, logger)
 	if err != nil {
-		logger.Fatal("failed to setup swkit", "err", err)
+		logger.Fatal("failed to load config", "err", err)
 	}
-	logger.Debug("swkit done OK")
+	logger.Debug("swkit setup done OK")
 
 	sk.PrintIoStatus(os.Stdout)
 
-	// Start ticker in background
-	logger.Info("starting sync ticker", "interval", syncDuration)
-	go sk.StartTicker(ctx, syncDuration, *forceSyncEveryCycle)
+	// Config provider holds the reload channel (also used by SSH/TUI).
+	configProvider := swkit.NewConfigProvider(sk, *config)
 
-	// Start HomeKit if configured
-	var hkCancel func()
-	var hkErrCh <-chan error
-	if len(sk.HkPin) == 8 {
-		logger.Info("HomeKit configured, starting", "pin", sk.HkPin)
-		hkCancel, hkErrCh, err = sk.StartHomeKit(ctx, Version)
-		if err != nil {
-			logger.Fatal("failed to start HomeKit", "err", err)
-		}
-	}
-
-	// Start SSH TUI server if configured (before agent init so we can pass agent to SSH server later)
+	// State provider is swap-safe; updated on each reload.
 	provider := swkit.NewStateProvider(sk)
 
-	// Initialize agent if API key is available
+	// SIGHUP feeds into the config provider's reload channel.
+	sighupCh := make(chan os.Signal, 1)
+	signal.Notify(sighupCh, syscall.SIGHUP)
+	go func() {
+		for range sighupCh {
+			logger.Info("SIGHUP received, triggering config reload")
+			configProvider.TriggerReload()
+		}
+	}()
+
+	// Initialize agent if API key is available.
 	var ag *agent.Agent
 	agentCfg := agent.DefaultConfig()
-	// Apply config from SwKit if present
 	if sk.Agent != nil {
 		agentCfg = agentCfg.WithModel(sk.Agent.Model).WithSystemPrompt(sk.Agent.SystemPrompt)
 	}
@@ -138,7 +204,7 @@ func main() {
 		logger.Debug("AI agent disabled (ANTHROPIC_API_KEY not set)")
 	}
 
-	// Start SSH TUI server if configured
+	// Start SSH TUI server if configured.
 	if sk.SshServer != nil && sk.SshServer.Enabled {
 		sshSrv, err := server.NewSshTuiServerWithAgent(provider, ag, sk.SshServer.Port, sk.SshServer.HostKeyPath, logger)
 		if err != nil {
@@ -152,47 +218,75 @@ func main() {
 		}
 	}
 
-	// Run TUI or wait for signal
-	if *tuiEnabled {
-		configProvider := swkit.NewConfigProvider(sk, *config)
-		p := tea.NewProgram(tui.NewModelWithOptions(provider, configProvider, ag, nil), tea.WithAltScreen())
-		if _, err := p.Run(); err != nil {
-			logger.Error("TUI error", "err", err)
-		}
-		logger.Info("TUI exited, shutting down...")
-		cancel()
-		if hkCancel != nil {
-			hkCancel()
-		}
-	} else {
-		// Wait for signal or HomeKit termination
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	// Start ticker and HomeKit.
+	logger.Info("starting sync ticker", "interval", syncDuration)
+	svcs := startServices(ctx, sk, syncDuration, *forceSyncEveryCycle, Version, logger)
 
-		if hkErrCh != nil {
-			select {
-			case sig := <-sigCh:
-				logger.Info("received signal, shutting down...", "signal", sig)
-				signal.Stop(sigCh)
-				cancel()
-				if hkCancel != nil {
-					hkCancel()
-				}
-			case err := <-hkErrCh:
-				if err != nil {
-					logger.Error("HomeKit terminated with error", "err", err)
-				} else {
-					logger.Info("HomeKit terminated ok")
-				}
+	// Run TUI in a background goroutine if enabled.
+	if *tuiEnabled {
+		go func() {
+			p := tea.NewProgram(tui.NewModelWithOptions(provider, configProvider, ag, nil), tea.WithAltScreen())
+			if _, err := p.Run(); err != nil {
+				logger.Error("TUI error", "err", err)
 			}
-		} else {
-			// No HomeKit, just wait for signal
-			sig := <-sigCh
-			logger.Info("received signal, shutting down...", "signal", sig)
-			signal.Stop(sigCh)
+			logger.Info("TUI exited, shutting down...")
 			cancel()
-		}
+		}()
 	}
 
-	logger.Info("swkit shutdown complete")
+	// Graceful shutdown signals.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	// Unified event loop: handles reload triggers, signals, HomeKit errors, and context cancellation.
+	for {
+		select {
+		case <-configProvider.ReloadCh():
+			sk, svcs = performReload(*config, sk, provider, svcs, ctx, syncDuration, *forceSyncEveryCycle, Version, logger)
+
+		case sig := <-sigCh:
+			logger.Info("received signal, shutting down...", "signal", sig)
+			signal.Stop(sigCh)
+			signal.Stop(sighupCh)
+			svcs.serviceCancel()
+			if svcs.hkCancel != nil {
+				svcs.hkCancel()
+			}
+			<-svcs.tickerDone
+			if err := sk.Close(); err != nil {
+				logger.Error("error during shutdown", "err", err)
+			}
+			cancel()
+			logger.Info("swkit shutdown complete")
+			return
+
+		case err := <-svcs.hkErrCh:
+			if err != nil {
+				logger.Error("HomeKit terminated with error", "err", err)
+			} else {
+				logger.Info("HomeKit terminated ok")
+			}
+			svcs.serviceCancel()
+			<-svcs.tickerDone
+			if err := sk.Close(); err != nil {
+				logger.Error("error during shutdown", "err", err)
+			}
+			cancel()
+			logger.Info("swkit shutdown complete")
+			return
+
+		case <-ctx.Done():
+			// Context cancelled (e.g., TUI exited).
+			svcs.serviceCancel()
+			if svcs.hkCancel != nil {
+				svcs.hkCancel()
+			}
+			<-svcs.tickerDone
+			if err := sk.Close(); err != nil {
+				logger.Error("error during shutdown", "err", err)
+			}
+			logger.Info("swkit shutdown complete")
+			return
+		}
+	}
 }
