@@ -698,7 +698,14 @@ func (m Model) renderDeviceList() string {
 			stateText = m.theme.On.Render(IconOn)
 		}
 		if device.Type == app.DeviceTypeButton {
-			stateText = m.theme.Secondary.Render("-")
+			now := m.state.Timestamp
+			if !device.LastEventTime.IsZero() && now.Sub(device.LastEventTime) < 2*time.Second {
+				stateText = m.theme.Event.Render(IconOn)
+			} else if !device.LastEventTime.IsZero() && now.Sub(device.LastEventTime) < 200*time.Second {
+				stateText = m.theme.On.Render(IconOn)
+			} else {
+				stateText = m.theme.Secondary.Render("-")
+			}
 		}
 
 		// Health indicator
@@ -713,8 +720,17 @@ func (m Model) renderDeviceList() string {
 			hkText = m.theme.Muted.Render(" (no HK)")
 		}
 
+		// Activity timer for buttons (counts up for 200s after last event)
+		eventTimerText := ""
+		if device.Type == app.DeviceTypeButton && !device.LastEventTime.IsZero() {
+			ago := m.state.Timestamp.Sub(device.LastEventTime)
+			if ago < 200*time.Second {
+				eventTimerText = " " + m.theme.On.Render(fmt.Sprintf("%ds", int(ago.Seconds())))
+			}
+		}
+
 		line := prefix + icon + " " + m.theme.Primary.Render(padRight(device.Name, 20)) +
-			" " + stateText + healthText + hkText
+			" " + stateText + eventTimerText + healthText + hkText
 
 		lines = append(lines, style.Render(line))
 	}
@@ -770,6 +786,26 @@ func (m Model) renderDeviceDetail() string {
 		}
 		if device.EventInputId != "" {
 			lines = append(lines, m.theme.Secondary.Render("Input:  ")+device.EventInputId)
+		}
+	}
+
+	// Last event (buttons only)
+	if device.Type == app.DeviceTypeButton {
+		lines = append(lines, "", m.theme.BoxTitle.Render("Last Event"))
+		if device.LastEventTime.IsZero() {
+			lines = append(lines, m.theme.Muted.Render("  no event since startup"))
+		} else {
+			now := m.state.Timestamp
+			ago := now.Sub(device.LastEventTime)
+			agoStr := fmt.Sprintf("%ds ago", int(ago.Seconds()))
+			if ago >= time.Minute {
+				agoStr = fmt.Sprintf("%dm%ds ago", int(ago.Minutes()), int(ago.Seconds())%60)
+			}
+			eventStyle := m.theme.On
+			if ago < 2*time.Second {
+				eventStyle = m.theme.Event
+			}
+			lines = append(lines, "  "+eventStyle.Render(device.LastEventType)+"  "+m.theme.Secondary.Render(agoStr))
 		}
 	}
 

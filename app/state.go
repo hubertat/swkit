@@ -55,6 +55,9 @@ type DeviceState struct {
 	RgbwIoId         string                 // color lights only
 	EventInputId     string                 // buttons only
 	ControlRelations []ButtonControlRelation // buttons only
+
+	LastEventType string    // buttons only: last push event type, e.g. "single_press"
+	LastEventTime time.Time // buttons only: when last push event occurred; zero if never
 }
 
 // ButtonControlRelation describes a button's control mapping

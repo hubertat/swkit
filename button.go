@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/brutella/hap/accessory"
 	"github.com/brutella/hap/characteristic"
@@ -34,6 +36,11 @@ type Button struct {
 	hk    *accessory.A
 	fault *characteristic.StatusFault
 	ss    *service.StatelessProgrammableSwitch
+
+	// lastEventType and lastEventTime track the most recent push event.
+	// Written from driver goroutines, read from state polling — use atomics.
+	lastEventType atomic.Uint32
+	lastEventTime atomic.Int64 // UnixNano; 0 = never
 }
 
 type ControlDevice struct {
@@ -112,7 +119,19 @@ func (bu *Button) Name() string {
 	return bu.name
 }
 
+// LastEvent returns the most recent push event type and the time it occurred.
+// Returns a zero time if no event has been received since startup.
+func (bu *Button) LastEvent() (drivers.PushEvent, time.Time) {
+	nano := bu.lastEventTime.Load()
+	if nano == 0 {
+		return 0, time.Time{}
+	}
+	return drivers.PushEvent(bu.lastEventType.Load()), time.Unix(0, nano)
+}
+
 func (bu *Button) HandlePushEvent(e drivers.PushEvent) {
+	bu.lastEventType.Store(uint32(e))
+	bu.lastEventTime.Store(time.Now().UnixNano())
 	bu.logger.Debug("received push event", "button", bu.name, "event", e.String())
 
 	if !bu.disableHomekit {

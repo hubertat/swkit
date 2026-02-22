@@ -279,6 +279,12 @@ func (p *SwKitProvider) buildButtonState(button *Button) app.DeviceState {
 		})
 	}
 
+	lastEventType, lastEventTime := button.LastEvent()
+	lastEventTypeStr := ""
+	if !lastEventTime.IsZero() {
+		lastEventTypeStr = lastEventType.String()
+	}
+
 	return app.DeviceState{
 		Name:             button.name,
 		Type:             app.DeviceTypeButton,
@@ -288,6 +294,8 @@ func (p *SwKitProvider) buildButtonState(button *Button) app.DeviceState {
 		HomeKitEnabled:   !button.disableHomekit,
 		EventInputId:     eventInputId,
 		ControlRelations: relations,
+		LastEventType:    lastEventTypeStr,
+		LastEventTime:    lastEventTime,
 	}
 }
 
