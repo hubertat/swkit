@@ -411,10 +411,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
 
+	case configWizardToggleMsg:
+		controller, ok := m.provider.(app.DeviceController)
+		if !ok {
+			return m, nil
+		}
+		for i, d := range m.state.Devices {
+			if d.Name == msg.DeviceName {
+				idx := i
+				return m, func() tea.Msg {
+					return ControlResultMsg{Result: controller.ToggleDevice(idx)}
+				}
+			}
+		}
+		return m, nil
+
 	case StateUpdateMsg:
 		m.detectIoStateChanges(msg.State.IoDebug)
 		m.configEditor.SetIoPoints(msg.State.IoDebug)
 		m.configEditor.SetIoDisplayNames(m.ioNames)
+		m.configEditor.SetDeviceStates(msg.State.Devices)
 		m.state = msg.State
 		return m, m.waitForNextState()
 
@@ -1029,6 +1045,11 @@ type ioExportClearMsg struct{}
 
 // configSaveClearMsg clears the config save status message after a delay
 type configSaveClearMsg struct{}
+
+// configWizardToggleMsg is sent by the wizard to toggle a device for identification
+type configWizardToggleMsg struct {
+	DeviceName string
+}
 
 func newIoNameInput() textinput.Model {
 	ti := textinput.New()

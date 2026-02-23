@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,8 +20,10 @@ const (
 	ConfigModeList ConfigMode = iota
 	ConfigModeEditLight
 	ConfigModeEditButton
-	ConfigModeAddSelector // inline device type picker when pressing 'a'
-	ConfigModeIoPicker    // inline IO point browser for IO field assignment
+	ConfigModeAddSelector      // inline device type picker when pressing 'a'
+	ConfigModeIoPicker         // inline IO point browser for IO field assignment
+	ConfigModeCtrlWizardDevice // wizard step 1: pick target output device
+	ConfigModeCtrlWizardEvent  // wizard step 2: pick button + event
 )
 
 // configListItemType identifies what kind of item is in the list
@@ -86,6 +89,13 @@ type ConfigEditor struct {
 	ioPickerField    int // field index to populate (currently always 1)
 	modeBeforePicker ConfigMode
 
+	// Control-by-relation wizard (ConfigModeCtrlWizardDevice / ConfigModeCtrlWizardEvent)
+	wizardTargetDeviceName string
+	wizardTargetAction     string // "toggle", "on", "off"
+	wizardDeviceCursor     int
+	wizardEventCursor      int
+	deviceStates           []app.DeviceState // updated by SetDeviceStates()
+
 	// Status
 	statusMsg string
 
@@ -127,6 +137,44 @@ func (ce *ConfigEditor) SetIoDisplayNames(names map[string]string) {
 	for k, v := range names {
 		ce.ioDisplayNames[k] = v
 	}
+}
+
+// SetDeviceStates updates device states used by the control-by-relation wizard.
+func (ce *ConfigEditor) SetDeviceStates(devices []app.DeviceState) {
+	ce.deviceStates = devices
+}
+
+// wizardOutputDevices returns devices that can be controlled (lights, color lights, outlets).
+func (ce *ConfigEditor) wizardOutputDevices() []app.DeviceState {
+	var result []app.DeviceState
+	for _, d := range ce.deviceStates {
+		if d.Type == app.DeviceTypeLight || d.Type == app.DeviceTypeColorLight || d.Type == app.DeviceTypeOutlet {
+			result = append(result, d)
+		}
+	}
+	return result
+}
+
+// wizardEventList returns buttons sorted by LastEventTime (newest first, zero-time at bottom).
+func (ce *ConfigEditor) wizardEventList() []app.DeviceState {
+	var buttons []app.DeviceState
+	for _, d := range ce.deviceStates {
+		if d.Type == app.DeviceTypeButton {
+			buttons = append(buttons, d)
+		}
+	}
+	sort.SliceStable(buttons, func(i, j int) bool {
+		ai := buttons[i].LastEventTime
+		aj := buttons[j].LastEventTime
+		if ai.IsZero() {
+			return false
+		}
+		if aj.IsZero() {
+			return true
+		}
+		return ai.After(aj)
+	})
+	return buttons
 }
 
 // IsDirty returns true if there are unsaved changes
@@ -212,6 +260,18 @@ func (ce *ConfigEditor) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		return ce.updateIoPicker(keyMsg)
+	case ConfigModeCtrlWizardDevice:
+		keyMsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return nil
+		}
+		return ce.updateCtrlWizardDevice(keyMsg)
+	case ConfigModeCtrlWizardEvent:
+		keyMsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return nil
+		}
+		return ce.updateCtrlWizardEvent(keyMsg)
 	}
 	return nil
 }
@@ -248,6 +308,24 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 	case "a":
 		ce.addTypeCursor = 0
 		ce.mode = ConfigModeAddSelector
+	case "w":
+		devices := ce.wizardOutputDevices()
+		if len(devices) == 0 {
+			ce.statusMsg = "No controllable devices configured"
+			return nil
+		}
+		ce.wizardTargetAction = "toggle"
+		ce.wizardDeviceCursor = 0
+		// Pre-position cursor if selected list item is an output device
+		if ce.cursor < len(ce.items) && ce.items[ce.cursor].itemType == configItemLight {
+			for i, d := range devices {
+				if d.Name == ce.items[ce.cursor].name {
+					ce.wizardDeviceCursor = i
+					break
+				}
+			}
+		}
+		ce.mode = ConfigModeCtrlWizardDevice
 	case "d", "delete":
 		return ce.deleteItem()
 	}
@@ -736,6 +814,101 @@ func (ce *ConfigEditor) updateIoPicker(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// updateCtrlWizardDevice handles keys in wizard step 1 (target device selection)
+func (ce *ConfigEditor) updateCtrlWizardDevice(msg tea.KeyMsg) tea.Cmd {
+	devices := ce.wizardOutputDevices()
+	switch msg.String() {
+	case "up", "k":
+		if ce.wizardDeviceCursor > 0 {
+			ce.wizardDeviceCursor--
+		}
+	case "down", "j":
+		if ce.wizardDeviceCursor < len(devices)-1 {
+			ce.wizardDeviceCursor++
+		}
+	case "t":
+		if ce.wizardDeviceCursor < len(devices) {
+			name := devices[ce.wizardDeviceCursor].Name
+			return func() tea.Msg {
+				return configWizardToggleMsg{DeviceName: name}
+			}
+		}
+	case "enter":
+		if ce.wizardDeviceCursor < len(devices) {
+			ce.wizardTargetDeviceName = devices[ce.wizardDeviceCursor].Name
+			ce.wizardEventCursor = 0
+			ce.mode = ConfigModeCtrlWizardEvent
+		}
+	case "esc":
+		ce.mode = ConfigModeList
+	}
+	return nil
+}
+
+// updateCtrlWizardEvent handles keys in wizard step 2 (button + event selection)
+func (ce *ConfigEditor) updateCtrlWizardEvent(msg tea.KeyMsg) tea.Cmd {
+	events := ce.wizardEventList()
+	switch msg.String() {
+	case "up", "k":
+		if ce.wizardEventCursor > 0 {
+			ce.wizardEventCursor--
+		}
+	case "down", "j":
+		if ce.wizardEventCursor < len(events)-1 {
+			ce.wizardEventCursor++
+		}
+	case "left", "h":
+		ce.wizardTargetAction = cycleOption(app.AllActions(), ce.wizardTargetAction, -1)
+	case "right", "l":
+		ce.wizardTargetAction = cycleOption(app.AllActions(), ce.wizardTargetAction, 1)
+	case "enter":
+		return ce.confirmWizard(events)
+	case "esc":
+		ce.mode = ConfigModeCtrlWizardDevice
+	}
+	return nil
+}
+
+// confirmWizard finalizes the wizard and appends a ControlDeviceEdit to the selected button.
+func (ce *ConfigEditor) confirmWizard(events []app.DeviceState) tea.Cmd {
+	if len(events) == 0 || ce.wizardEventCursor >= len(events) {
+		ce.statusMsg = "No button selected"
+		ce.mode = ConfigModeList
+		return nil
+	}
+
+	selected := events[ce.wizardEventCursor]
+	eventType := selected.LastEventType
+	if eventType == "" {
+		eventType = "single_press"
+	}
+
+	// Find button by name in config
+	buttonIdx := -1
+	for i, b := range ce.config.Buttons {
+		if b.Name == selected.Name {
+			buttonIdx = i
+			break
+		}
+	}
+	if buttonIdx == -1 {
+		ce.statusMsg = "Button not found: " + selected.Name
+		ce.mode = ConfigModeList
+		return nil
+	}
+
+	newCtrl := app.ControlDeviceEdit{
+		EventType:  eventType,
+		Action:     ce.wizardTargetAction,
+		DeviceName: ce.wizardTargetDeviceName,
+	}
+	ce.config.Buttons[buttonIdx].ControlDevices = append(ce.config.Buttons[buttonIdx].ControlDevices, newCtrl)
+	ce.dirty = true
+	ce.statusMsg = fmt.Sprintf("Added: %s %s → %s → %s", selected.Name, eventType, ce.wizardTargetAction, ce.wizardTargetDeviceName)
+	ce.mode = ConfigModeList
+	return nil
+}
+
 // cycleOption cycles through a list of options
 func cycleOption(options []string, current string, direction int) string {
 	if len(options) == 0 {
@@ -770,6 +943,10 @@ func (ce *ConfigEditor) View(theme Theme) string {
 		return ce.viewAddSelector(theme)
 	case ConfigModeIoPicker:
 		return ce.viewIoPicker(theme)
+	case ConfigModeCtrlWizardDevice:
+		return ce.viewCtrlWizardDevice(theme)
+	case ConfigModeCtrlWizardEvent:
+		return ce.viewCtrlWizardEvent(theme)
 	}
 	return ""
 }
@@ -1107,6 +1284,120 @@ func (ce *ConfigEditor) viewIoPicker(theme Theme) string {
 	return result
 }
 
+// viewCtrlWizardDevice renders wizard step 1: target device selection
+func (ce *ConfigEditor) viewCtrlWizardDevice(theme Theme) string {
+	devices := ce.wizardOutputDevices()
+	title := theme.BoxTitle.Render("Add Control by Relation — Step 1/2: Target Device")
+
+	var lines []string
+	lines = append(lines, title, "")
+
+	if len(devices) == 0 {
+		lines = append(lines, theme.Muted.Render("No controllable devices configured"))
+	}
+
+	for i, d := range devices {
+		prefix := "  "
+		style := theme.ListItem
+		if i == ce.wizardDeviceCursor {
+			prefix = "> "
+			style = theme.ListItemSelected
+		}
+
+		icon := deviceIcon(d.Type)
+
+		stateIcon := theme.Off.Render(IconOff)
+		if d.IsOn {
+			stateIcon = theme.On.Render(IconOn)
+		}
+
+		faultyText := ""
+		if d.IsFaulty {
+			faultyText = " " + theme.Faulty.Render(IconFaulty)
+		}
+
+		line := prefix + icon + " " + theme.Primary.Render(padRight(d.Name, 22)) + " " + stateIcon + faultyText
+		lines = append(lines, style.Render(line))
+	}
+
+	content := strings.Join(lines, "\n")
+	result := theme.Box.Render(content)
+	result += "\n" + theme.Help.Render(
+		theme.HelpKey.Render("↑↓")+" "+theme.HelpDesc.Render("select")+"  "+
+			theme.HelpKey.Render("t")+" "+theme.HelpDesc.Render("toggle/identify")+"  "+
+			theme.HelpKey.Render("enter")+" "+theme.HelpDesc.Render("next")+"  "+
+			theme.HelpKey.Render("esc")+" "+theme.HelpDesc.Render("cancel"),
+	)
+	return result
+}
+
+// viewCtrlWizardEvent renders wizard step 2: button + event selection
+func (ce *ConfigEditor) viewCtrlWizardEvent(theme Theme) string {
+	events := ce.wizardEventList()
+
+	titleContent := theme.BoxTitle.Render("Add Control — Step 2/2: Button Event") +
+		"  " + theme.Muted.Render("[→ "+ce.wizardTargetAction+" → "+ce.wizardTargetDeviceName+"]")
+
+	var lines []string
+	lines = append(lines, titleContent)
+	lines = append(lines, theme.Muted.Render("  Press a button to detect, or select:"))
+	lines = append(lines, "")
+
+	if len(events) == 0 {
+		lines = append(lines, theme.Muted.Render("No buttons configured"))
+	}
+
+	now := time.Now()
+	nameWidth := 8
+	for _, e := range events {
+		if len(e.Name) > nameWidth {
+			nameWidth = len(e.Name)
+		}
+	}
+
+	for i, e := range events {
+		prefix := "  "
+		style := theme.ListItem
+		if i == ce.wizardEventCursor {
+			prefix = "> "
+			style = theme.ListItemSelected
+		}
+
+		eventText := theme.Muted.Render("(no events)")
+		ageText := ""
+
+		if !e.LastEventTime.IsZero() {
+			ago := now.Sub(e.LastEventTime)
+			var agoStr string
+			if ago < time.Minute {
+				agoStr = fmt.Sprintf("%ds ago", int(ago.Seconds()))
+			} else {
+				agoStr = fmt.Sprintf("%dm%ds ago", int(ago.Minutes()), int(ago.Seconds())%60)
+			}
+
+			eventStyle := theme.On
+			if ago < 2*time.Second {
+				eventStyle = theme.Event
+			}
+			eventText = eventStyle.Render(e.LastEventType)
+			ageText = "  " + theme.Secondary.Render(agoStr)
+		}
+
+		line := prefix + IconButton + " " + theme.Primary.Render(padRight(e.Name, nameWidth)) + "  " + eventText + ageText
+		lines = append(lines, style.Render(line))
+	}
+
+	content := strings.Join(lines, "\n")
+	result := theme.Box.Render(content)
+	result += "\n" + theme.Help.Render(
+		theme.HelpKey.Render("↑↓")+" "+theme.HelpDesc.Render("select")+"  "+
+			theme.HelpKey.Render("←→")+" "+theme.HelpDesc.Render("action: "+ce.wizardTargetAction)+"  "+
+			theme.HelpKey.Render("enter")+" "+theme.HelpDesc.Render("confirm")+"  "+
+			theme.HelpKey.Render("esc")+" "+theme.HelpDesc.Render("back"),
+	)
+	return result
+}
+
 // viewStatus renders the status bar below the form
 func (ce *ConfigEditor) viewStatus(theme Theme) string {
 	var parts []string
@@ -1129,6 +1420,7 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 		parts := []string{
 			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("edit"),
 			theme.HelpKey.Render("a") + " " + theme.HelpDesc.Render("add device"),
+			theme.HelpKey.Render("w") + " " + theme.HelpDesc.Render("add by relation"),
 			theme.HelpKey.Render("d") + " " + theme.HelpDesc.Render("delete"),
 		}
 		if ce.dirty {
@@ -1160,6 +1452,16 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 	case ConfigModeIoPicker:
 		return theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("select") + "  " +
 			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
+	case ConfigModeCtrlWizardDevice:
+		return theme.HelpKey.Render("↑↓") + " " + theme.HelpDesc.Render("select") + "  " +
+			theme.HelpKey.Render("t") + " " + theme.HelpDesc.Render("toggle") + "  " +
+			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("next") + "  " +
+			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
+	case ConfigModeCtrlWizardEvent:
+		return theme.HelpKey.Render("↑↓") + " " + theme.HelpDesc.Render("select") + "  " +
+			theme.HelpKey.Render("←→") + " " + theme.HelpDesc.Render("action: "+ce.wizardTargetAction) + "  " +
+			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("confirm") + "  " +
+			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("back")
 	}
 	return ""
 }
