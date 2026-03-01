@@ -1,0 +1,437 @@
+// swkit web ui - auto-refresh and interactions
+
+(function() {
+    'use strict';
+
+    const REFRESH_INTERVAL = 1000; // ms
+    let refreshTimer = null;
+    let currentTab = '';
+    let ioFilter = 'all';
+
+    // ---- API ----
+
+    async function fetchState() {
+        const indicator = document.getElementById('refresh-indicator');
+        if (indicator) indicator.classList.add('fetching');
+        try {
+            const resp = await fetch('/api/state');
+            if (!resp.ok) throw new Error('fetch failed');
+            return await resp.json();
+        } finally {
+            if (indicator) {
+                setTimeout(() => indicator.classList.remove('fetching'), 200);
+            }
+        }
+    }
+
+    // ---- Rendering helpers ----
+
+    function badge(text, cls) {
+        return '<span class="badge badge-' + cls + '">' + escHtml(text) + '</span>';
+    }
+
+    function stateIndicator(state, lastEvent, now) {
+        let cls = state ? 'io-state-on' : 'io-state-off';
+        if (lastEvent && (now - new Date(lastEvent).getTime()) < 2000) {
+            cls = 'io-state-event';
+        }
+        return '<span class="io-state-indicator ' + cls + '"></span>';
+    }
+
+    function timeSince(ts, now) {
+        if (!ts) return '';
+        const d = new Date(ts);
+        if (d.getTime() === 0) return '';
+        const secs = Math.floor((now - d.getTime()) / 1000);
+        if (secs < 0) return '';
+        if (secs >= 200) return '';
+        if (secs < 60) return secs + 's ago';
+        const mins = Math.floor(secs / 60);
+        return mins + 'm' + (secs % 60) + 's ago';
+    }
+
+    function escHtml(s) {
+        if (!s) return '';
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function deviceIcon(type) {
+        switch(type) {
+            case 'light': return '\u{1F4A1}';
+            case 'color_light': return '\u{1F308}';
+            case 'outlet': return '\u{1F50C}';
+            case 'button': return '\u{1F446}';
+            default: return '?';
+        }
+    }
+
+    // ---- Dashboard ----
+
+    function renderDashboard(state) {
+        const el = document.getElementById('page-content');
+        if (!el) return;
+        const s = state.summary;
+
+        let driversStatus = s.drivers_ready === s.drivers_total
+            ? badge('Ready', 'ready')
+            : badge(s.drivers_ready + '/' + s.drivers_total + ' Ready', 'not-ready');
+
+        let hkStatus = s.homekit_enabled
+            ? badge('Enabled', 'ready') + ' <span class="text-muted">' + s.homekit_devices + ' accessories</span>'
+            : badge('Disabled', 'off');
+
+        el.innerHTML = '<div class="dashboard-grid">' +
+            '<div class="card">' +
+                '<div class="card-title">\u26A1 Drivers</div>' +
+                '<div class="stat-value">' + s.drivers_total + '</div>' +
+                '<div class="stat-label">configured drivers</div>' +
+                '<div class="mt-8">' + driversStatus + '</div>' +
+            '</div>' +
+            '<div class="card">' +
+                '<div class="card-title">\u{1F3E0} Devices</div>' +
+                '<div class="stat-row"><span class="label">\u{1F4A1} Lights</span><span class="value">' + s.lights_count + '</span></div>' +
+                (s.color_lights_count > 0 ? '<div class="stat-row"><span class="label">\u{1F308} Color Lights</span><span class="value">' + s.color_lights_count + '</span></div>' : '') +
+                '<div class="stat-row"><span class="label">\u{1F50C} Outlets</span><span class="value">' + s.outlets_count + '</span></div>' +
+                '<div class="stat-row"><span class="label">\u{1F446} Buttons</span><span class="value">' + s.buttons_count + '</span></div>' +
+            '</div>' +
+            '<div class="card">' +
+                '<div class="card-title">\u{1F34E} HomeKit</div>' +
+                '<div class="mt-8">' + hkStatus + '</div>' +
+                (s.homekit_enabled && state.homekit && state.homekit.pin
+                    ? '<div class="stat-row mt-8"><span class="label">PIN</span><span class="value mono">' + escHtml(formatPin(state.homekit.pin)) + '</span></div>'
+                    : '') +
+            '</div>' +
+        '</div>';
+    }
+
+    function formatPin(pin) {
+        if (pin && pin.length === 8) {
+            return pin.substring(0,3) + '-' + pin.substring(3,5) + '-' + pin.substring(5);
+        }
+        return pin || '';
+    }
+
+    // ---- Drivers ----
+
+    function renderDrivers(state) {
+        const el = document.getElementById('page-content');
+        if (!el) return;
+
+        if (!state.drivers || state.drivers.length === 0) {
+            el.innerHTML = '<div class="empty-state">No drivers configured</div>';
+            return;
+        }
+
+        let rows = '';
+        for (const d of state.drivers) {
+            rows += '<tr>' +
+                '<td class="fw-600">' + escHtml(d.name) + '</td>' +
+                '<td>' + (d.ready ? badge('Ready', 'ready') : badge('Not Ready', 'not-ready')) + '</td>' +
+                '<td class="text-muted">' + escHtml(d.status_info || '') + '</td>' +
+                '</tr>';
+        }
+
+        el.innerHTML = '<div class="card">' +
+            '<div class="card-title">\u26A1 IO Drivers</div>' +
+            '<div class="table-wrap"><table>' +
+            '<thead><tr><th>Driver</th><th>Status</th><th>Info</th></tr></thead>' +
+            '<tbody>' + rows + '</tbody>' +
+            '</table></div></div>';
+    }
+
+    // ---- Devices ----
+
+    function renderDevices(state) {
+        const el = document.getElementById('page-content');
+        if (!el) return;
+
+        if (!state.devices || state.devices.length === 0) {
+            el.innerHTML = '<div class="empty-state">No devices configured</div>';
+            return;
+        }
+
+        const now = Date.now();
+        let cards = '';
+        for (const d of state.devices) {
+            let statusBadge = '';
+            if (d.type === 'button') {
+                if (d.last_event_time && (now - new Date(d.last_event_time).getTime()) < 2000) {
+                    statusBadge = badge(d.last_event_type || 'event', 'event');
+                } else if (d.last_event_time && (now - new Date(d.last_event_time).getTime()) < 200000) {
+                    statusBadge = badge(d.last_event_type || 'idle', 'on');
+                } else {
+                    statusBadge = '<span class="text-muted">-</span>';
+                }
+            } else {
+                statusBadge = d.is_on ? badge('ON', 'on') : badge('OFF', 'off');
+            }
+
+            let healthBadge = '';
+            if (d.is_faulty) {
+                healthBadge = badge('Faulty', 'faulty');
+            } else if (d.is_healthy) {
+                healthBadge = badge('Healthy', 'healthy');
+            }
+
+            let hkBadge = d.homekit_enabled ? '' : '<span class="text-muted" style="font-size:0.75rem">no HK</span>';
+
+            let details = '';
+            if (d.output_io_id) {
+                details += '<div class="row"><dt>Output:</dt><dd>' + escHtml(d.output_io_id) + '</dd></div>';
+            }
+            if (d.rgbw_io_id) {
+                details += '<div class="row"><dt>RGBW:</dt><dd>' + escHtml(d.rgbw_io_id) + '</dd></div>';
+            }
+            if (d.event_input_id) {
+                details += '<div class="row"><dt>Input:</dt><dd>' + escHtml(d.event_input_id) + '</dd></div>';
+            }
+
+            // Last event for buttons
+            if (d.type === 'button' && d.last_event_time) {
+                const ago = timeSince(d.last_event_time, now);
+                if (ago) {
+                    details += '<div class="row"><dt>Last event:</dt><dd>' + escHtml(d.last_event_type) + ' <span class="text-muted">' + ago + '</span></dd></div>';
+                }
+            }
+
+            let controls = '';
+            if (d.control_relations && d.control_relations.length > 0) {
+                controls = '<div class="control-relations">';
+                for (const rel of d.control_relations) {
+                    controls += '<div class="control-rel">' +
+                        '<span class="event-type">' + escHtml(rel.event_type) + '</span>' +
+                        '<span class="action">' + escHtml(rel.action) + '</span>' +
+                        '<span class="target">' + escHtml(rel.device_name) + '</span>' +
+                        '</div>';
+                }
+                controls += '</div>';
+            }
+
+            cards += '<div class="device-card">' +
+                '<div class="device-header">' +
+                    '<span class="device-name">' + deviceIcon(d.type) + ' ' + escHtml(d.name) + '</span>' +
+                    '<span>' + statusBadge + ' ' + healthBadge + ' ' + hkBadge + '</span>' +
+                '</div>' +
+                '<div style="margin-top:2px">' + badge(d.type, 'type') + '</div>' +
+                (details ? '<div class="device-detail">' + details + '</div>' : '') +
+                controls +
+            '</div>';
+        }
+
+        el.innerHTML = '<div class="card"><div class="card-title">\u{1F3E0} Devices</div></div>' +
+            '<div class="device-grid">' + cards + '</div>';
+    }
+
+    // ---- IO Debug ----
+
+    function renderIoDebug(state) {
+        const el = document.getElementById('page-content');
+        if (!el) return;
+
+        if (!state.io_debug || state.io_debug.length === 0) {
+            el.innerHTML = '<div class="empty-state">No IO debug data available</div>';
+            return;
+        }
+
+        const now = Date.now();
+        const inputs = state.io_debug.filter(p => p.type === 'input');
+        const outputs = state.io_debug.filter(p => p.type === 'output');
+
+        let filtered;
+        if (ioFilter === 'inputs') filtered = inputs;
+        else if (ioFilter === 'outputs') filtered = outputs;
+        else filtered = null; // show columns
+
+        // Filter buttons
+        let filters = '<div class="io-filters">' +
+            '<button class="io-filter-btn' + (ioFilter === 'all' ? ' active' : '') + '" onclick="swkit.setIoFilter(\'all\')">All</button>' +
+            '<button class="io-filter-btn' + (ioFilter === 'inputs' ? ' active' : '') + '" onclick="swkit.setIoFilter(\'inputs\')">Inputs (' + inputs.length + ')</button>' +
+            '<button class="io-filter-btn' + (ioFilter === 'outputs' ? ' active' : '') + '" onclick="swkit.setIoFilter(\'outputs\')">Outputs (' + outputs.length + ')</button>' +
+            '</div>';
+
+        let content;
+        if (filtered) {
+            content = renderIoTable(filtered, now);
+        } else {
+            content = '<div class="io-columns">' +
+                '<div class="card"><div class="card-title">Inputs (' + inputs.length + ')</div>' + renderIoTable(inputs, now) + '</div>' +
+                '<div class="card"><div class="card-title">Outputs (' + outputs.length + ')</div>' + renderIoTable(outputs, now) + '</div>' +
+                '</div>';
+        }
+
+        el.innerHTML = '<div class="card"><div class="card-title">\u{1F50D} IO Debug</div>' + filters + '</div>' + content;
+    }
+
+    function renderIoTable(points, now) {
+        if (!points || points.length === 0) {
+            return '<div class="text-muted" style="padding:8px">none</div>';
+        }
+
+        let rows = '';
+        for (const pt of points) {
+            const ind = stateIndicator(pt.state, pt.last_event, now);
+            const healthBadge = pt.healthy ? '<span class="text-success">\u2713</span>' : '<span class="text-error">\u2717</span>';
+            const changed = timeSince(pt.last_changed, now);
+            const evtTime = timeSince(pt.last_event, now);
+            const configured = pt.configured_as ? '<span class="text-muted">&lt;' + escHtml(pt.configured_as) + '&gt;</span>' : '';
+
+            rows += '<tr>' +
+                '<td>' + escHtml(pt.driver_name) + '</td>' +
+                '<td class="mono">' + escHtml(pt.name) + '</td>' +
+                '<td>' + ind + (pt.state ? ' ON' : ' OFF') + '</td>' +
+                '<td>' + healthBadge + '</td>' +
+                '<td class="text-muted">' + (changed || evtTime || '-') + '</td>' +
+                '<td>' + configured + '</td>' +
+                '</tr>';
+        }
+
+        return '<div class="table-wrap"><table>' +
+            '<thead><tr><th>Driver</th><th>Name</th><th>State</th><th>Health</th><th>Activity</th><th>Device</th></tr></thead>' +
+            '<tbody>' + rows + '</tbody>' +
+            '</table></div>';
+    }
+
+    // ---- Config ----
+
+    function renderConfig(state) {
+        const el = document.getElementById('page-content');
+        if (!el) return;
+
+        if (!state.config_json) {
+            el.innerHTML = '<div class="empty-state">No configuration data available</div>';
+            return;
+        }
+
+        el.innerHTML = '<div class="card"><div class="card-title">\u2699\uFE0F Configuration</div></div>' +
+            '<div class="config-display"><pre>' + syntaxHighlight(state.config_json) + '</pre></div>';
+    }
+
+    function syntaxHighlight(json) {
+        if (typeof json !== 'string') {
+            json = JSON.stringify(json, null, 2);
+        }
+        json = escHtml(json);
+        return json.replace(
+            /("(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+            function(match) {
+                let cls = 'number';
+                if (/^"/.test(match)) {
+                    if (/:$/.test(match)) {
+                        cls = 'key';
+                        // Remove trailing colon for wrapping, add it back
+                        return '<span class="' + cls + '">' + match.slice(0, -1) + '</span>:';
+                    } else {
+                        cls = 'string';
+                    }
+                } else if (/true|false/.test(match)) {
+                    cls = 'bool';
+                } else if (/null/.test(match)) {
+                    cls = 'null';
+                }
+                return '<span class="' + cls + '">' + match + '</span>';
+            }
+        );
+    }
+
+    // ---- Page routing ----
+
+    function getTab() {
+        const path = window.location.pathname;
+        if (path === '/io-debug') return 'io-debug';
+        if (path === '/devices') return 'devices';
+        if (path === '/drivers') return 'drivers';
+        if (path === '/config') return 'config';
+        return 'dashboard';
+    }
+
+    function renderPage(state) {
+        const tab = getTab();
+        currentTab = tab;
+
+        // Update nav active state
+        document.querySelectorAll('.nav a').forEach(a => {
+            a.classList.toggle('active', a.getAttribute('data-tab') === tab);
+        });
+
+        // Update timestamp
+        const tsEl = document.getElementById('timestamp');
+        if (tsEl && state.timestamp) {
+            const d = new Date(state.timestamp);
+            tsEl.textContent = d.toLocaleTimeString();
+        }
+
+        switch(tab) {
+            case 'dashboard': renderDashboard(state); break;
+            case 'drivers': renderDrivers(state); break;
+            case 'devices': renderDevices(state); break;
+            case 'io-debug': renderIoDebug(state); break;
+            case 'config': renderConfig(state); break;
+        }
+    }
+
+    // ---- Refresh loop ----
+
+    async function refresh() {
+        try {
+            const state = await fetchState();
+            renderPage(state);
+        } catch(e) {
+            // silently retry on next tick
+        }
+    }
+
+    function startRefresh() {
+        refresh();
+        refreshTimer = setInterval(refresh, REFRESH_INTERVAL);
+    }
+
+    function stopRefresh() {
+        if (refreshTimer) {
+            clearInterval(refreshTimer);
+            refreshTimer = null;
+        }
+    }
+
+    // ---- Navigation (SPA-like) ----
+
+    function navigate(path) {
+        history.pushState(null, '', path);
+        refresh();
+    }
+
+    // ---- Init ----
+
+    document.addEventListener('DOMContentLoaded', function() {
+        // Set up nav clicks
+        document.querySelectorAll('.nav a').forEach(a => {
+            a.addEventListener('click', function(e) {
+                e.preventDefault();
+                navigate(this.getAttribute('href'));
+            });
+        });
+
+        // Handle browser back/forward
+        window.addEventListener('popstate', function() {
+            refresh();
+        });
+
+        startRefresh();
+    });
+
+    // Pause refresh when tab is hidden
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            stopRefresh();
+        } else {
+            startRefresh();
+        }
+    });
+
+    // Expose for filter buttons
+    window.swkit = {
+        setIoFilter: function(f) {
+            ioFilter = f;
+            refresh();
+        }
+    };
+})();

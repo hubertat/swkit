@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>swkit - diagnostics</title>
+    <link rel="stylesheet" href="/static/web_static/style.css">
+</head>
+<body>
+    <div class="app">
+        <div class="header">
+            <h1><span class="icon">&#x1F3E0;</span>swkit</h1>
+            <div class="header-meta">
+                <div class="refresh-bar">
+                    <span id="refresh-indicator" class="refresh-indicator"></span>
+                    <span id="timestamp">--:--:--</span>
+                </div>
+            </div>
+        </div>
+
+        <nav class="nav">
+            <a href="/" data-tab="dashboard"{{if eq .Tab "dashboard"}} class="active"{{end}}>Dashboard</a>
+            <a href="/drivers" data-tab="drivers"{{if eq .Tab "drivers"}} class="active"{{end}}>Drivers</a>
+            <a href="/devices" data-tab="devices"{{if eq .Tab "devices"}} class="active"{{end}}>Devices</a>
+            <a href="/io-debug" data-tab="io-debug"{{if eq .Tab "io-debug"}} class="active"{{end}}>IO Debug</a>
+            <a href="/config" data-tab="config"{{if eq .Tab "config"}} class="active"{{end}}>Config</a>
+        </nav>
+
+        <main id="page-content">
+            <div class="empty-state">Loading...</div>
+        </main>
+    </div>
+
+    <script src="/static/web_static/app.js"></script>
+</body>
+</html>
