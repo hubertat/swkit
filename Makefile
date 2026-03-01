@@ -53,4 +53,4 @@ endif
 ifndef DEST
 	$(error DEST is required, e.g. make deploy DEST=/home/pi)
 endif
-	scp ./rel/$(BINARY_raspberry) $(HOST):$(DEST)/$(BINARY_NAME)
+	scp ./rel/$(BINARY_raspberry) $(HOST):$(DEST)/$(BINARY_raspberry)
