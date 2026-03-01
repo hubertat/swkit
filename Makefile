@@ -45,3 +45,12 @@ run: build run-app
 
 run-tui: build-tui
 	./$(BINARY_TUI)
+
+deploy: build-raspberry
+ifndef HOST
+	$(error HOST is required, e.g. make deploy HOST=pi@192.168.1.100)
+endif
+ifndef DEST
+	$(error DEST is required, e.g. make deploy DEST=/home/pi)
+endif
+	scp ./rel/$(BINARY_raspberry) $(HOST):$(DEST)/$(BINARY_NAME)
