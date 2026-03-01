@@ -304,10 +304,13 @@
             const changed = timeSince(pt.last_changed, now);
             const evtTime = timeSince(pt.last_event, now);
             const configured = pt.configured_as ? '<span class="text-muted">&lt;' + escHtml(pt.configured_as) + '&gt;</span>' : '';
+            const label = pt.custom_name
+                ? '<span class="fw-600">' + escHtml(pt.custom_name) + '</span> <span class="text-muted mono" style="font-size:0.75rem">' + escHtml(pt.name) + '</span>'
+                : '<span class="mono">' + escHtml(pt.name) + '</span>';
 
             rows += '<tr>' +
                 '<td>' + escHtml(pt.driver_name) + '</td>' +
-                '<td class="mono">' + escHtml(pt.name) + '</td>' +
+                '<td>' + label + '</td>' +
                 '<td>' + ind + (pt.state ? ' ON' : ' OFF') + '</td>' +
                 '<td>' + healthBadge + '</td>' +
                 '<td class="text-muted">' + (changed || evtTime || '-') + '</td>' +

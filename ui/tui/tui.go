@@ -91,10 +91,13 @@ type Model struct {
 	ioNames        map[string]string    // session-only custom names, key: "driver|type|index"
 	ioPrevStates   map[string]bool      // last seen State per IO point for TUI-side change detection
 	ioStateChanged map[string]time.Time // when TUI last observed a state change for an IO point
-	ioNaming      bool              // true when text input is active for naming
+	ioNamesMan    app.IoNamesManager // non-nil when provider supports it; nil → use ioNames fallback
+	ioNaming      bool               // true when text input is active for naming
 	ioNameInput   textinput.Model
 	ioNameTarget  string // key of the IO point being named
 	ioExportMsg   string // transient status message after export
+	ioImporting   bool   // true when filename input is active for import
+	ioImportInput textinput.Model
 	ctx           context.Context
 	cancel        context.CancelFunc
 	chat          ChatView
@@ -152,11 +155,15 @@ func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigPr
 		ioPrevStates:   make(map[string]bool),
 		ioStateChanged: make(map[string]time.Time),
 		ioNameInput:    newIoNameInput(),
+		ioImportInput:  newIoImportInput(),
 		ctx:            ctx,
 		cancel:         cancel,
 		agent:          ag,
 		chat:           NewChatView(ag, theme),
 		configEditor:   NewConfigEditor(configProvider, theme),
+	}
+	if man, ok := provider.(app.IoNamesManager); ok {
+		m.ioNamesMan = man
 	}
 	m.stateCh = provider.Subscribe(ctx, 500*time.Millisecond)
 	return m
@@ -185,6 +192,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ioExportClearMsg:
 		m.ioExportMsg = ""
+		m.ioImporting = false
 		return m, nil
 
 	case ConfigSaveMsg:
@@ -203,16 +211,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Handle IO import mode - intercept all keys
+		if m.ioImporting {
+			switch msg.Type {
+			case tea.KeyEnter:
+				path := strings.TrimSpace(m.ioImportInput.Value())
+				if path == "" {
+					path = "io_names.json"
+				}
+				importMsg, cmd := m.doImportIoNames(path)
+				m.ioExportMsg = importMsg
+				m.ioImporting = false
+				m.ioImportInput.Blur()
+				return m, cmd
+			case tea.KeyEsc:
+				m.ioImporting = false
+				m.ioImportInput.Blur()
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.ioImportInput, cmd = m.ioImportInput.Update(msg)
+				return m, cmd
+			}
+		}
+
 		// Handle IO naming mode - intercept all keys
 		if m.ioNaming {
 			switch msg.Type {
 			case tea.KeyEnter:
 				name := strings.TrimSpace(m.ioNameInput.Value())
-				if name != "" {
-					m.ioNames[m.ioNameTarget] = name
-				} else {
-					delete(m.ioNames, m.ioNameTarget)
-				}
+				m.setIoName(m.ioNameTarget, name)
 				m.configEditor.SetIoDisplayNames(m.ioNames)
 				m.ioNaming = false
 				m.ioNameInput.Blur()
@@ -369,7 +397,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					pt := points[m.cursor]
 					k := ioPointKey(pt)
 					m.ioNameTarget = k
-					m.ioNameInput.SetValue(m.ioNames[k])
+					m.ioNameInput.SetValue(m.getIoName(k))
 					m.ioNameInput.Focus()
 					m.ioNaming = true
 					return m, textinput.Blink
@@ -377,10 +405,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case key.Matches(msg, m.keys.Export):
-			if m.activeTab == TabIoDebug && len(m.ioNames) > 0 {
+			if m.activeTab == TabIoDebug && m.hasIoNames() {
 				exportMsg, cmd := m.doExportIoNames()
 				m.ioExportMsg = exportMsg
 				return m, cmd
+			}
+
+		case key.Matches(msg, m.keys.Import):
+			if m.activeTab == TabIoDebug && m.ioNamesMan != nil {
+				m.ioImportInput.SetValue("io_names.json")
+				m.ioImportInput.Focus()
+				m.ioImporting = true
+				return m, textinput.Blink
 			}
 
 		case key.Matches(msg, m.keys.Enter):
@@ -432,7 +468,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StateUpdateMsg:
 		m.detectIoStateChanges(msg.State.IoDebug)
 		m.configEditor.SetIoPoints(msg.State.IoDebug)
-		m.configEditor.SetIoDisplayNames(m.ioNames)
+		if m.ioNamesMan != nil {
+			m.configEditor.SetIoDisplayNames(m.ioNamesMan.GetIoNames())
+		} else {
+			m.configEditor.SetIoDisplayNames(m.ioNames)
+		}
 		m.configEditor.SetDeviceStates(msg.State.Devices)
 		m.state = msg.State
 		return m, m.waitForNextState()
@@ -476,6 +516,16 @@ func (m Model) toggleSelectedIoOutput() tea.Cmd {
 
 // doExportIoNames writes named IO points to a JSON file, returns status message and clear cmd
 func (m Model) doExportIoNames() (string, tea.Cmd) {
+	const filename = "io_names.json"
+
+	if m.ioNamesMan != nil {
+		if err := m.ioNamesMan.SaveIoNames(filename); err != nil {
+			return "Export error: " + err.Error(), clearExportMsg()
+		}
+		return fmt.Sprintf("Exported to %s", filename), clearExportMsg()
+	}
+
+	// Fallback: local session-only names
 	type namedPoint struct {
 		Driver string `json:"driver"`
 		Type   string `json:"type"`
@@ -503,12 +553,22 @@ func (m Model) doExportIoNames() (string, tea.Cmd) {
 		return "Export error: " + err.Error(), clearExportMsg()
 	}
 
-	filename := "io_names.json"
 	if err := os.WriteFile(filename, data, 0644); err != nil {
 		return "Export error: " + err.Error(), clearExportMsg()
 	}
 
 	return fmt.Sprintf("Exported %d names to %s", len(points), filename), clearExportMsg()
+}
+
+// doImportIoNames loads names from the given file into the manager.
+func (m Model) doImportIoNames(path string) (string, tea.Cmd) {
+	if m.ioNamesMan == nil {
+		return "Import not supported", clearExportMsg()
+	}
+	if err := m.ioNamesMan.LoadIoNames(path); err != nil {
+		return "Import error: " + err.Error(), clearExportMsg()
+	}
+	return fmt.Sprintf("Imported names from %s", path), clearExportMsg()
 }
 
 func clearExportMsg() tea.Cmd {
@@ -872,7 +932,11 @@ func (m Model) renderIoDebug() string {
 	header += m.theme.Primary.Render(m.ioDebugFilter.String())
 	header += m.theme.Muted.Render("  (f to cycle)")
 	if m.ioDebugFilter != IoFilterAll {
-		header += m.theme.Muted.Render("  n: name  w: export")
+		hint := "  n: name  w: export"
+		if m.ioNamesMan != nil {
+			hint += "  i: import"
+		}
+		header += m.theme.Muted.Render(hint)
 	}
 
 	var result string
@@ -893,7 +957,12 @@ func (m Model) renderIoDebug() string {
 		result += "\n" + m.theme.Secondary.Render("Name: ") + m.ioNameInput.View()
 	}
 
-	// Export status message
+	// Text input for import filename
+	if m.ioImporting {
+		result += "\n" + m.theme.Secondary.Render("Import file: ") + m.ioImportInput.View()
+	}
+
+	// Export/import status message
 	if m.ioExportMsg != "" {
 		result += "\n" + m.theme.Success.Render(m.ioExportMsg)
 	}
@@ -981,10 +1050,10 @@ func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool
 			configuredText = " " + m.theme.Muted.Render("<"+pt.ConfiguredAs+">")
 		}
 
-		// Custom name
+		// Custom name (from state, populated by provider)
 		nameText := ""
-		if customName, ok := m.ioNames[ioPointKey(pt)]; ok {
-			nameText = " " + m.theme.Secondary.Render("["+customName+"]")
+		if pt.CustomName != "" {
+			nameText = " " + m.theme.Secondary.Render("["+pt.CustomName+"]")
 		}
 
 		line := prefix +
@@ -1060,6 +1129,44 @@ func newIoNameInput() textinput.Model {
 	ti.CharLimit = 40
 	ti.Width = 30
 	return ti
+}
+
+func newIoImportInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "io_names.json"
+	ti.SetValue("io_names.json")
+	ti.CharLimit = 120
+	ti.Width = 40
+	return ti
+}
+
+// getIoName returns the custom name for a key, using the manager when available.
+func (m Model) getIoName(key string) string {
+	if m.ioNamesMan != nil {
+		return m.ioNamesMan.GetIoName(key)
+	}
+	return m.ioNames[key]
+}
+
+// setIoName sets or deletes a custom name for a key.
+func (m *Model) setIoName(key, name string) {
+	if m.ioNamesMan != nil {
+		m.ioNamesMan.SetIoName(key, name)
+		return
+	}
+	if name == "" {
+		delete(m.ioNames, key)
+	} else {
+		m.ioNames[key] = name
+	}
+}
+
+// hasIoNames returns true if at least one custom name is set.
+func (m Model) hasIoNames() bool {
+	if m.ioNamesMan != nil {
+		return len(m.ioNamesMan.GetIoNames()) > 0
+	}
+	return len(m.ioNames) > 0
 }
 
 // ioPointKey returns a unique key for an IO point (used as map key for names)

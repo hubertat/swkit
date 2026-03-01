@@ -215,6 +215,7 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 			State:        pt.State,
 			Healthy:      pt.Healthy,
 			ConfiguredAs: pt.ConfiguredAs,
+			CustomName:   pt.CustomName,
 		}
 		if !pt.LastChanged.IsZero() {
 			ioPt.LastChanged = &pt.LastChanged
@@ -329,6 +330,7 @@ type apiIoPoint struct {
 	LastChanged  *time.Time `json:"last_changed,omitempty"`
 	LastEvent    *time.Time `json:"last_event,omitempty"`
 	ConfiguredAs string     `json:"configured_as,omitempty"`
+	CustomName   string     `json:"custom_name,omitempty"`
 }
 
 type apiHomeKit struct {

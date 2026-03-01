@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"os"
 	"os/signal"
@@ -192,6 +193,13 @@ func main() {
 
 	// State provider is swap-safe; updated on each reload.
 	provider := swkit.NewStateProvider(sk)
+
+	// Auto-load custom IO names if the file exists.
+	if err := provider.LoadIoNames("io_names.json"); err == nil {
+		logger.Info("loaded IO names from io_names.json", "count", len(provider.GetIoNames()))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		logger.Warn("could not load io_names.json", "err", err)
+	}
 
 	// SIGHUP feeds into the config provider's reload channel.
 	sighupCh := make(chan os.Signal, 1)

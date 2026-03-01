@@ -17,6 +17,7 @@ type KeyMap struct {
 	Filter   key.Binding
 	Name     key.Binding
 	Export   key.Binding
+	Import   key.Binding
 }
 
 // DefaultKeyMap returns the default key bindings
@@ -73,6 +74,10 @@ func DefaultKeyMap() KeyMap {
 		Export: key.NewBinding(
 			key.WithKeys("w"),
 			key.WithHelp("w", "export names"),
+		),
+		Import: key.NewBinding(
+			key.WithKeys("i"),
+			key.WithHelp("i", "import names"),
 		),
 	}
 }

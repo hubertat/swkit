@@ -2,7 +2,9 @@ package swkit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -13,13 +15,15 @@ import (
 
 // SwKitProvider implements app.StateProvider for SwKit
 type SwKitProvider struct {
-	mu sync.RWMutex
-	sw *SwKit
+	mu      sync.RWMutex
+	sw      *SwKit
+	namesMu sync.RWMutex
+	names   map[string]string
 }
 
 // NewStateProvider creates a new state provider for the given SwKit instance
 func NewStateProvider(sw *SwKit) *SwKitProvider {
-	return &SwKitProvider{sw: sw}
+	return &SwKitProvider{sw: sw, names: make(map[string]string)}
 }
 
 // Reload atomically swaps the underlying SwKit instance.
@@ -28,6 +32,108 @@ func (p *SwKitProvider) Reload(newSk *SwKit) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.sw = newSk
+}
+
+// SetIoName sets or deletes (when name is empty) a custom name for the given key.
+func (p *SwKitProvider) SetIoName(key, name string) {
+	p.namesMu.Lock()
+	defer p.namesMu.Unlock()
+	if name == "" {
+		delete(p.names, key)
+	} else {
+		p.names[key] = name
+	}
+}
+
+// GetIoName returns the custom name for a single IO key.
+func (p *SwKitProvider) GetIoName(key string) string {
+	p.namesMu.RLock()
+	defer p.namesMu.RUnlock()
+	return p.names[key]
+}
+
+// GetIoNames returns a copy of all custom names.
+func (p *SwKitProvider) GetIoNames() map[string]string {
+	p.namesMu.RLock()
+	defer p.namesMu.RUnlock()
+	cp := make(map[string]string, len(p.names))
+	for k, v := range p.names {
+		cp[k] = v
+	}
+	return cp
+}
+
+// LoadIoNames reads a JSON file of named IO points and populates the names map.
+func (p *SwKitProvider) LoadIoNames(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	type entry struct {
+		Driver string `json:"driver"`
+		Type   string `json:"type"`
+		Index  int    `json:"index"`
+		Name   string `json:"name"`
+	}
+	var entries []entry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return err
+	}
+	p.namesMu.Lock()
+	defer p.namesMu.Unlock()
+	for _, e := range entries {
+		if e.Name != "" {
+			key := app.IoDebugKey(e.Driver, e.Type, e.Index)
+			p.names[key] = e.Name
+		}
+	}
+	return nil
+}
+
+// SaveIoNames writes all named IO points to a JSON file.
+// It reads current state to populate the hw_name field.
+func (p *SwKitProvider) SaveIoNames(path string) error {
+	state := p.GetState()
+
+	// Build a map from key → hw_name
+	hwNames := make(map[string]string, len(state.IoDebug))
+	for _, pt := range state.IoDebug {
+		key := app.IoDebugKey(pt.DriverName, pt.Type, pt.Index)
+		hwNames[key] = pt.Name
+	}
+
+	type entry struct {
+		Driver string `json:"driver"`
+		Type   string `json:"type"`
+		Index  int    `json:"index"`
+		HwName string `json:"hw_name"`
+		Name   string `json:"name"`
+	}
+
+	names := p.GetIoNames()
+	entries := make([]entry, 0, len(names))
+	for key, name := range names {
+		// Parse key back: "driver|type|index"
+		// Find points from state that match this key
+		for _, pt := range state.IoDebug {
+			if app.IoDebugKey(pt.DriverName, pt.Type, pt.Index) == key {
+				entries = append(entries, entry{
+					Driver: pt.DriverName,
+					Type:   pt.Type,
+					Index:  pt.Index,
+					HwName: hwNames[key],
+					Name:   name,
+				})
+				break
+			}
+		}
+	}
+
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 // GetState returns the current application state snapshot
@@ -131,6 +237,13 @@ func (p *SwKitProvider) GetState() app.AppState {
 		if deviceName, ok := ioDeviceMap[ioId]; ok {
 			state.IoDebug[i].ConfiguredAs = deviceName
 		}
+	}
+
+	// Apply custom names
+	ioNames := p.GetIoNames()
+	for i, pt := range state.IoDebug {
+		key := app.IoDebugKey(pt.DriverName, pt.Type, pt.Index)
+		state.IoDebug[i].CustomName = ioNames[key]
 	}
 
 	// Collect HomeKit state

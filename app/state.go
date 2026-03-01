@@ -1,6 +1,9 @@
 package app
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // AppState represents a snapshot of the entire application state
 type AppState struct {
@@ -23,6 +26,22 @@ type IoPointDebugState struct {
 	LastChanged  time.Time // zero if never changed since startup
 	LastEvent    time.Time // zero if no explicit event received (e.g. button press)
 	ConfiguredAs string    // name of device that uses this IO point, empty if unconfigured
+	CustomName   string    // user-assigned label; empty if not set
+}
+
+// IoNamesManager is implemented by providers that support persistent, shared IO point naming.
+type IoNamesManager interface {
+	SetIoName(key, name string)      // set or clear (empty = delete)
+	GetIoName(key string) string     // single lookup
+	GetIoNames() map[string]string   // returns a copy of all names
+	LoadIoNames(path string) error
+	SaveIoNames(path string) error
+}
+
+// IoDebugKey returns the canonical map key for a named IO point.
+// Format: "driverName|ioType|index" e.g. "shelly|input|0"
+func IoDebugKey(driverName, ioType string, index int) string {
+	return driverName + "|" + ioType + "|" + strconv.Itoa(index)
 }
 
 // DriverState represents the status of an IO driver
