@@ -237,8 +237,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Global Ctrl+R: trigger a config reload from disk (without saving)
+		// Global Ctrl+R: save (if dirty) then reload; works over SSH where ctrl+s is intercepted
 		if msg.String() == "ctrl+r" {
+			if m.configEditor.IsDirty() {
+				return m, m.configEditor.Save()
+			}
 			m.configEditor.TriggerReload()
 			return m, nil
 		}

@@ -1621,7 +1621,7 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 			theme.HelpKey.Render("c") + " " + theme.HelpDesc.Render("clear"),
 		}
 		if ce.dirty {
-			parts = append(parts, theme.HelpKey.Render("ctrl+s")+" "+theme.HelpDesc.Render("save"))
+			parts = append(parts, theme.HelpKey.Render("ctrl+r")+" "+theme.HelpDesc.Render("save"))
 		}
 		return strings.Join(parts, "  ")
 	case ConfigModeAddSelector:
@@ -1643,7 +1643,7 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 			)
 		}
 		if ce.dirty {
-			parts = append(parts, theme.HelpKey.Render("ctrl+s")+" "+theme.HelpDesc.Render("save"))
+			parts = append(parts, theme.HelpKey.Render("ctrl+r")+" "+theme.HelpDesc.Render("save"))
 		}
 		return strings.Join(parts, "  ")
 	case ConfigModeIoPicker:

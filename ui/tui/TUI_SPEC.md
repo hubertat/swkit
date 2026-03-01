@@ -34,7 +34,7 @@ This document describes the current TUI implementation, its scope, abstraction l
 - If an IO point has a custom in-session name from IO Debug, the picker shows `custom_name [hardware_name]`.
 - Selecting an IO point from the picker writes the raw IO ID string into config.
 - Button control mappings editable inline (event/action/device cycling).
-- `ctrl+s` saves via `ConfigProvider`.
+- `ctrl+r` saves via `ConfigProvider` (works over SSH; `ctrl+s` is also supported locally but may be intercepted by SSH terminals as XON/XOFF).
 
 ### HomeKit
 - Read-only view: enabled status, PIN, address, accessory count.
