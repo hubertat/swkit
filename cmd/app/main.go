@@ -244,7 +244,22 @@ func main() {
 			}
 			return json.RawMessage(data)
 		}
-		webSrv, err := server.NewWebServerWithConfig(provider, sk.WebServer.Port, logger, getRawConfig)
+		services := server.ServicesConfig{
+			WebPort: sk.WebServer.Port,
+		}
+		if sk.SshServer != nil && sk.SshServer.Enabled {
+			services.SSHEnabled = true
+			services.SSHPort = sk.SshServer.Port
+		}
+		if ag != nil {
+			services.AgentEnabled = true
+			services.AgentModel = agentCfg.Model
+		}
+		webSrv, err := server.NewWebServerWithConfig(provider, sk.WebServer.Port, logger, server.WebServerOptions{
+			GetRawConfig: getRawConfig,
+			Version:      Version,
+			Services:     services,
+		})
 		if err != nil {
 			logger.Error("failed to create web server", "err", err)
 		} else {

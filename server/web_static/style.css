@@ -67,6 +67,13 @@ body {
 
 .header h1 .icon { margin-right: 6px; }
 
+.version-badge {
+    font-size: 0.7rem;
+    opacity: 0.6;
+    font-weight: normal;
+    margin-left: 6px;
+}
+
 .header-meta {
     font-size: 0.8rem;
     color: var(--text-muted);
@@ -93,6 +100,12 @@ body {
     border-bottom: 2px solid transparent;
     transition: color var(--transition), border-color var(--transition);
     white-space: nowrap;
+}
+
+.nav-key {
+    opacity: 0.5;
+    font-size: 0.7rem;
+    margin-right: 3px;
 }
 
 .nav a:hover {
@@ -220,6 +233,30 @@ body {
 .badge-type {
     background: rgba(122, 162, 247, 0.1);
     color: var(--accent);
+}
+
+/* ---- Status info pills ---- */
+
+.stat-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 4px;
+    overflow: hidden;
+    font-size: 0.75rem;
+    margin: 2px 3px 2px 0;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.pill-key {
+    background: rgba(122, 162, 247, 0.12);
+    color: var(--text-muted);
+    padding: 2px 5px;
+}
+
+.pill-val {
+    background: rgba(122, 162, 247, 0.06);
+    color: var(--text-secondary);
+    padding: 2px 6px;
 }
 
 /* ---- Tables ---- */

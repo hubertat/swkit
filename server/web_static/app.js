@@ -80,6 +80,15 @@
             ? badge('Enabled', 'ready') + ' <span class="text-muted">' + s.homekit_devices + ' accessories</span>'
             : badge('Disabled', 'off');
 
+        const svc = state.services || {};
+        const sshStatus = svc.ssh_enabled
+            ? ':' + (svc.ssh_port || 2222)
+            : '<span class="text-muted">disabled</span>';
+        const webStatus = ':' + (svc.web_port || 8080);
+        const agentStatus = svc.agent_enabled
+            ? '<span class="text-muted">' + escHtml(svc.agent_model || 'enabled') + '</span>'
+            : '<span class="text-muted">disabled</span>';
+
         el.innerHTML = '<div class="dashboard-grid">' +
             '<div class="card">' +
                 '<div class="card-title">\u26A1 Drivers</div>' +
@@ -101,17 +110,30 @@
                     ? '<div class="stat-row mt-8"><span class="label">PIN</span><span class="value mono">' + escHtml(formatPin(state.homekit.pin)) + '</span></div>'
                     : '') +
             '</div>' +
+            '<div class="card">' +
+                '<div class="card-title">\u2699\uFE0F Services</div>' +
+                '<div class="stat-row"><span class="label">SSH</span><span class="value mono">' + sshStatus + '</span></div>' +
+                '<div class="stat-row"><span class="label">Web UI</span><span class="value mono">' + webStatus + '</span></div>' +
+                '<div class="stat-row"><span class="label">AI Agent</span><span class="value">' + agentStatus + '</span></div>' +
+            '</div>' +
         '</div>';
     }
 
     function formatPin(pin) {
         if (pin && pin.length === 8) {
-            return pin.substring(0,3) + '-' + pin.substring(3,5) + '-' + pin.substring(5);
+            return pin.substring(0, 4) + '-' + pin.substring(4);
         }
         return pin || '';
     }
 
     // ---- Drivers ----
+
+    function formatStatusInfo(info) {
+        if (!info) return '';
+        return info.replace(/(\w+):(\S+)/g, function(_, k, v) {
+            return '<span class="stat-pill"><span class="pill-key">' + escHtml(k) + '</span><span class="pill-val">' + escHtml(v) + '</span></span>';
+        });
+    }
 
     function renderDrivers(state) {
         const el = document.getElementById('page-content');
@@ -122,12 +144,20 @@
             return;
         }
 
+        // Count IO points per driver
+        const ioCounts = {};
+        for (const pt of (state.io_debug || [])) {
+            ioCounts[pt.driver_name] = (ioCounts[pt.driver_name] || 0) + 1;
+        }
+
         let rows = '';
         for (const d of state.drivers) {
+            const ioCount = ioCounts[d.name];
+            const ioBadge = ioCount > 0 ? ' ' + badge(ioCount + ' IOs', 'type') : '';
             rows += '<tr>' +
-                '<td class="fw-600">' + escHtml(d.name) + '</td>' +
+                '<td class="fw-600">' + escHtml(d.name) + ioBadge + '</td>' +
                 '<td>' + (d.ready ? badge('Ready', 'ready') : badge('Not Ready', 'not-ready')) + '</td>' +
-                '<td class="text-muted">' + escHtml(d.status_info || '') + '</td>' +
+                '<td>' + formatStatusInfo(d.status_info) + '</td>' +
                 '</tr>';
         }
 
@@ -413,6 +443,14 @@
         // Handle browser back/forward
         window.addEventListener('popstate', function() {
             refresh();
+        });
+
+        // Keyboard tab navigation: 1-5 switches tabs
+        document.addEventListener('keydown', function(e) {
+            if (document.activeElement && document.activeElement !== document.body) return;
+            const tabs = ['/', '/drivers', '/devices', '/io-debug', '/config'];
+            const n = parseInt(e.key);
+            if (n >= 1 && n <= 5) { e.preventDefault(); navigate(tabs[n - 1]); }
         });
 
         startRefresh();

@@ -22,22 +22,38 @@ var templateFiles embed.FS
 
 const defaultWebPort = 8080
 
+// ServicesConfig holds configuration info about running services for the dashboard.
+type ServicesConfig struct {
+	WebPort      int
+	SSHEnabled   bool
+	SSHPort      int
+	AgentEnabled bool
+	AgentModel   string
+}
+
+// WebServerOptions holds optional configuration for the web server.
+type WebServerOptions struct {
+	GetRawConfig func() json.RawMessage
+	Version      string
+	Services     ServicesConfig
+}
+
 // WebServer serves the diagnostic web UI
 type WebServer struct {
 	provider app.StateProvider
 	server   *http.Server
 	logger   *log.Logger
 	tmpl     *template.Template
-	getRaw   func() json.RawMessage // returns raw config JSON
+	opts     WebServerOptions
 }
 
 // NewWebServer creates a new web server for the diagnostic UI
 func NewWebServer(provider app.StateProvider, port int, logger *log.Logger) (*WebServer, error) {
-	return NewWebServerWithConfig(provider, port, logger, nil)
+	return NewWebServerWithConfig(provider, port, logger, WebServerOptions{})
 }
 
-// NewWebServerWithConfig creates a new web server with optional raw config accessor
-func NewWebServerWithConfig(provider app.StateProvider, port int, logger *log.Logger, getRawConfig func() json.RawMessage) (*WebServer, error) {
+// NewWebServerWithConfig creates a new web server with options
+func NewWebServerWithConfig(provider app.StateProvider, port int, logger *log.Logger, opts WebServerOptions) (*WebServer, error) {
 	if port == 0 {
 		port = defaultWebPort
 	}
@@ -51,7 +67,7 @@ func NewWebServerWithConfig(provider app.StateProvider, port int, logger *log.Lo
 		provider: provider,
 		logger:   logger,
 		tmpl:     tmpl,
-		getRaw:   getRawConfig,
+		opts:     opts,
 	}
 
 	mux := http.NewServeMux()
@@ -113,9 +129,11 @@ func (ws *WebServer) Addr() string {
 // handlePage renders the HTML shell for any page route
 func (ws *WebServer) handlePage(w http.ResponseWriter, r *http.Request) {
 	data := struct {
-		Tab string
+		Tab     string
+		Version string
 	}{
-		Tab: pageTab(r.URL.Path),
+		Tab:     pageTab(r.URL.Path),
+		Version: ws.opts.Version,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -207,9 +225,18 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 		resp.IoDebug = append(resp.IoDebug, ioPt)
 	}
 
+	// Services
+	resp.Services = apiServices{
+		WebPort:      ws.opts.Services.WebPort,
+		SSHEnabled:   ws.opts.Services.SSHEnabled,
+		SSHPort:      ws.opts.Services.SSHPort,
+		AgentEnabled: ws.opts.Services.AgentEnabled,
+		AgentModel:   ws.opts.Services.AgentModel,
+	}
+
 	// Config JSON
-	if ws.getRaw != nil {
-		resp.ConfigJSON = ws.getRaw()
+	if ws.opts.GetRawConfig != nil {
+		resp.ConfigJSON = ws.opts.GetRawConfig()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -242,7 +269,16 @@ type apiStateResponse struct {
 	Devices    []apiDevice     `json:"devices"`
 	IoDebug    []apiIoPoint    `json:"io_debug"`
 	HomeKit    apiHomeKit      `json:"homekit"`
+	Services   apiServices     `json:"services"`
 	ConfigJSON json.RawMessage `json:"config_json,omitempty"`
+}
+
+type apiServices struct {
+	WebPort      int    `json:"web_port"`
+	SSHEnabled   bool   `json:"ssh_enabled"`
+	SSHPort      int    `json:"ssh_port,omitempty"`
+	AgentEnabled bool   `json:"agent_enabled"`
+	AgentModel   string `json:"agent_model,omitempty"`
 }
 
 type apiSummary struct {

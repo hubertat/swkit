@@ -9,7 +9,7 @@
 <body>
     <div class="app">
         <div class="header">
-            <h1><span class="icon">&#x1F3E0;</span>swkit</h1>
+            <h1><span class="icon">&#x1F3E0;</span>swkit{{if .Version}} <span class="version-badge">v{{.Version}}</span>{{end}}</h1>
             <div class="header-meta">
                 <div class="refresh-bar">
                     <span id="refresh-indicator" class="refresh-indicator"></span>
@@ -19,11 +19,11 @@
         </div>
 
         <nav class="nav">
-            <a href="/" data-tab="dashboard"{{if eq .Tab "dashboard"}} class="active"{{end}}>Dashboard</a>
-            <a href="/drivers" data-tab="drivers"{{if eq .Tab "drivers"}} class="active"{{end}}>Drivers</a>
-            <a href="/devices" data-tab="devices"{{if eq .Tab "devices"}} class="active"{{end}}>Devices</a>
-            <a href="/io-debug" data-tab="io-debug"{{if eq .Tab "io-debug"}} class="active"{{end}}>IO Debug</a>
-            <a href="/config" data-tab="config"{{if eq .Tab "config"}} class="active"{{end}}>Config</a>
+            <a href="/" data-tab="dashboard"{{if eq .Tab "dashboard"}} class="active"{{end}}><span class="nav-key">1</span> Dashboard</a>
+            <a href="/drivers" data-tab="drivers"{{if eq .Tab "drivers"}} class="active"{{end}}><span class="nav-key">2</span> Drivers</a>
+            <a href="/devices" data-tab="devices"{{if eq .Tab "devices"}} class="active"{{end}}><span class="nav-key">3</span> Devices</a>
+            <a href="/io-debug" data-tab="io-debug"{{if eq .Tab "io-debug"}} class="active"{{end}}><span class="nav-key">4</span> IO Debug</a>
+            <a href="/config" data-tab="config"{{if eq .Tab "config"}} class="active"{{end}}><span class="nav-key">5</span> Config</a>
         </nav>
 
         <main id="page-content">
