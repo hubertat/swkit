@@ -1,0 +1,567 @@
+/* swkit web ui - diagnostic dashboard */
+
+:root {
+    --bg: #1a1b26;
+    --bg-surface: #24283b;
+    --bg-surface-hover: #292e42;
+    --bg-card: #1f2335;
+    --border: #3b4261;
+    --border-active: #7aa2f7;
+
+    --text: #c0caf5;
+    --text-secondary: #a9b1d6;
+    --text-muted: #565f89;
+    --text-heading: #7dcfff;
+
+    --accent: #7aa2f7;
+    --success: #9ece6a;
+    --error: #f7768e;
+    --warning: #e0af68;
+    --on: #e0af68;
+    --off: #565f89;
+    --event: #ff9e64;
+    --info: #2ac3de;
+
+    --radius: 8px;
+    --radius-lg: 12px;
+    --shadow: 0 2px 8px rgba(0,0,0,0.3);
+    --transition: 0.2s ease;
+}
+
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+}
+
+/* ---- Layout ---- */
+
+.app {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 16px;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+}
+
+.header h1 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--text-heading);
+}
+
+.header h1 .icon { margin-right: 6px; }
+
+.header-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+/* ---- Navigation ---- */
+
+.nav {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.nav a {
+    text-decoration: none;
+    color: var(--text-muted);
+    padding: 10px 16px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    transition: color var(--transition), border-color var(--transition);
+    white-space: nowrap;
+}
+
+.nav a:hover {
+    color: var(--text-secondary);
+}
+
+.nav a.active {
+    color: var(--text-heading);
+    border-bottom-color: var(--accent);
+}
+
+/* ---- Cards ---- */
+
+.card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow);
+}
+
+.card-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-heading);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* ---- Dashboard grid ---- */
+
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+}
+
+.stat-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.stat-label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+}
+
+.stat-row + .stat-row {
+    border-top: 1px solid var(--border);
+}
+
+.stat-row .label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.stat-row .value {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+/* ---- Status badges ---- */
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.badge-ready {
+    background: rgba(158, 206, 106, 0.15);
+    color: var(--success);
+}
+
+.badge-not-ready {
+    background: rgba(247, 118, 142, 0.15);
+    color: var(--error);
+}
+
+.badge-on {
+    background: rgba(224, 175, 104, 0.15);
+    color: var(--on);
+}
+
+.badge-off {
+    background: rgba(86, 95, 137, 0.15);
+    color: var(--off);
+}
+
+.badge-healthy {
+    background: rgba(158, 206, 106, 0.15);
+    color: var(--success);
+}
+
+.badge-faulty {
+    background: rgba(247, 118, 142, 0.15);
+    color: var(--error);
+}
+
+.badge-event {
+    background: rgba(255, 158, 100, 0.2);
+    color: var(--event);
+}
+
+.badge-type {
+    background: rgba(122, 162, 247, 0.1);
+    color: var(--accent);
+}
+
+/* ---- Tables ---- */
+
+.table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+th {
+    text-align: left;
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+
+tr:last-child td {
+    border-bottom: none;
+}
+
+tr:hover td {
+    background: var(--bg-surface-hover);
+}
+
+td.mono {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.8rem;
+}
+
+/* ---- IO Debug ---- */
+
+.io-filters {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+
+.io-filter-btn {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.io-filter-btn:hover {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.io-filter-btn.active {
+    background: rgba(122, 162, 247, 0.15);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.io-state-indicator {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 4px;
+}
+
+.io-state-on {
+    background: var(--on);
+    box-shadow: 0 0 6px rgba(224, 175, 104, 0.5);
+}
+
+.io-state-off {
+    background: var(--off);
+}
+
+.io-state-event {
+    background: var(--event);
+    box-shadow: 0 0 8px rgba(255, 158, 100, 0.6);
+    animation: pulse 1s ease-in-out;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.io-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+/* ---- Devices ---- */
+
+.device-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 12px;
+}
+
+.device-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    transition: border-color var(--transition);
+}
+
+.device-card:hover {
+    border-color: var(--border-active);
+}
+
+.device-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.device-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.device-detail {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+
+.device-detail dt {
+    color: var(--text-secondary);
+    font-weight: 500;
+    display: inline;
+}
+
+.device-detail dd {
+    display: inline;
+    margin-left: 4px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.75rem;
+}
+
+.device-detail .row {
+    margin-bottom: 3px;
+}
+
+.control-relations {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+}
+
+.control-rel {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 0.8rem;
+    padding: 2px 0;
+}
+
+.control-rel .event-type {
+    color: var(--text-muted);
+    min-width: 80px;
+}
+
+.control-rel .action {
+    color: var(--on);
+    font-weight: 500;
+}
+
+.control-rel .target {
+    color: var(--text-secondary);
+}
+
+/* ---- Config ---- */
+
+.config-display {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    overflow-x: auto;
+}
+
+.config-display pre {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.config-display .key {
+    color: var(--accent);
+}
+
+.config-display .string {
+    color: var(--success);
+}
+
+.config-display .number {
+    color: var(--warning);
+}
+
+.config-display .bool {
+    color: var(--event);
+}
+
+.config-display .null {
+    color: var(--text-muted);
+}
+
+/* ---- Auto-refresh bar ---- */
+
+.refresh-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.refresh-indicator {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--success);
+    transition: opacity 0.3s;
+}
+
+.refresh-indicator.fetching {
+    animation: blink 0.5s ease-in-out infinite;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
+}
+
+/* ---- Empty state ---- */
+
+.empty-state {
+    text-align: center;
+    padding: 40px 16px;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+/* ---- Responsive ---- */
+
+@media (max-width: 768px) {
+    .app {
+        padding: 10px;
+    }
+
+    .header h1 {
+        font-size: 1.1rem;
+    }
+
+    .nav a {
+        padding: 8px 12px;
+        font-size: 0.8rem;
+    }
+
+    .io-columns {
+        grid-template-columns: 1fr;
+    }
+
+    .device-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-grid {
+        grid-template-columns: 1fr;
+    }
+
+    table {
+        font-size: 0.78rem;
+    }
+
+    th, td {
+        padding: 8px;
+    }
+
+    .card {
+        padding: 12px;
+    }
+}
+
+@media (max-width: 480px) {
+    .header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+    }
+
+    .nav {
+        gap: 2px;
+    }
+
+    .nav a {
+        padding: 6px 10px;
+        font-size: 0.75rem;
+    }
+
+    .stat-value {
+        font-size: 1.4rem;
+    }
+}
+
+/* ---- Utility ---- */
+
+.text-success { color: var(--success); }
+.text-error { color: var(--error); }
+.text-warning { color: var(--warning); }
+.text-muted { color: var(--text-muted); }
+.text-accent { color: var(--accent); }
+.fw-600 { font-weight: 600; }
+.mt-8 { margin-top: 8px; }
+.mt-16 { margin-top: 16px; }
+.mb-8 { margin-bottom: 8px; }

@@ -235,6 +235,27 @@ func main() {
 		}
 	}
 
+	// Start Web UI server if configured.
+	if sk.WebServer != nil && sk.WebServer.Enabled {
+		getRawConfig := func() json.RawMessage {
+			data, err := os.ReadFile(*config)
+			if err != nil {
+				return nil
+			}
+			return json.RawMessage(data)
+		}
+		webSrv, err := server.NewWebServerWithConfig(provider, sk.WebServer.Port, logger, getRawConfig)
+		if err != nil {
+			logger.Error("failed to create web server", "err", err)
+		} else {
+			go func() {
+				if err := webSrv.Start(ctx); err != nil {
+					logger.Error("web server error", "err", err)
+				}
+			}()
+		}
+	}
+
 	// Start ticker and HomeKit.
 	logger.Info("starting sync ticker", "interval", syncDuration)
 	svcs := startServices(ctx, sk, syncDuration, *forceSyncEveryCycle, Version, logger)

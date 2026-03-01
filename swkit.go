@@ -45,6 +45,7 @@ type SwKit struct {
 	HkDebug     bool
 
 	SshServer *SshServerConfig `json:",omitempty"`
+	WebServer *WebServerConfig `json:",omitempty"`
 	Agent     *AgentConfig     `json:",omitempty"`
 
 	Mcp23017   *drivers.McpIO
@@ -65,6 +66,12 @@ type SshServerConfig struct {
 	Enabled     bool
 	Port        int    // default 2222
 	HostKeyPath string // default ".ssh/swkit_host_key"
+}
+
+// WebServerConfig configures the diagnostic web UI server
+type WebServerConfig struct {
+	Enabled bool
+	Port    int // default 8080
 }
 
 // AgentConfig configures the AI chat agent
