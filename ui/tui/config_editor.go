@@ -24,7 +24,29 @@ const (
 	ConfigModeIoPicker         // inline IO point browser for IO field assignment
 	ConfigModeCtrlWizardDevice // wizard step 1: pick target output device
 	ConfigModeCtrlWizardEvent  // wizard step 2: pick button + event
+	ConfigModeClearSelect      // clear step 1: choose what to clear
+	ConfigModeClearConfirm     // clear step 2: confirm the clear action
 )
+
+// clearOption defines a type of clear operation
+type clearOption int
+
+const (
+	clearAll       clearOption = iota // clear all devices and relations
+	clearLights                       // clear only lights
+	clearButtons                      // clear only buttons
+	clearRelations                    // clear all control relations from buttons
+)
+
+var clearOptions = []struct {
+	label  string
+	option clearOption
+}{
+	{label: "All devices and relations", option: clearAll},
+	{label: IconLight + " Lights only", option: clearLights},
+	{label: IconButton + " Buttons only", option: clearButtons},
+	{label: "Control relations only", option: clearRelations},
+}
 
 // configListItemType identifies what kind of item is in the list
 type configListItemType int
@@ -95,6 +117,10 @@ type ConfigEditor struct {
 	wizardDeviceCursor     int
 	wizardEventCursor      int
 	deviceStates           []app.DeviceState // updated by SetDeviceStates()
+
+	// Clear dialog state
+	clearCursor int         // cursor for clear option selection
+	clearChoice clearOption // selected clear option for confirmation
 
 	// Status
 	statusMsg string
@@ -272,6 +298,18 @@ func (ce *ConfigEditor) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		return ce.updateCtrlWizardEvent(keyMsg)
+	case ConfigModeClearSelect:
+		keyMsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return nil
+		}
+		return ce.updateClearSelect(keyMsg)
+	case ConfigModeClearConfirm:
+		keyMsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return nil
+		}
+		return ce.updateClearConfirm(keyMsg)
 	}
 	return nil
 }
@@ -328,6 +366,11 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 		ce.mode = ConfigModeCtrlWizardDevice
 	case "d", "delete":
 		return ce.deleteItem()
+	case "c":
+		if len(ce.items) > 0 {
+			ce.clearCursor = 0
+			ce.mode = ConfigModeClearSelect
+		}
 	}
 
 	return nil
@@ -909,6 +952,97 @@ func (ce *ConfigEditor) confirmWizard(events []app.DeviceState) tea.Cmd {
 	return nil
 }
 
+// updateClearSelect handles keys in clear step 1 (choose what to clear)
+func (ce *ConfigEditor) updateClearSelect(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "up", "k":
+		if ce.clearCursor > 0 {
+			ce.clearCursor--
+		}
+	case "down", "j":
+		if ce.clearCursor < len(clearOptions)-1 {
+			ce.clearCursor++
+		}
+	case "enter":
+		ce.clearChoice = clearOptions[ce.clearCursor].option
+		ce.mode = ConfigModeClearConfirm
+	case "esc":
+		ce.mode = ConfigModeList
+	}
+	return nil
+}
+
+// updateClearConfirm handles keys in clear step 2 (confirm action)
+func (ce *ConfigEditor) updateClearConfirm(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "y":
+		ce.executeClear()
+		ce.mode = ConfigModeList
+	case "n", "esc":
+		ce.mode = ConfigModeClearSelect
+	}
+	return nil
+}
+
+// executeClear performs the selected clear operation
+func (ce *ConfigEditor) executeClear() {
+	switch ce.clearChoice {
+	case clearAll:
+		cleared := len(ce.config.Lights) + len(ce.config.Buttons)
+		ce.config.Lights = nil
+		ce.config.Buttons = nil
+		ce.statusMsg = fmt.Sprintf("Cleared all %d devices", cleared)
+	case clearLights:
+		cleared := len(ce.config.Lights)
+		ce.config.Lights = nil
+		ce.statusMsg = fmt.Sprintf("Cleared %d lights", cleared)
+	case clearButtons:
+		cleared := len(ce.config.Buttons)
+		ce.config.Buttons = nil
+		ce.statusMsg = fmt.Sprintf("Cleared %d buttons", cleared)
+	case clearRelations:
+		cleared := 0
+		for i := range ce.config.Buttons {
+			cleared += len(ce.config.Buttons[i].ControlDevices)
+			ce.config.Buttons[i].ControlDevices = nil
+		}
+		ce.statusMsg = fmt.Sprintf("Cleared %d control relations", cleared)
+	}
+	ce.dirty = true
+	ce.refreshOutputDeviceNames()
+	ce.rebuildItems()
+	ce.cursor = 0
+}
+
+// clearOptionDescription returns a description of what the clear option will remove
+func (ce *ConfigEditor) clearOptionDescription() string {
+	switch ce.clearChoice {
+	case clearAll:
+		total := len(ce.config.Lights) + len(ce.config.Buttons)
+		relCount := 0
+		for _, b := range ce.config.Buttons {
+			relCount += len(b.ControlDevices)
+		}
+		return fmt.Sprintf("%d devices (%d lights, %d buttons) and %d control relations",
+			total, len(ce.config.Lights), len(ce.config.Buttons), relCount)
+	case clearLights:
+		return fmt.Sprintf("%d lights", len(ce.config.Lights))
+	case clearButtons:
+		relCount := 0
+		for _, b := range ce.config.Buttons {
+			relCount += len(b.ControlDevices)
+		}
+		return fmt.Sprintf("%d buttons with %d control relations", len(ce.config.Buttons), relCount)
+	case clearRelations:
+		relCount := 0
+		for _, b := range ce.config.Buttons {
+			relCount += len(b.ControlDevices)
+		}
+		return fmt.Sprintf("%d control relations across %d buttons", relCount, len(ce.config.Buttons))
+	}
+	return ""
+}
+
 // cycleOption cycles through a list of options
 func cycleOption(options []string, current string, direction int) string {
 	if len(options) == 0 {
@@ -947,6 +1081,10 @@ func (ce *ConfigEditor) View(theme Theme) string {
 		return ce.viewCtrlWizardDevice(theme)
 	case ConfigModeCtrlWizardEvent:
 		return ce.viewCtrlWizardEvent(theme)
+	case ConfigModeClearSelect:
+		return ce.viewClearSelect(theme)
+	case ConfigModeClearConfirm:
+		return ce.viewClearConfirm(theme)
 	}
 	return ""
 }
@@ -1398,6 +1536,64 @@ func (ce *ConfigEditor) viewCtrlWizardEvent(theme Theme) string {
 	return result
 }
 
+// viewClearSelect renders clear step 1: choose what to clear
+func (ce *ConfigEditor) viewClearSelect(theme Theme) string {
+	title := theme.BoxTitle.Render("Clear Config")
+	subtitle := theme.Muted.Render("Select what to clear:")
+
+	var lines []string
+	lines = append(lines, title, subtitle, "")
+
+	for i, opt := range clearOptions {
+		prefix := "  "
+		style := theme.ListItem
+		if i == ce.clearCursor {
+			prefix = "> "
+			style = theme.ListItemSelected
+		}
+		lines = append(lines, style.Render(prefix+opt.label))
+	}
+
+	content := strings.Join(lines, "\n")
+	result := theme.Box.Width(40).Render(content)
+	result += "\n" + theme.Help.Render(
+		theme.HelpKey.Render("↑↓")+" "+theme.HelpDesc.Render("select")+"  "+
+			theme.HelpKey.Render("enter")+" "+theme.HelpDesc.Render("next")+"  "+
+			theme.HelpKey.Render("esc")+" "+theme.HelpDesc.Render("cancel"),
+	)
+	return result
+}
+
+// viewClearConfirm renders clear step 2: confirm the action
+func (ce *ConfigEditor) viewClearConfirm(theme Theme) string {
+	title := theme.BoxTitle.Render("Confirm Clear")
+
+	optionLabel := ""
+	for _, opt := range clearOptions {
+		if opt.option == ce.clearChoice {
+			optionLabel = opt.label
+			break
+		}
+	}
+
+	description := ce.clearOptionDescription()
+
+	var lines []string
+	lines = append(lines, title, "")
+	lines = append(lines, theme.Secondary.Render("Action: ")+theme.Error.Render(optionLabel))
+	lines = append(lines, theme.Secondary.Render("Will remove: ")+theme.Primary.Render(description))
+	lines = append(lines, "")
+	lines = append(lines, theme.Error.Render("Are you sure? (y/n)"))
+
+	content := strings.Join(lines, "\n")
+	result := theme.Box.Width(50).Render(content)
+	result += "\n" + theme.Help.Render(
+		theme.HelpKey.Render("y")+" "+theme.HelpDesc.Render("confirm")+"  "+
+			theme.HelpKey.Render("n/esc")+" "+theme.HelpDesc.Render("back"),
+	)
+	return result
+}
+
 // viewStatus renders the status bar below the form
 func (ce *ConfigEditor) viewStatus(theme Theme) string {
 	var parts []string
@@ -1422,6 +1618,7 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 			theme.HelpKey.Render("a") + " " + theme.HelpDesc.Render("add device"),
 			theme.HelpKey.Render("w") + " " + theme.HelpDesc.Render("add by relation"),
 			theme.HelpKey.Render("d") + " " + theme.HelpDesc.Render("delete"),
+			theme.HelpKey.Render("c") + " " + theme.HelpDesc.Render("clear"),
 		}
 		if ce.dirty {
 			parts = append(parts, theme.HelpKey.Render("ctrl+s")+" "+theme.HelpDesc.Render("save"))
@@ -1462,6 +1659,13 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 			theme.HelpKey.Render("←→") + " " + theme.HelpDesc.Render("action: "+ce.wizardTargetAction) + "  " +
 			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("confirm") + "  " +
 			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("back")
+	case ConfigModeClearSelect:
+		return theme.HelpKey.Render("↑↓") + " " + theme.HelpDesc.Render("select") + "  " +
+			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("next") + "  " +
+			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
+	case ConfigModeClearConfirm:
+		return theme.HelpKey.Render("y") + " " + theme.HelpDesc.Render("confirm") + "  " +
+			theme.HelpKey.Render("n/esc") + " " + theme.HelpDesc.Render("back")
 	}
 	return ""
 }
