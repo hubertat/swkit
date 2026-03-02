@@ -8,6 +8,7 @@
     let currentTab = '';
     let ioFilter = 'all';
     let ioSort = 'recent'; // 'recent' | 'default'
+    let expandedDrivers = new Set(); // tracks which driver names are expanded
 
     // ---- API ----
 
@@ -151,6 +152,68 @@
         });
     }
 
+    function renderDriverDetailPanel(d) {
+        if (!d.details) return '';
+        const det = d.details;
+
+        // Shelly: has "devices" array
+        if (det.devices !== undefined) {
+            if (!det.devices || det.devices.length === 0) {
+                return '<div class="driver-detail-panel"><span class="text-muted">No devices discovered yet</span></div>';
+            }
+            let rows = '';
+            for (const dev of det.devices) {
+                const healthIcon = dev.healthy
+                    ? '<span class="text-success">\u2713</span>'
+                    : '<span class="text-error">\u2717</span>';
+                rows += '<tr>' +
+                    '<td class="mono">' + escHtml(dev.id) + '</td>' +
+                    '<td>' + escHtml(dev.model || '-') + '</td>' +
+                    '<td class="mono">' + escHtml(dev.network || '-') + '</td>' +
+                    '<td>' + dev.switches + '</td>' +
+                    '<td>' + dev.inputs + '</td>' +
+                    '<td>' + healthIcon + '</td>' +
+                    '</tr>';
+            }
+            const brokerInfo = det.broker
+                ? '<div class="driver-detail-meta">Broker: <span class="mono">' + escHtml(det.broker) + '</span></div>'
+                : '';
+            return '<div class="driver-detail-panel">' + brokerInfo +
+                '<div class="table-wrap"><table>' +
+                '<thead><tr><th>Device ID</th><th>Model</th><th>Network</th><th>Switches</th><th>Inputs</th><th>Health</th></tr></thead>' +
+                '<tbody>' + rows + '</tbody>' +
+                '</table></div></div>';
+        }
+
+        // WAGO: has "modules" array
+        if (det.modules !== undefined) {
+            if (!det.modules || det.modules.length === 0) {
+                return '<div class="driver-detail-panel"><span class="text-muted">No modules configured</span></div>';
+            }
+            let rows = '';
+            for (const mod of det.modules) {
+                rows += '<tr>' +
+                    '<td>' + mod.index + '</td>' +
+                    '<td class="mono">' + escHtml(mod.part_number || '-') + '</td>' +
+                    '<td>' + escHtml(mod.description || '-') + '</td>' +
+                    '<td>' + mod.di + '</td>' +
+                    '<td>' + mod.do + '</td>' +
+                    '</tr>';
+            }
+            const addrInfo = det.address
+                ? '<div class="driver-detail-meta">Address: <span class="mono">' + escHtml(det.address) + ':' + det.port + '</span></div>'
+                : '';
+            return '<div class="driver-detail-panel">' + addrInfo +
+                '<div class="table-wrap"><table>' +
+                '<thead><tr><th>#</th><th>Part Number</th><th>Description</th><th>DI</th><th>DO</th></tr></thead>' +
+                '<tbody>' + rows + '</tbody>' +
+                '</table></div></div>';
+        }
+
+        // Fallback: raw JSON
+        return '<div class="driver-detail-panel"><pre class="driver-detail-raw">' + escHtml(JSON.stringify(det, null, 2)) + '</pre></div>';
+    }
+
     function renderDrivers(state) {
         const el = document.getElementById('page-content');
         if (!el) return;
@@ -170,11 +233,20 @@
         for (const d of state.drivers) {
             const ioCount = ioCounts[d.name];
             const ioBadge = ioCount > 0 ? ' ' + badge(ioCount + ' IOs', 'type') : '';
+            const hasDetails = !!d.details;
+            const isExpanded = expandedDrivers.has(d.name);
+            const expandBtn = hasDetails
+                ? '<button class="driver-expand-btn" onclick="swkit.toggleDriver(' + JSON.stringify(d.name) + ')">' +
+                    (isExpanded ? '\u25BC' : '\u25B6') + '</button> '
+                : '';
             rows += '<tr>' +
-                '<td class="fw-600">' + escHtml(d.name) + ioBadge + '</td>' +
+                '<td class="fw-600">' + expandBtn + escHtml(d.name) + ioBadge + '</td>' +
                 '<td>' + (d.ready ? badge('Ready', 'ready') : badge('Not Ready', 'not-ready')) + '</td>' +
                 '<td>' + formatStatusInfo(d.status_info) + '</td>' +
                 '</tr>';
+            if (hasDetails && isExpanded) {
+                rows += '<tr class="driver-detail-row"><td colspan="3">' + renderDriverDetailPanel(d) + '</td></tr>';
+            }
         }
 
         el.innerHTML = '<div class="card">' +
@@ -493,9 +565,17 @@
         }
     });
 
-    // Expose for filter/sort buttons
+    // Expose for filter/sort buttons and driver expand toggle
     window.swkit = {
         setIoFilter: function(f) { ioFilter = f; refresh(); },
-        setIoSort: function(s) { ioSort = s; refresh(); }
+        setIoSort: function(s) { ioSort = s; refresh(); },
+        toggleDriver: function(name) {
+            if (expandedDrivers.has(name)) {
+                expandedDrivers.delete(name);
+            } else {
+                expandedDrivers.add(name);
+            }
+            refresh();
+        }
     };
 })();

@@ -791,6 +791,43 @@ func (wio *WagoIO) ToggleOutput(index int) error {
 	return nil
 }
 
+// WagoDriverDetails holds structured detail info for the WAGO driver.
+type WagoDriverDetails struct {
+	Address string           `json:"address"`
+	Port    uint             `json:"port"`
+	Modules []WagoModuleInfo `json:"modules"`
+}
+
+// WagoModuleInfo holds summary info for a single installed WAGO module.
+type WagoModuleInfo struct {
+	Index       int    `json:"index"`
+	PartNumber  string `json:"part_number"`
+	Description string `json:"description"`
+	DI          int    `json:"di"`
+	DO          int    `json:"do"`
+}
+
+// DriverDetails returns structured details about installed WAGO modules.
+func (wio *WagoIO) DriverDetails() interface{} {
+	wio.mu.RLock()
+	defer wio.mu.RUnlock()
+	details := WagoDriverDetails{Address: wio.Address, Port: wio.Port}
+	for i, spec := range wio.modules {
+		partNumber := ""
+		if i < len(wio.ModulesInstalled) {
+			partNumber = wio.ModulesInstalled[i]
+		}
+		details.Modules = append(details.Modules, WagoModuleInfo{
+			Index:       i + 1,
+			PartNumber:  partNumber,
+			Description: spec.description,
+			DI:          spec.di,
+			DO:          spec.do,
+		})
+	}
+	return details
+}
+
 // Status returns a summary of the driver's current state
 func (wio *WagoIO) Status() string {
 	modules := strings.Join(wio.ModulesInstalled, ",")

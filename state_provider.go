@@ -163,6 +163,15 @@ func (p *SwKitProvider) GetState() app.AppState {
 			ds.StatusInfo = statusProvider.Status()
 		}
 
+		// Get structured details if available
+		if detailProvider, ok := driver.(DriverDetailProvider); ok {
+			if d := detailProvider.DriverDetails(); d != nil {
+				if b, err := json.Marshal(d); err == nil {
+					ds.Details = json.RawMessage(b)
+				}
+			}
+		}
+
 		state.Drivers = append(state.Drivers, ds)
 	}
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"strconv"
 	"time"
 )
@@ -48,7 +49,8 @@ func IoDebugKey(driverName, ioType string, index int) string {
 type DriverState struct {
 	Name       string
 	Ready      bool
-	StatusInfo string // Additional status info from DriverStatusProvider
+	StatusInfo string          // Additional status info from DriverStatusProvider
+	Details    json.RawMessage // Structured JSON details, driver-specific
 }
 
 // DeviceType indicates the category of device

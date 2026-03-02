@@ -829,6 +829,40 @@ func (sio *ShellyIO) PrintStatus() string {
 	return sb.String()
 }
 
+// ShellyDriverDetails holds structured detail info for the Shelly driver.
+type ShellyDriverDetails struct {
+	Broker  string             `json:"broker"`
+	Devices []ShellyDeviceInfo `json:"devices"`
+}
+
+// ShellyDeviceInfo holds summary info for a single discovered Shelly device.
+type ShellyDeviceInfo struct {
+	Id       string `json:"id"`
+	Model    string `json:"model"`
+	Network  string `json:"network"`
+	Switches int    `json:"switches"`
+	Inputs   int    `json:"inputs"`
+	Healthy  bool   `json:"healthy"`
+}
+
+// DriverDetails returns structured details about discovered Shelly devices.
+func (sio *ShellyIO) DriverDetails() interface{} {
+	sio.devicesMu.RLock()
+	defer sio.devicesMu.RUnlock()
+	details := ShellyDriverDetails{Broker: sio.MqttBroker}
+	for _, dev := range sio.devices {
+		details.Devices = append(details.Devices, ShellyDeviceInfo{
+			Id:       dev.Id,
+			Model:    dev.Model(),
+			Network:  dev.NetworkInfo(),
+			Switches: dev.SwitchCount(),
+			Inputs:   dev.InputCount(),
+			Healthy:  dev.HealthCheck() == nil,
+		})
+	}
+	return details
+}
+
 // Status returns a summary of the driver's current state
 func (sio *ShellyIO) Status() string {
 	sio.devicesMu.RLock()

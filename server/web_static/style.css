@@ -460,6 +460,70 @@ td.mono {
     color: var(--text-secondary);
 }
 
+/* ---- Driver detail expand ---- */
+
+.driver-expand-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.6rem;
+    cursor: pointer;
+    vertical-align: middle;
+    transition: border-color var(--transition), color var(--transition);
+    margin-right: 4px;
+}
+
+.driver-expand-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.driver-detail-row td {
+    padding: 0 !important;
+    border-bottom: 1px solid var(--border);
+}
+
+.driver-detail-panel {
+    padding: 10px 14px 12px 14px;
+    background: var(--bg-card);
+    border-top: 1px solid var(--border);
+}
+
+.driver-detail-meta {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.driver-detail-panel table {
+    font-size: 0.78rem;
+}
+
+.driver-detail-panel th {
+    font-size: 0.7rem;
+    padding: 5px 8px;
+}
+
+.driver-detail-panel td {
+    padding: 6px 8px;
+}
+
+.driver-detail-raw {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+}
+
 /* ---- Config ---- */
 
 .config-display {

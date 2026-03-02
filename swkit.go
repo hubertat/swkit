@@ -459,6 +459,11 @@ type DriverStatusProvider interface {
 	Status() string
 }
 
+// DriverDetailProvider is an optional interface for drivers to provide structured UI details.
+type DriverDetailProvider interface {
+	DriverDetails() interface{}
+}
+
 func (sw *SwKit) StartHomeKit(ctx context.Context, firmwareVersion string) (cancel func(), errCh <-chan error, err error) {
 	hkName := sw.Name
 	if len(hkName) < 1 {

@@ -177,6 +177,7 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 			Name:       d.Name,
 			Ready:      d.Ready,
 			StatusInfo: d.StatusInfo,
+			Details:    d.Details,
 		})
 	}
 
@@ -294,9 +295,10 @@ type apiSummary struct {
 }
 
 type apiDriver struct {
-	Name       string `json:"name"`
-	Ready      bool   `json:"ready"`
-	StatusInfo string `json:"status_info,omitempty"`
+	Name       string          `json:"name"`
+	Ready      bool            `json:"ready"`
+	StatusInfo string          `json:"status_info,omitempty"`
+	Details    json.RawMessage `json:"details,omitempty"`
 }
 
 type apiDevice struct {

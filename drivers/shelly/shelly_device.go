@@ -287,3 +287,23 @@ func (sd *ShellyDevice) SinceLastRefreshed() time.Duration {
 	defer sd.mu.RUnlock()
 	return time.Since(sd.lastRefreshed)
 }
+
+// Model returns the device model string.
+func (sd *ShellyDevice) Model() string {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+	return sd.Info.Model
+}
+
+// NetworkInfo returns a human-readable network address string, preferring WiFi over Ethernet.
+func (sd *ShellyDevice) NetworkInfo() string {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+	if sd.Wifi != nil && sd.Wifi.Status.StaIP != nil {
+		return "WiFi: " + *sd.Wifi.Status.StaIP
+	}
+	if sd.Ethernet != nil && sd.Ethernet.Status.Ip != nil {
+		return "Eth: " + *sd.Ethernet.Status.Ip
+	}
+	return ""
+}
