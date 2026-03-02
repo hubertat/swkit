@@ -357,6 +357,12 @@ td.mono {
     animation: pulse 1s ease-in-out;
 }
 
+.io-recently-active {
+    outline: 2px solid rgba(255, 158, 100, 0.45);
+    outline-offset: 2px;
+    border-radius: 50%;
+}
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }

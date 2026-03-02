@@ -7,6 +7,7 @@
     let refreshTimer = null;
     let currentTab = '';
     let ioFilter = 'all';
+    let ioSort = 'recent'; // 'recent' | 'default'
 
     // ---- API ----
 
@@ -30,12 +31,27 @@
         return '<span class="badge badge-' + cls + '">' + escHtml(text) + '</span>';
     }
 
-    function stateIndicator(state, lastEvent, now) {
+    function getLastActive(pt) {
+        let t = 0;
+        if (pt.last_changed) { const d = new Date(pt.last_changed).getTime(); if (d > t) t = d; }
+        if (pt.last_event)   { const d = new Date(pt.last_event).getTime();   if (d > t) t = d; }
+        return t; // 0 if never active
+    }
+
+    function stateIndicator(state, lastEvent, lastChanged, now) {
         let cls = state ? 'io-state-on' : 'io-state-off';
         if (lastEvent && (now - new Date(lastEvent).getTime()) < 2000) {
             cls = 'io-state-event';
         }
-        return '<span class="io-state-indicator ' + cls + '"></span>';
+        const lastActiveMs = Math.max(
+            lastEvent   ? new Date(lastEvent).getTime()   : 0,
+            lastChanged ? new Date(lastChanged).getTime() : 0
+        );
+        let extra = '';
+        if (lastActiveMs > 0 && (now - lastActiveMs) < 200000) {
+            extra = ' io-recently-active';
+        }
+        return '<span class="io-state-indicator ' + cls + extra + '"></span>';
     }
 
     function timeSince(ts, now) {
@@ -267,16 +283,25 @@
         const inputs = state.io_debug.filter(p => p.type === 'input');
         const outputs = state.io_debug.filter(p => p.type === 'output');
 
+        function applySortIfNeeded(pts) {
+            if (ioSort !== 'recent') return pts;
+            return [...pts].sort((a, b) => getLastActive(b) - getLastActive(a));
+        }
+
         let filtered;
-        if (ioFilter === 'inputs') filtered = inputs;
-        else if (ioFilter === 'outputs') filtered = outputs;
+        if (ioFilter === 'inputs') filtered = applySortIfNeeded(inputs);
+        else if (ioFilter === 'outputs') filtered = applySortIfNeeded(outputs);
         else filtered = null; // show columns
 
-        // Filter buttons
+        // Filter + sort buttons
         let filters = '<div class="io-filters">' +
             '<button class="io-filter-btn' + (ioFilter === 'all' ? ' active' : '') + '" onclick="swkit.setIoFilter(\'all\')">All</button>' +
             '<button class="io-filter-btn' + (ioFilter === 'inputs' ? ' active' : '') + '" onclick="swkit.setIoFilter(\'inputs\')">Inputs (' + inputs.length + ')</button>' +
             '<button class="io-filter-btn' + (ioFilter === 'outputs' ? ' active' : '') + '" onclick="swkit.setIoFilter(\'outputs\')">Outputs (' + outputs.length + ')</button>' +
+            '<div style="margin-left:auto;display:flex;gap:4px">' +
+            '<button class="io-filter-btn' + (ioSort === 'recent' ? ' active' : '') + '" onclick="swkit.setIoSort(\'recent\')">\u2193 Recent</button>' +
+            '<button class="io-filter-btn' + (ioSort === 'default' ? ' active' : '') + '" onclick="swkit.setIoSort(\'default\')">Default</button>' +
+            '</div>' +
             '</div>';
 
         let content;
@@ -284,8 +309,8 @@
             content = renderIoTable(filtered, now);
         } else {
             content = '<div class="io-columns">' +
-                '<div class="card"><div class="card-title">Inputs (' + inputs.length + ')</div>' + renderIoTable(inputs, now) + '</div>' +
-                '<div class="card"><div class="card-title">Outputs (' + outputs.length + ')</div>' + renderIoTable(outputs, now) + '</div>' +
+                '<div class="card"><div class="card-title">Inputs (' + inputs.length + ')</div>' + renderIoTable(applySortIfNeeded(inputs), now) + '</div>' +
+                '<div class="card"><div class="card-title">Outputs (' + outputs.length + ')</div>' + renderIoTable(applySortIfNeeded(outputs), now) + '</div>' +
                 '</div>';
         }
 
@@ -299,7 +324,7 @@
 
         let rows = '';
         for (const pt of points) {
-            const ind = stateIndicator(pt.state, pt.last_event, now);
+            const ind = stateIndicator(pt.state, pt.last_event, pt.last_changed, now);
             const healthBadge = pt.healthy ? '<span class="text-success">\u2713</span>' : '<span class="text-error">\u2717</span>';
             const changed = timeSince(pt.last_changed, now);
             const evtTime = timeSince(pt.last_event, now);
@@ -468,11 +493,9 @@
         }
     });
 
-    // Expose for filter buttons
+    // Expose for filter/sort buttons
     window.swkit = {
-        setIoFilter: function(f) {
-            ioFilter = f;
-            refresh();
-        }
+        setIoFilter: function(f) { ioFilter = f; refresh(); },
+        setIoSort: function(s) { ioSort = s; refresh(); }
     };
 })();
