@@ -71,9 +71,9 @@ type WagoIO struct {
 	outputStates      []bool
 	inputLastChanged  []time.Time
 	outputLastChanged []time.Time
-	lastPollOk       time.Time
-	pollTicker       *time.Ticker
-	stopPoll         chan struct{}
+	lastPollOk        time.Time
+	pollTicker        *time.Ticker
+	stopPoll          chan struct{}
 
 	// Mapping between physical channel order (driver-facing) and coupler process-image order.
 	diPhysicalToProcess []int

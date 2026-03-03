@@ -21,8 +21,9 @@ func main() {
 	var err error
 
 	logging.Init(logging.Config{
-		Writer: os.Stderr,
-		Level:  log.DebugLevel,
+		Writer:            os.Stderr,
+		Level:             log.DebugLevel,
+		BroadcastRingSize: logging.DefaultRingSize,
 	})
 	loggerFactory := logging.NewFactory(nil)
 	logger := loggerFactory.Logger(logging.PrefixMock)

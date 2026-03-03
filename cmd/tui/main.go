@@ -31,8 +31,9 @@ func main() {
 		logLevel = log.DebugLevel
 	}
 	logging.Init(logging.Config{
-		Writer: os.Stderr,
-		Level:  logLevel,
+		Writer:            os.Stderr,
+		Level:             logLevel,
+		BroadcastRingSize: logging.DefaultRingSize,
 	})
 	loggerFactory := logging.NewFactory(nil)
 	logger := loggerFactory.Logger(logging.PrefixMain)
@@ -74,7 +75,7 @@ func main() {
 	configProvider := swkit.NewConfigProvider(sk, *config)
 
 	// Create and run TUI
-	model := tui.NewModelWithOptions(provider, configProvider, nil, nil)
+	model := tui.NewModelWithOptions(provider, configProvider, nil, nil, logging.GetBroadcaster())
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

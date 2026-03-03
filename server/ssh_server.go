@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/wish/bubbletea"
 	"github.com/hubertat/swkit/agent"
 	"github.com/hubertat/swkit/app"
+	"github.com/hubertat/swkit/logging"
 	"github.com/hubertat/swkit/ui/tui"
 )
 
@@ -20,19 +21,20 @@ const defaultSSHPort = 2222
 
 // SshTuiServer serves the TUI over SSH using Charm Wish
 type SshTuiServer struct {
-	provider app.StateProvider
-	agent    *agent.Agent
-	server   *ssh.Server
-	logger   *log.Logger
+	provider    app.StateProvider
+	agent       *agent.Agent
+	broadcaster *logging.Broadcaster
+	server      *ssh.Server
+	logger      *log.Logger
 }
 
 // NewSshTuiServer creates a new SSH TUI server
 func NewSshTuiServer(provider app.StateProvider, port int, hostKeyPath string, logger *log.Logger) (*SshTuiServer, error) {
-	return NewSshTuiServerWithAgent(provider, nil, port, hostKeyPath, logger)
+	return NewSshTuiServerWithAgent(provider, nil, nil, port, hostKeyPath, logger)
 }
 
-// NewSshTuiServerWithAgent creates a new SSH TUI server with optional agent support
-func NewSshTuiServerWithAgent(provider app.StateProvider, ag *agent.Agent, port int, hostKeyPath string, logger *log.Logger) (*SshTuiServer, error) {
+// NewSshTuiServerWithAgent creates a new SSH TUI server with optional agent and broadcaster support
+func NewSshTuiServerWithAgent(provider app.StateProvider, ag *agent.Agent, bc *logging.Broadcaster, port int, hostKeyPath string, logger *log.Logger) (*SshTuiServer, error) {
 	if port == 0 {
 		port = defaultSSHPort
 	}
@@ -44,9 +46,10 @@ func NewSshTuiServerWithAgent(provider app.StateProvider, ag *agent.Agent, port 
 	}
 
 	s := &SshTuiServer{
-		provider: provider,
-		agent:    ag,
-		logger:   logger,
+		provider:    provider,
+		agent:       ag,
+		broadcaster: bc,
+		logger:      logger,
 	}
 
 	srv, err := wish.NewServer(
@@ -68,7 +71,7 @@ func NewSshTuiServerWithAgent(provider app.StateProvider, ag *agent.Agent, port 
 // teaHandler creates a new TUI model for each SSH session
 func (s *SshTuiServer) teaHandler(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
 	renderer := bubbletea.MakeRenderer(sess)
-	model := tui.NewModelWithRendererAndAgent(s.provider, renderer, s.agent)
+	model := tui.NewModelWithRendererAndAgent(s.provider, renderer, s.agent, s.broadcaster)
 	return model, []tea.ProgramOption{tea.WithAltScreen()}
 }
 

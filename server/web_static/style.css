@@ -524,6 +524,41 @@ td.mono {
     margin: 0;
 }
 
+/* ---- Logs ---- */
+
+.logs-toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.logs-toolbar .text-muted {
+    margin-left: auto;
+    font-size: 0.75rem;
+}
+
+.logs-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    height: calc(100vh - 220px);
+    min-height: 200px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.logs-container pre {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+}
+
 /* ---- Config ---- */
 
 .config-display {

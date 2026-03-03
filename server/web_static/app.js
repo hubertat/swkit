@@ -421,6 +421,79 @@
             '</table></div>';
     }
 
+    // ---- Logs ----
+
+    let logsEventSource = null;
+    let logsLines = [];
+    const LOGS_MAX_LINES = 500;
+    let logsAutoScroll = true;
+
+    function renderLogs() {
+        const el = document.getElementById('page-content');
+        if (!el) return;
+
+        // Only create DOM once
+        if (!el.querySelector('#logs-output')) {
+            el.innerHTML = '<div class="card">' +
+                '<div class="card-title">\u{1F4DC} Logs</div>' +
+                '<div class="logs-toolbar">' +
+                    '<button id="logs-clear-btn" class="io-filter-btn">Clear</button>' +
+                    '<button id="logs-autoscroll-btn" class="io-filter-btn active">Auto-scroll</button>' +
+                    '<span id="logs-count" class="text-muted"></span>' +
+                '</div>' +
+            '</div>' +
+            '<div class="logs-container"><pre id="logs-output"></pre></div>';
+
+            document.getElementById('logs-clear-btn').addEventListener('click', function() {
+                logsLines = [];
+                updateLogsOutput();
+            });
+            document.getElementById('logs-autoscroll-btn').addEventListener('click', function() {
+                logsAutoScroll = !logsAutoScroll;
+                this.classList.toggle('active', logsAutoScroll);
+                if (logsAutoScroll) scrollLogsToBottom();
+            });
+        }
+
+        // Start SSE if not connected
+        if (!logsEventSource) {
+            logsEventSource = new EventSource('/api/logs/stream');
+            logsEventSource.onmessage = function(e) {
+                logsLines.push(e.data);
+                if (logsLines.length > LOGS_MAX_LINES) {
+                    logsLines = logsLines.slice(logsLines.length - LOGS_MAX_LINES);
+                }
+                updateLogsOutput();
+            };
+            logsEventSource.onerror = function() {
+                // Will auto-reconnect
+            };
+        }
+
+        updateLogsOutput();
+    }
+
+    function updateLogsOutput() {
+        const out = document.getElementById('logs-output');
+        if (!out) return;
+        out.textContent = logsLines.join('\n');
+        const countEl = document.getElementById('logs-count');
+        if (countEl) countEl.textContent = logsLines.length + '/' + LOGS_MAX_LINES + ' lines';
+        if (logsAutoScroll) scrollLogsToBottom();
+    }
+
+    function scrollLogsToBottom() {
+        const container = document.querySelector('.logs-container');
+        if (container) container.scrollTop = container.scrollHeight;
+    }
+
+    function closeLogsStream() {
+        if (logsEventSource) {
+            logsEventSource.close();
+            logsEventSource = null;
+        }
+    }
+
     // ---- Config ----
 
     function renderConfig(state) {
@@ -471,6 +544,7 @@
         if (path === '/devices') return 'devices';
         if (path === '/drivers') return 'drivers';
         if (path === '/config') return 'config';
+        if (path === '/logs') return 'logs';
         return 'dashboard';
     }
 
@@ -490,12 +564,18 @@
             tsEl.textContent = d.toLocaleTimeString();
         }
 
+        // Close logs SSE when navigating away
+        if (tab !== 'logs') {
+            closeLogsStream();
+        }
+
         switch(tab) {
             case 'dashboard': renderDashboard(state); break;
             case 'drivers': renderDrivers(state); break;
             case 'devices': renderDevices(state); break;
             case 'io-debug': renderIoDebug(state); break;
             case 'config': renderConfig(state); break;
+            case 'logs': renderLogs(); return; // Logs doesn't need state polling
         }
     }
 
@@ -548,9 +628,9 @@
         // Keyboard tab navigation: 1-5 switches tabs
         document.addEventListener('keydown', function(e) {
             if (document.activeElement && document.activeElement !== document.body) return;
-            const tabs = ['/', '/drivers', '/devices', '/io-debug', '/config'];
+            const tabs = ['/', '/drivers', '/devices', '/io-debug', '/config', '/logs'];
             const n = parseInt(e.key);
-            if (n >= 1 && n <= 5) { e.preventDefault(); navigate(tabs[n - 1]); }
+            if (n >= 1 && n <= 6) { e.preventDefault(); navigate(tabs[n - 1]); }
         });
 
         startRefresh();

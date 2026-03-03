@@ -32,9 +32,9 @@ type IoPointDebugState struct {
 
 // IoNamesManager is implemented by providers that support persistent, shared IO point naming.
 type IoNamesManager interface {
-	SetIoName(key, name string)      // set or clear (empty = delete)
-	GetIoName(key string) string     // single lookup
-	GetIoNames() map[string]string   // returns a copy of all names
+	SetIoName(key, name string)    // set or clear (empty = delete)
+	GetIoName(key string) string   // single lookup
+	GetIoNames() map[string]string // returns a copy of all names
 	LoadIoNames(path string) error
 	SaveIoNames(path string) error
 }
@@ -72,9 +72,9 @@ type DeviceState struct {
 	IsFaulty       bool
 	HomeKitEnabled bool
 
-	OutputIoId       string                 // lights, color lights, outlets
-	RgbwIoId         string                 // color lights only
-	EventInputId     string                 // buttons only
+	OutputIoId       string                  // lights, color lights, outlets
+	RgbwIoId         string                  // color lights only
+	EventInputId     string                  // buttons only
 	ControlRelations []ButtonControlRelation // buttons only
 
 	LastEventType string    // buttons only: last push event type, e.g. "single_press"

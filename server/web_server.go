@@ -5,13 +5,16 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/hubertat/swkit/app"
+	"github.com/hubertat/swkit/logging"
 )
 
 //go:embed web_static/*
@@ -36,15 +39,17 @@ type WebServerOptions struct {
 	GetRawConfig func() json.RawMessage
 	Version      string
 	Services     ServicesConfig
+	Broadcaster  *logging.Broadcaster
 }
 
 // WebServer serves the diagnostic web UI
 type WebServer struct {
-	provider app.StateProvider
-	server   *http.Server
-	logger   *log.Logger
-	tmpl     *template.Template
-	opts     WebServerOptions
+	provider    app.StateProvider
+	broadcaster *logging.Broadcaster
+	server      *http.Server
+	logger      *log.Logger
+	tmpl        *template.Template
+	opts        WebServerOptions
 }
 
 // NewWebServer creates a new web server for the diagnostic UI
@@ -64,10 +69,11 @@ func NewWebServerWithConfig(provider app.StateProvider, port int, logger *log.Lo
 	}
 
 	ws := &WebServer{
-		provider: provider,
-		logger:   logger,
-		tmpl:     tmpl,
-		opts:     opts,
+		provider:    provider,
+		broadcaster: opts.Broadcaster,
+		logger:      logger,
+		tmpl:        tmpl,
+		opts:        opts,
 	}
 
 	mux := http.NewServeMux()
@@ -81,9 +87,11 @@ func NewWebServerWithConfig(provider app.StateProvider, port int, logger *log.Lo
 	mux.HandleFunc("/devices", ws.handlePage)
 	mux.HandleFunc("/io-debug", ws.handlePage)
 	mux.HandleFunc("/config", ws.handlePage)
+	mux.HandleFunc("/logs", ws.handlePage)
 
 	// API
 	mux.HandleFunc("/api/state", ws.handleApiState)
+	mux.HandleFunc("/api/logs/stream", ws.handleLogsStream)
 
 	ws.server = &http.Server{
 		Addr:         ":" + strconv.Itoa(port),
@@ -152,14 +160,14 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 		Name:      state.Name,
 		Timestamp: state.Timestamp,
 		Summary: apiSummary{
-			DriversTotal:    summary.DriversTotal,
-			DriversReady:    summary.DriversReady,
-			LightsCount:     summary.LightsCount,
+			DriversTotal:     summary.DriversTotal,
+			DriversReady:     summary.DriversReady,
+			LightsCount:      summary.LightsCount,
 			ColorLightsCount: summary.ColorLightsCount,
-			OutletsCount:    summary.OutletsCount,
-			ButtonsCount:    summary.ButtonsCount,
-			HomeKitEnabled:  summary.HomeKitEnabled,
-			HomeKitDevices:  summary.HomeKitDevices,
+			OutletsCount:     summary.OutletsCount,
+			ButtonsCount:     summary.ButtonsCount,
+			HomeKitEnabled:   summary.HomeKitEnabled,
+			HomeKitDevices:   summary.HomeKitDevices,
 		},
 		Drivers: make([]apiDriver, 0, len(state.Drivers)),
 		Devices: make([]apiDevice, 0, len(state.Devices)),
@@ -246,6 +254,48 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// handleLogsStream serves log lines as Server-Sent Events.
+func (ws *WebServer) handleLogsStream(w http.ResponseWriter, r *http.Request) {
+	if ws.broadcaster == nil {
+		http.Error(w, "log broadcasting not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Disable write timeout for this long-lived connection.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ch, unsub := ws.broadcaster.Subscribe(logging.FormatPlain)
+	defer unsub()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case line, ok := <-ch:
+			if !ok {
+				return
+			}
+			// Trim trailing newline to avoid double blank lines in SSE.
+			data := strings.TrimRight(string(line), "\n")
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
+}
+
 func pageTab(path string) string {
 	switch path {
 	case "/drivers":
@@ -256,6 +306,8 @@ func pageTab(path string) string {
 		return "io-debug"
 	case "/config":
 		return "config"
+	case "/logs":
+		return "logs"
 	default:
 		return "dashboard"
 	}

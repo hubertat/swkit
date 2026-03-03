@@ -24,26 +24,44 @@ const (
 )
 
 var (
-	sinkMu      sync.RWMutex
-	defaultSink io.Writer = os.Stderr
+	sinkMu         sync.RWMutex
+	defaultSink    io.Writer = os.Stderr
+	broadcasterVar *Broadcaster
 )
 
 // Config controls root logger behavior for all component loggers.
 type Config struct {
-	Writer io.Writer
-	Level  log.Level
+	Writer            io.Writer
+	Level             log.Level
+	BroadcastRingSize int // >0 enables broadcast fan-out with a ring buffer of this size
 }
 
 // Init sets process-wide logging defaults.
+// When BroadcastRingSize > 0, all log output is routed through a Broadcaster
+// that fans out to dynamic subscribers while still writing to the primary writer.
 func Init(cfg Config) {
 	sinkMu.Lock()
-	if cfg.Writer != nil {
-		defaultSink = cfg.Writer
+	w := cfg.Writer
+	if w == nil {
+		w = os.Stderr
+	}
+	if cfg.BroadcastRingSize > 0 {
+		bc := NewBroadcaster(w, cfg.BroadcastRingSize)
+		broadcasterVar = bc
+		defaultSink = bc
 	} else {
-		defaultSink = os.Stderr
+		broadcasterVar = nil
+		defaultSink = w
 	}
 	sinkMu.Unlock()
 	log.SetLevel(cfg.Level)
+}
+
+// GetBroadcaster returns the active Broadcaster, or nil if broadcasting is disabled.
+func GetBroadcaster() *Broadcaster {
+	sinkMu.RLock()
+	defer sinkMu.RUnlock()
+	return broadcasterVar
 }
 
 // Factory creates component loggers that share a sink and level policy.

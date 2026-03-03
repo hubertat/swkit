@@ -173,6 +173,6 @@ const (
 	IconIoDebug    = "🔍"
 	IconHealthy    = "✓"
 	IconFaulty     = "✗"
-	IconOn  = "●"
-	IconOff = "○"
+	IconOn         = "●"
+	IconOff        = "○"
 )

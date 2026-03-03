@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/hubertat/swkit/agent"
 	"github.com/hubertat/swkit/app"
+	"github.com/hubertat/swkit/logging"
 )
 
 // IoDebugFilter controls which IO points are shown
@@ -48,6 +49,7 @@ const (
 	TabHomeKit
 	TabIoDebug
 	TabChat
+	TabLogs
 )
 
 func (t Tab) String() string {
@@ -66,6 +68,8 @@ func (t Tab) String() string {
 		return "IO Debug"
 	case TabChat:
 		return "Chat"
+	case TabLogs:
+		return "Logs"
 	default:
 		return "Unknown"
 	}
@@ -73,36 +77,37 @@ func (t Tab) String() string {
 
 // AllTabs returns all available tabs
 func AllTabs() []Tab {
-	return []Tab{TabDashboard, TabDrivers, TabDevices, TabConfig, TabHomeKit, TabIoDebug, TabChat}
+	return []Tab{TabDashboard, TabDrivers, TabDevices, TabConfig, TabHomeKit, TabIoDebug, TabChat, TabLogs}
 }
 
 // Model is the main TUI model
 type Model struct {
-	provider      app.StateProvider
-	state         app.AppState
-	stateCh       <-chan app.AppState  // single long-lived subscription
-	activeTab     Tab
-	keys          KeyMap
-	theme         Theme
-	width, height int
-	showHelp      bool
-	cursor        int // For list navigation within tabs
-	ioDebugFilter IoDebugFilter
+	provider       app.StateProvider
+	state          app.AppState
+	stateCh        <-chan app.AppState // single long-lived subscription
+	activeTab      Tab
+	keys           KeyMap
+	theme          Theme
+	width, height  int
+	showHelp       bool
+	cursor         int // For list navigation within tabs
+	ioDebugFilter  IoDebugFilter
 	ioNames        map[string]string    // session-only custom names, key: "driver|type|index"
 	ioPrevStates   map[string]bool      // last seen State per IO point for TUI-side change detection
 	ioStateChanged map[string]time.Time // when TUI last observed a state change for an IO point
-	ioNamesMan    app.IoNamesManager // non-nil when provider supports it; nil → use ioNames fallback
-	ioNaming      bool               // true when text input is active for naming
-	ioNameInput   textinput.Model
-	ioNameTarget  string // key of the IO point being named
-	ioExportMsg   string // transient status message after export
-	ioImporting   bool   // true when filename input is active for import
-	ioImportInput textinput.Model
-	ctx           context.Context
-	cancel        context.CancelFunc
-	chat          ChatView
-	agent         *agent.Agent
-	configEditor  ConfigEditor
+	ioNamesMan     app.IoNamesManager   // non-nil when provider supports it; nil → use ioNames fallback
+	ioNaming       bool                 // true when text input is active for naming
+	ioNameInput    textinput.Model
+	ioNameTarget   string // key of the IO point being named
+	ioExportMsg    string // transient status message after export
+	ioImporting    bool   // true when filename input is active for import
+	ioImportInput  textinput.Model
+	ctx            context.Context
+	cancel         context.CancelFunc
+	chat           ChatView
+	logs           LogsView
+	agent          *agent.Agent
+	configEditor   ConfigEditor
 }
 
 // StateUpdateMsg is sent when state is updated
@@ -117,27 +122,27 @@ type ControlResultMsg struct {
 
 // NewModel creates a new TUI model using the default renderer
 func NewModel(provider app.StateProvider) Model {
-	return NewModelWithOptions(provider, nil, nil, nil)
+	return NewModelWithOptions(provider, nil, nil, nil, nil)
 }
 
 // NewModelWithAgent creates a new TUI model with an optional agent
 func NewModelWithAgent(provider app.StateProvider, ag *agent.Agent) Model {
-	return NewModelWithOptions(provider, nil, ag, nil)
+	return NewModelWithOptions(provider, nil, ag, nil, nil)
 }
 
 // NewModelWithRenderer creates a new TUI model with a custom renderer.
 // This is needed for SSH sessions where each connection has its own renderer.
 func NewModelWithRenderer(provider app.StateProvider, renderer *lipgloss.Renderer) Model {
-	return NewModelWithOptions(provider, nil, nil, renderer)
+	return NewModelWithOptions(provider, nil, nil, renderer, nil)
 }
 
 // NewModelWithRendererAndAgent creates a new TUI model with a custom renderer and optional agent.
-func NewModelWithRendererAndAgent(provider app.StateProvider, renderer *lipgloss.Renderer, ag *agent.Agent) Model {
-	return NewModelWithOptions(provider, nil, ag, renderer)
+func NewModelWithRendererAndAgent(provider app.StateProvider, renderer *lipgloss.Renderer, ag *agent.Agent, bc *logging.Broadcaster) Model {
+	return NewModelWithOptions(provider, nil, ag, renderer, bc)
 }
 
 // NewModelWithOptions creates a new TUI model with all optional dependencies.
-func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigProvider, ag *agent.Agent, renderer *lipgloss.Renderer) Model {
+func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigProvider, ag *agent.Agent, renderer *lipgloss.Renderer, bc *logging.Broadcaster) Model {
 	ctx, cancel := context.WithCancel(context.Background())
 	var theme Theme
 	if renderer != nil {
@@ -160,6 +165,7 @@ func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigPr
 		cancel:         cancel,
 		agent:          ag,
 		chat:           NewChatView(ag, theme),
+		logs:           NewLogsView(bc, theme),
 		configEditor:   NewConfigEditor(configProvider, theme),
 	}
 	if man, ok := provider.(app.IoNamesManager); ok {
@@ -171,7 +177,11 @@ func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigPr
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
-	return m.waitForNextState()
+	cmds := []tea.Cmd{m.waitForNextState()}
+	if cmd := m.logs.WaitForLogLine(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	return tea.Batch(cmds...)
 }
 
 // waitForNextState returns a command that blocks until the next state arrives on the shared channel.
@@ -339,6 +349,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch {
 		case key.Matches(msg, m.keys.Quit):
+			m.logs.Close()
 			m.cancel()
 			return m, tea.Quit
 
@@ -442,6 +453,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			chatHeight = 10
 		}
 		m.chat.SetSize(m.width-4, chatHeight)
+		m.logs.SetSize(m.width-4, chatHeight)
 		return m, nil
 
 	case ChatResponseMsg:
@@ -464,6 +476,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case LogLineMsg:
+		cmd := m.logs.Update(msg)
+		return m, cmd
 
 	case StateUpdateMsg:
 		m.detectIoStateChanges(msg.State.IoDebug)
@@ -652,6 +668,8 @@ func (m Model) View() string {
 		b.WriteString(m.renderIoDebug())
 	case TabChat:
 		b.WriteString(m.chat.View())
+	case TabLogs:
+		b.WriteString(m.logs.View())
 	}
 
 	// Help

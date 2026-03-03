@@ -157,8 +157,9 @@ func main() {
 		logLevel = log.DebugLevel
 	}
 	logging.Init(logging.Config{
-		Writer: os.Stderr,
-		Level:  logLevel,
+		Writer:            os.Stderr,
+		Level:             logLevel,
+		BroadcastRingSize: logging.DefaultRingSize,
 	})
 	loggerFactory := logging.NewFactory(nil)
 	logger := loggerFactory.Logger(logging.PrefixMain)
@@ -237,7 +238,7 @@ func main() {
 
 	// Start SSH TUI server if configured.
 	if sk.SshServer != nil && sk.SshServer.Enabled {
-		sshSrv, err := server.NewSshTuiServerWithAgent(provider, ag, sk.SshServer.Port, sk.SshServer.HostKeyPath, logger)
+		sshSrv, err := server.NewSshTuiServerWithAgent(provider, ag, logging.GetBroadcaster(), sk.SshServer.Port, sk.SshServer.HostKeyPath, logger)
 		if err != nil {
 			logger.Error("failed to create SSH server", "err", err)
 		} else {
@@ -273,6 +274,7 @@ func main() {
 			GetRawConfig: getRawConfig,
 			Version:      Version,
 			Services:     services,
+			Broadcaster:  logging.GetBroadcaster(),
 		})
 		if err != nil {
 			logger.Error("failed to create web server", "err", err)
@@ -292,7 +294,7 @@ func main() {
 	// Run TUI in a background goroutine if enabled.
 	if *tuiEnabled {
 		go func() {
-			p := tea.NewProgram(tui.NewModelWithOptions(provider, configProvider, ag, nil), tea.WithAltScreen())
+			p := tea.NewProgram(tui.NewModelWithOptions(provider, configProvider, ag, nil, logging.GetBroadcaster()), tea.WithAltScreen())
 			if _, err := p.Run(); err != nil {
 				logger.Error("TUI error", "err", err)
 			}
