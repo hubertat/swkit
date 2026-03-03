@@ -9,6 +9,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/charmbracelet/log"
 	"github.com/hubertat/swkit/app"
+	"github.com/hubertat/swkit/logging"
 )
 
 var (
@@ -23,6 +24,7 @@ type Agent struct {
 	messages   []anthropic.MessageParam
 	config     Config
 	controller app.DeviceController
+	logger     *log.Logger
 }
 
 // NewAgent creates a new agent instance
@@ -42,6 +44,7 @@ func NewAgent(cfg Config, controller app.DeviceController) (*Agent, error) {
 		messages:   make([]anthropic.MessageParam, 0),
 		config:     cfg,
 		controller: controller,
+		logger:     logging.NewLogger(logging.PrefixAgent),
 	}
 
 	// Register tools
@@ -132,7 +135,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (<-chan string, <-
 
 // sendRequest sends a message request to the API
 func (a *Agent) sendRequest(ctx context.Context) (*anthropic.Message, error) {
-	log.Debug("sending request to API", "model", a.config.Model, "messages", len(a.messages))
+	a.logger.Debug("sending request to API", "model", a.config.Model, "messages", len(a.messages))
 
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(a.config.Model),
@@ -153,7 +156,7 @@ func (a *Agent) sendRequest(ctx context.Context) (*anthropic.Message, error) {
 		return nil, err
 	}
 
-	log.Debug("received response", "stop_reason", resp.StopReason)
+	a.logger.Debug("received response", "stop_reason", resp.StopReason)
 	return resp, nil
 }
 
@@ -162,7 +165,7 @@ func (a *Agent) executeTools(toolUses []anthropic.ToolUseBlock) []anthropic.Cont
 	results := make([]anthropic.ContentBlockParamUnion, 0, len(toolUses))
 
 	for _, use := range toolUses {
-		log.Debug("executing tool", "name", use.Name, "id", use.ID)
+		a.logger.Debug("executing tool", "name", use.Name, "id", use.ID)
 
 		tool, ok := a.registry.Get(use.Name)
 		if !ok {
@@ -188,7 +191,7 @@ func (a *Agent) executeTools(toolUses []anthropic.ToolUseBlock) []anthropic.Cont
 		// Execute tool
 		result, err := tool.Execute(inputJSON)
 		if err != nil {
-			log.Debug("tool execution failed", "name", use.Name, "error", err)
+			a.logger.Debug("tool execution failed", "name", use.Name, "error", err)
 			results = append(results, anthropic.NewToolResultBlock(
 				use.ID,
 				fmt.Sprintf("error: %v", err),
@@ -197,7 +200,7 @@ func (a *Agent) executeTools(toolUses []anthropic.ToolUseBlock) []anthropic.Cont
 			continue
 		}
 
-		log.Debug("tool execution succeeded", "name", use.Name)
+		a.logger.Debug("tool execution succeeded", "name", use.Name)
 		results = append(results, anthropic.NewToolResultBlock(use.ID, result, false))
 	}
 
@@ -207,7 +210,7 @@ func (a *Agent) executeTools(toolUses []anthropic.ToolUseBlock) []anthropic.Cont
 // Reset clears conversation history
 func (a *Agent) Reset() {
 	a.messages = make([]anthropic.MessageParam, 0)
-	log.Debug("conversation history cleared")
+	a.logger.Debug("conversation history cleared")
 }
 
 // MessageCount returns the number of messages in history

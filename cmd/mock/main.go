@@ -9,6 +9,7 @@ import (
 
 	"github.com/hubertat/swkit"
 	"github.com/hubertat/swkit/drivers"
+	"github.com/hubertat/swkit/logging"
 )
 
 var (
@@ -19,10 +20,15 @@ var (
 func main() {
 	var err error
 
-	log.SetLevel(log.DebugLevel)
+	logging.Init(logging.Config{
+		Writer: os.Stderr,
+		Level:  log.DebugLevel,
+	})
+	loggerFactory := logging.NewFactory(nil)
+	logger := loggerFactory.Logger(logging.PrefixMock)
 
-	log.Info("swkit started")
-	log.Info("mock instance for testing purposes, should work on MacOS")
+	logger.Info("swkit started")
+	logger.Info("mock instance for testing purposes, should work on MacOS")
 
 	ctx := context.Background()
 
@@ -37,12 +43,10 @@ func main() {
 		FakeDriver: &drivers.MockIoDriver{},
 	}
 
-	logger := log.NewWithOptions(os.Stderr, log.Options{Prefix: "mock"})
-
-	log.Info("will setup swkit...")
+	logger.Info("will setup swkit...")
 	err = sk.Setup(ctx, logger)
 	if err != nil {
-		log.Fatal("failed to setup swkit", "err", err)
+		logger.Fatal("failed to setup swkit", "err", err)
 	}
 	defer sk.Close()
 
@@ -50,8 +54,8 @@ func main() {
 
 	sk.HkDirectory = "./mock_homekit"
 
-	log.Info("starting mock with HomeKit service")
+	logger.Info("starting mock with HomeKit service")
 	go sk.StartTicker(ctx, 250*time.Millisecond, 10)
 
-	log.Fatal(sk.StartHomeKit(ctx, "mock: "+Version))
+	logger.Fatal(sk.StartHomeKit(ctx, "mock: "+Version))
 }

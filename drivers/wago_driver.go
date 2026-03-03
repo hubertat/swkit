@@ -292,16 +292,16 @@ func (wio *WagoIO) pollLoop() {
 			if err != nil {
 				consecutiveErrors++
 				if consecutiveErrors == 1 {
-					log.Warn("wago driver: poll error started", "error", err)
+					wio.logger.Warn("wago driver: poll error started", "error", err)
 				}
 				if consecutiveErrors >= maxConsecutiveErrors {
-					log.Error("wago driver: max consecutive errors reached, reconnecting", "errors", consecutiveErrors)
+					wio.logger.Error("wago driver: max consecutive errors reached, reconnecting", "errors", consecutiveErrors)
 					wio.reconnect()
 					consecutiveErrors = 0
 				}
 			} else {
 				if consecutiveErrors > 0 {
-					log.Info("wago driver: poll recovered after errors", "errorCount", consecutiveErrors)
+					wio.logger.Info("wago driver: poll recovered after errors", "errorCount", consecutiveErrors)
 				}
 				consecutiveErrors = 0
 			}
@@ -314,7 +314,7 @@ func (wio *WagoIO) reconnect() {
 	defer wio.mu.Unlock()
 
 	connString := fmt.Sprintf("tcp://%s:%d", wio.Address, wio.Port)
-	log.Warn("wago driver: attempting reconnection", "address", connString)
+	wio.logger.Warn("wago driver: attempting reconnection", "address", connString)
 
 	if wio.client != nil {
 		_ = wio.client.Close()
@@ -325,17 +325,17 @@ func (wio *WagoIO) reconnect() {
 		Timeout: wagoDefaultModbusTimeoutMs * time.Millisecond,
 	})
 	if err != nil {
-		log.Error("wago driver: failed to create client during reconnect", "error", err)
+		wio.logger.Error("wago driver: failed to create client during reconnect", "error", err)
 		return
 	}
 
 	if err = client.Open(); err != nil {
-		log.Error("wago driver: failed to open connection during reconnect", "error", err)
+		wio.logger.Error("wago driver: failed to open connection during reconnect", "error", err)
 		return
 	}
 
 	wio.client = client
-	log.Info("wago driver: reconnection successful", "address", connString)
+	wio.logger.Info("wago driver: reconnection successful", "address", connString)
 }
 
 func (wio *WagoIO) refreshStates() error {

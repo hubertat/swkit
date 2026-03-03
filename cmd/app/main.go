@@ -152,10 +152,16 @@ func performReload(configPath string, currentSk *swkit.SwKit, provider *swkit.Sw
 func main() {
 	flag.Parse()
 	_ = sensorsSyncInterval // declared for future use
+	logLevel := log.InfoLevel
 	if *debug {
-		log.SetLevel(log.DebugLevel)
+		logLevel = log.DebugLevel
 	}
-	logger := logging.NewLogger(logging.PrefixMain)
+	logging.Init(logging.Config{
+		Writer: os.Stderr,
+		Level:  logLevel,
+	})
+	loggerFactory := logging.NewFactory(nil)
+	logger := loggerFactory.Logger(logging.PrefixMain)
 	logger.Info("swkit started", "version", Version)
 
 	if *debug {

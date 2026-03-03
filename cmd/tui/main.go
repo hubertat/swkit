@@ -26,10 +26,16 @@ var (
 
 func main() {
 	flag.Parse()
+	logLevel := log.InfoLevel
 	if *debug {
-		log.SetLevel(log.DebugLevel)
+		logLevel = log.DebugLevel
 	}
-	logger := logging.NewLogger(logging.PrefixMain)
+	logging.Init(logging.Config{
+		Writer: os.Stderr,
+		Level:  logLevel,
+	})
+	loggerFactory := logging.NewFactory(nil)
+	logger := loggerFactory.Logger(logging.PrefixMain)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

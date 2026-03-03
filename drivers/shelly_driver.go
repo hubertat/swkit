@@ -113,7 +113,11 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 		switch ioType {
 		case IoTypeDigitalInput, IoTypePushEventEmitter:
 			devicesMap[actualDeviceId] = true
-			she.inputs = append(she.inputs, &ShellyInput{deviceId: actualDeviceId, inputNo: ioNo})
+			she.inputs = append(she.inputs, &ShellyInput{
+				deviceId: actualDeviceId,
+				inputNo:  ioNo,
+				logger:   logger,
+			})
 			logger.Debug("adding input", "type", ioType.String(), "dev id:", actualDeviceId, "io no:", ioNo)
 
 		case IoTypeDigitalOutput:
@@ -222,7 +226,7 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 				needsMatch := false
 				for _, d := range she.devices {
 					if !d.IsReady() {
-						log.Info("matchTicker: found uninitialized device, will try to match", "id", d.Id)
+						she.logger.Info("matchTicker: found uninitialized device, will try to match", "id", d.Id)
 						needsMatch = true
 					}
 				}
@@ -244,7 +248,7 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 				}
 				she.devicesMu.RUnlock()
 				for _, d := range toRefresh {
-					log.Debug("healthTicker: refreshing device", "id", d.Id)
+					she.logger.Debug("healthTicker: refreshing device", "id", d.Id)
 					if err := d.GetStatus(); err != nil {
 						logger.Warn("healthTicker: failed to send GetStatus", "id", d.Id, "err", err)
 					}
@@ -454,18 +458,18 @@ func (she *ShellyIO) MqttTopicRoots() []string {
 func (she *ShellyIO) HandleRpcStatus(online bool, topic string) bool {
 	dev := she.getDeviceByTopic(topic)
 	if dev == nil {
-		log.Warn("handling rpc status, device not found", "topic", topic)
+		she.logger.Warn("handling rpc status, device not found", "topic", topic)
 		return false
 	}
 
-	log.Debug("got online status update", "device", dev.Id, "online", online)
+	she.logger.Debug("got online status update", "device", dev.Id, "online", online)
 	req := mqtt.RpcRequest{
 		Dst:    dev.Id,
 		Method: "Shelly.GetStatus",
 	}
 	err := she.messenger.SendRequest(dev.Id, req)
 	if err != nil {
-		log.Error("failed to send GetStatus request", "device", dev.Id, "error", err)
+		she.logger.Error("failed to send GetStatus request", "device", dev.Id, "error", err)
 		return false
 	}
 
@@ -475,7 +479,7 @@ func (she *ShellyIO) HandleRpcStatus(online bool, topic string) bool {
 func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 	dev := she.getDevice(msg.Src)
 	if dev == nil {
-		log.Warn("handling rpc message, device not found", "device", msg.Src)
+		she.logger.Warn("handling rpc message, device not found", "device", msg.Src)
 		return false
 	}
 
@@ -486,17 +490,17 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			status := shelly.GetStatus{}
 			err := msg.UnmarshalResult(&status)
 			if err != nil {
-				log.Error("failed to unmarshal GetStatus response", "device", dev.Id, "error", err)
+				she.logger.Error("failed to unmarshal GetStatus response", "device", dev.Id, "error", err)
 				return false
 			}
 
 			// Capture state before updating to detect changes
 			outStates := she.captureOutputStates(dev.Id)
 
-			log.Debug("will fill from status", "switches", status.GetSwitches())
+			she.logger.Debug("will fill from status", "switches", status.GetSwitches())
 			err = dev.FillStatus(status)
 			if err != nil {
-				log.Error("failed to fill device with status", "device", dev.Id, "error", err)
+				she.logger.Error("failed to fill device with status", "device", dev.Id, "error", err)
 				return false
 			}
 
@@ -512,10 +516,10 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 				time.Sleep(50 * time.Millisecond) // Brief delay for state to settle
 				she.notifyStateChanges(outStates, msg.MsgType.String(), msg.Method)
 			}()
-			log.Info("resp to handle", "method", msg.Method)
+			she.logger.Info("resp to handle", "method", msg.Method)
 			return true
 		default:
-			log.Warn("handling response, unknown method", "method", msg.Method)
+			she.logger.Warn("handling response, unknown method", "method", msg.Method)
 			return false
 		}
 	case mqtt.RpcNotificationType:
@@ -524,17 +528,17 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			status := shelly.GetStatus{}
 			err := msg.UnmarshalParams(&status)
 			if err != nil {
-				log.Error("failed to unmarshal NotifyStatus params", "device", dev.Id, "error", err)
+				she.logger.Error("failed to unmarshal NotifyStatus params", "device", dev.Id, "error", err)
 				return false
 			}
 
 			// Capture state before updating to detect changes
 			outStates := she.captureOutputStates(dev.Id)
 
-			log.Debug("will update from status", "switches", status.GetSwitches())
+			she.logger.Debug("will update from status", "switches", status.GetSwitches())
 			err = dev.UpdateFromStatus(status)
 			if err != nil {
-				log.Error("failed to update device from status", "device", dev.Id, "error", err)
+				she.logger.Error("failed to update device from status", "device", dev.Id, "error", err)
 				return false
 			}
 
@@ -546,13 +550,13 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			raw := shelly.RawEvents{}
 			err := msg.UnmarshalParams(&raw)
 			if err != nil {
-				log.Error("failed to unmarshal NotifyEvent params", "device", dev.Id, "error", err)
+				she.logger.Error("failed to unmarshal NotifyEvent params", "device", dev.Id, "error", err)
 				return false
 			}
 
 			evs, err := raw.GetEvents()
 			if err != nil {
-				log.Error("failed to get events from raw", "device", dev.Id, "error", err)
+				she.logger.Error("failed to get events from raw", "device", dev.Id, "error", err)
 				return false
 			}
 
@@ -563,7 +567,7 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 					for _, in := range she.inputs {
 						if in.deviceId == dev.Id && uint(in.inputNo) == e.ComponentId {
 							if !in.findAndFireEvent(e.EventType) {
-								log.Debug("shelly input event not handled (no matching subscription)", "device", dev.Id, "input", in.inputNo, "event", e.EventType)
+								she.logger.Debug("shelly input event not handled (no matching subscription)", "device", dev.Id, "input", in.inputNo, "event", e.EventType)
 							}
 						}
 					}
@@ -573,18 +577,18 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 					she.inputLastEvent[key] = time.Now()
 					she.stateMu.Unlock()
 				default:
-					log.Debug("unsupported component type", "device", dev.Id, "componentType", e.ComponentType)
+					she.logger.Debug("unsupported component type", "device", dev.Id, "componentType", e.ComponentType)
 				}
 			}
 
 			if err != nil {
-				log.Error("failed to parse events", "device", dev.Id, "error", err)
+				she.logger.Error("failed to parse events", "device", dev.Id, "error", err)
 				return false
 			}
 
 			return true
 		default:
-			log.Warn("handling notification, unknown method", "method", msg.Method)
+			she.logger.Warn("handling notification, unknown method", "method", msg.Method)
 			return false
 		}
 
@@ -647,7 +651,7 @@ func (she *ShellyIO) notifyStateChanges(oldStates map[string]bool, msgType, meth
 	}
 
 	for _, n := range pending {
-		log.Info("State change detected", "output", n.name, "old", n.oldState, "new", n.newState, "msgType", msgType, "method", method)
+		she.logger.Info("State change detected", "output", n.name, "old", n.oldState, "new", n.newState, "msgType", msgType, "method", method)
 		n.callback(n.newState)
 	}
 }
@@ -740,6 +744,8 @@ type ShellyInput struct {
 
 	dev *shelly.ShellyDevice
 
+	logger *log.Logger
+
 	subscriptions []struct {
 		shellyEvent events.ShellyEventType
 		swkitEvent  PushEvent
@@ -786,10 +792,14 @@ func (sin *ShellyInput) Subscribe(eventTypes PushEvent, handler func(PushEvent))
 }
 
 func (sin *ShellyInput) findAndFireEvent(shellyEventType events.ShellyEventType) bool {
+	if sin.logger == nil {
+		sin.logger = logging.NewLogger(logging.PrefixShelly)
+	}
+
 	fired := false
 	for _, sub := range sin.subscriptions {
 		if sub.shellyEvent == shellyEventType {
-			log.Debug("shelly input event fired", "device", sin.deviceId, "input", sin.inputNo, "event", shellyEventType)
+			sin.logger.Debug("shelly input event fired", "device", sin.deviceId, "input", sin.inputNo, "event", shellyEventType)
 			sub.handler(sub.swkitEvent)
 			fired = true
 		}
