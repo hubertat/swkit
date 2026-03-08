@@ -238,7 +238,7 @@ func main() {
 
 	// Start SSH TUI server if configured.
 	if sk.SshServer != nil && sk.SshServer.Enabled {
-		sshSrv, err := server.NewSshTuiServerWithAgent(provider, ag, logging.GetBroadcaster(), sk.SshServer.Port, sk.SshServer.HostKeyPath, logger)
+		sshSrv, err := server.NewSshTuiServerWithAgent(provider, configProvider, ag, logging.GetBroadcaster(), sk.SshServer.Port, sk.SshServer.HostKeyPath, logger)
 		if err != nil {
 			logger.Error("failed to create SSH server", "err", err)
 		} else {
