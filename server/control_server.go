@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/hubertat/swkit/app"
 
-	_ "embed"
 	goEmbed "embed"
 )
 
@@ -28,11 +27,12 @@ const defaultControlEndpoint = "/control"
 
 // ControlServer serves the device control web UI
 type ControlServer struct {
-	provider app.DeviceController
-	logger   *log.Logger
-	tmpl     *template.Template
-	name     string
-	endpoint string
+	provider      app.DeviceController
+	logger        *log.Logger
+	tmpl          *template.Template
+	name          string
+	endpoint      string
+	staticHandler http.Handler
 }
 
 // NewControlServer creates a new control server
@@ -51,12 +51,21 @@ func NewControlServer(provider app.DeviceController, endpoint, name string, logg
 		return nil, errors.Join(err, errors.New("failed to parse control templates"))
 	}
 
+	subFS, err := fs.Sub(controlStaticFiles, "control_static")
+	if err != nil {
+		return nil, errors.Join(err, errors.New("failed to sub control_static fs"))
+	}
+
+	staticPrefix := endpoint + "/static/"
+	staticHandler := http.StripPrefix(staticPrefix, http.FileServer(http.FS(subFS)))
+
 	return &ControlServer{
-		provider: provider,
-		logger:   logger,
-		tmpl:     tmpl,
-		name:     name,
-		endpoint: endpoint,
+		provider:      provider,
+		logger:        logger,
+		tmpl:          tmpl,
+		name:          name,
+		endpoint:      endpoint,
+		staticHandler: staticHandler,
 	}, nil
 }
 
@@ -99,29 +108,34 @@ func (cs *ControlServer) StartOnPort(ctx context.Context, port int) error {
 	}
 }
 
+// registerRoutes mounts exactly two patterns and dispatches internally.
+// This avoids conflicts with existing patterns on a shared mux (e.g. the
+// web server's "/" catch-all swallowing more-specific sub-patterns).
 func (cs *ControlServer) registerRoutes(mux *http.ServeMux) {
-	subFS, err := fs.Sub(controlStaticFiles, "control_static")
-	if err != nil {
-		cs.logger.Error("failed to sub control_static fs", "err", err)
-		return
-	}
+	mux.HandleFunc(cs.endpoint, cs.dispatch)
+	mux.HandleFunc(cs.endpoint+"/", cs.dispatch)
+}
 
+// dispatch routes all requests under the endpoint to the correct handler.
+func (cs *ControlServer) dispatch(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
 	staticPrefix := cs.endpoint + "/static/"
-	mux.Handle(staticPrefix, http.StripPrefix(staticPrefix, http.FileServer(http.FS(subFS))))
-	mux.HandleFunc(cs.endpoint, cs.handlePage)
-	mux.HandleFunc(cs.endpoint+"/", cs.handlePage)
-	mux.HandleFunc(cs.endpoint+"/api/devices", cs.handleDeviceList)
-	mux.HandleFunc(cs.endpoint+"/api/devices/", cs.handleDeviceAction)
+	apiDevices := cs.endpoint + "/api/devices"
+
+	switch {
+	case strings.HasPrefix(path, staticPrefix):
+		cs.staticHandler.ServeHTTP(w, r)
+	case path == apiDevices:
+		cs.handleDeviceList(w, r)
+	case strings.HasPrefix(path, apiDevices+"/"):
+		cs.handleDeviceAction(w, r)
+	default:
+		cs.handlePage(w, r)
+	}
 }
 
 // handlePage renders the HTML control page
 func (cs *ControlServer) handlePage(w http.ResponseWriter, r *http.Request) {
-	// Only serve the page for exact path matches (not API paths)
-	if strings.HasPrefix(r.URL.Path, cs.endpoint+"/api/") {
-		http.NotFound(w, r)
-		return
-	}
-
 	data := struct {
 		Name     string
 		Endpoint string
