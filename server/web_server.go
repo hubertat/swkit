@@ -47,6 +47,7 @@ type WebServer struct {
 	provider    app.StateProvider
 	broadcaster *logging.Broadcaster
 	server      *http.Server
+	mux         *http.ServeMux
 	logger      *log.Logger
 	tmpl        *template.Template
 	opts        WebServerOptions
@@ -93,6 +94,7 @@ func NewWebServerWithConfig(provider app.StateProvider, port int, logger *log.Lo
 	mux.HandleFunc("/api/state", ws.handleApiState)
 	mux.HandleFunc("/api/logs/stream", ws.handleLogsStream)
 
+	ws.mux = mux
 	ws.server = &http.Server{
 		Addr:         ":" + strconv.Itoa(port),
 		Handler:      mux,
@@ -132,6 +134,11 @@ func (ws *WebServer) Start(ctx context.Context) error {
 // Addr returns the server address
 func (ws *WebServer) Addr() string {
 	return ws.server.Addr
+}
+
+// Mux returns the underlying ServeMux for mounting additional handlers
+func (ws *WebServer) Mux() *http.ServeMux {
+	return ws.mux
 }
 
 // handlePage renders the HTML shell for any page route

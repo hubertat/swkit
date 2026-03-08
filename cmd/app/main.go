@@ -251,6 +251,7 @@ func main() {
 	}
 
 	// Start Web UI server if configured.
+	var webSrv *server.WebServer
 	if sk.WebServer != nil && sk.WebServer.Enabled {
 		getRawConfig := func() json.RawMessage {
 			data, err := os.ReadFile(*config)
@@ -270,7 +271,7 @@ func main() {
 			services.AgentEnabled = true
 			services.AgentModel = agentCfg.Model
 		}
-		webSrv, err := server.NewWebServerWithConfig(provider, sk.WebServer.Port, logger, server.WebServerOptions{
+		webSrv, err = server.NewWebServerWithConfig(provider, sk.WebServer.Port, logger, server.WebServerOptions{
 			GetRawConfig: getRawConfig,
 			Version:      Version,
 			Services:     services,
@@ -278,12 +279,38 @@ func main() {
 		})
 		if err != nil {
 			logger.Error("failed to create web server", "err", err)
+			webSrv = nil
 		} else {
 			go func() {
 				if err := webSrv.Start(ctx); err != nil {
 					logger.Error("web server error", "err", err)
 				}
 			}()
+		}
+	}
+
+	// Start Control UI server if configured.
+	if sk.ControlServer != nil && sk.ControlServer.Enabled {
+		endpoint := sk.ControlServer.Endpoint
+		if endpoint == "" {
+			endpoint = "/control"
+		}
+		cs, csErr := server.NewControlServer(provider, endpoint, sk.Name, logger)
+		if csErr != nil {
+			logger.Error("failed to create control server", "err", csErr)
+		} else {
+			sharePort := sk.ControlServer.Port == 0 ||
+				(sk.WebServer != nil && sk.WebServer.Enabled && sk.ControlServer.Port == sk.WebServer.Port)
+			if sharePort && webSrv != nil {
+				cs.RegisterOn(webSrv.Mux())
+				logger.Info("control UI mounted on web server", "endpoint", endpoint)
+			} else {
+				go func() {
+					if err := cs.StartOnPort(ctx, sk.ControlServer.Port); err != nil {
+						logger.Error("control server error", "err", err)
+					}
+				}()
+			}
 		}
 	}
 

@@ -44,9 +44,10 @@ type SwKit struct {
 	HkAddress   string
 	HkDebug     bool
 
-	SshServer *SshServerConfig `json:",omitempty"`
-	WebServer *WebServerConfig `json:",omitempty"`
-	Agent     *AgentConfig     `json:",omitempty"`
+	SshServer     *SshServerConfig     `json:",omitempty"`
+	WebServer     *WebServerConfig     `json:",omitempty"`
+	ControlServer *ControlServerConfig `json:",omitempty"`
+	Agent         *AgentConfig         `json:",omitempty"`
 
 	Mcp23017   *drivers.McpIO
 	Gpio       *drivers.GpIO
@@ -72,6 +73,13 @@ type SshServerConfig struct {
 type WebServerConfig struct {
 	Enabled bool
 	Port    int // default 8080
+}
+
+// ControlServerConfig configures the device control web UI server
+type ControlServerConfig struct {
+	Enabled  bool
+	Port     int    // 0 = share with WebServer port
+	Endpoint string // default "/control"
 }
 
 // AgentConfig configures the AI chat agent
