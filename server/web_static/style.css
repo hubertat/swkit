@@ -531,11 +531,37 @@ td.mono {
     gap: 8px;
     align-items: center;
     margin-bottom: 12px;
+    flex-wrap: wrap;
 }
 
 .logs-toolbar .text-muted {
     margin-left: auto;
     font-size: 0.75rem;
+}
+
+.logs-level-filters {
+    display: flex;
+    gap: 4px;
+}
+
+.logs-text-filter {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text);
+    font-size: 0.8rem;
+    width: 160px;
+    transition: border-color var(--transition);
+    outline: none;
+}
+
+.logs-text-filter::placeholder {
+    color: var(--text-muted);
+}
+
+.logs-text-filter:focus {
+    border-color: var(--accent);
 }
 
 .logs-container {
