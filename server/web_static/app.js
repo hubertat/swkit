@@ -427,6 +427,29 @@
     let logsLines = [];
     const LOGS_MAX_LINES = 500;
     let logsAutoScroll = true;
+    let logsLevelFilter = 'all'; // 'all' | 'info' | 'warn' | 'error' | 'debug'
+    let logsTextFilter = '';
+
+    const LOG_LEVEL_KEYWORDS = {
+        debug: ['DEBU', 'DEBG', 'debug', 'DEBUG'],
+        info:  ['INFO', 'info'],
+        warn:  ['WARN', 'warn', 'WARNING'],
+        error: ['ERRO', 'error', 'ERROR'],
+    };
+
+    function lineMatchesLevel(line, level) {
+        if (level === 'all') return true;
+        const keywords = LOG_LEVEL_KEYWORDS[level] || [];
+        return keywords.some(kw => line.includes(kw));
+    }
+
+    function getFilteredLines() {
+        return logsLines.filter(line => {
+            if (!lineMatchesLevel(line, logsLevelFilter)) return false;
+            if (logsTextFilter && !line.toLowerCase().includes(logsTextFilter.toLowerCase())) return false;
+            return true;
+        });
+    }
 
     function renderLogs() {
         const el = document.getElementById('page-content');
@@ -437,12 +460,36 @@
             el.innerHTML = '<div class="card">' +
                 '<div class="card-title">\u{1F4DC} Logs</div>' +
                 '<div class="logs-toolbar">' +
+                    '<div class="logs-level-filters">' +
+                        '<button class="io-filter-btn logs-level-btn active" data-level="all">All</button>' +
+                        '<button class="io-filter-btn logs-level-btn" data-level="debug">Debug</button>' +
+                        '<button class="io-filter-btn logs-level-btn" data-level="info">Info</button>' +
+                        '<button class="io-filter-btn logs-level-btn" data-level="warn">Warn</button>' +
+                        '<button class="io-filter-btn logs-level-btn" data-level="error">Error</button>' +
+                    '</div>' +
+                    '<input id="logs-text-filter" class="logs-text-filter" type="text" placeholder="Filter text..." value="">' +
                     '<button id="logs-clear-btn" class="io-filter-btn">Clear</button>' +
                     '<button id="logs-autoscroll-btn" class="io-filter-btn active">Auto-scroll</button>' +
                     '<span id="logs-count" class="text-muted"></span>' +
                 '</div>' +
             '</div>' +
             '<div class="logs-container"><pre id="logs-output"></pre></div>';
+
+            // Level filter buttons
+            el.querySelectorAll('.logs-level-btn').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    logsLevelFilter = this.getAttribute('data-level');
+                    el.querySelectorAll('.logs-level-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    updateLogsOutput();
+                });
+            });
+
+            // Text filter input
+            document.getElementById('logs-text-filter').addEventListener('input', function() {
+                logsTextFilter = this.value;
+                updateLogsOutput();
+            });
 
             document.getElementById('logs-clear-btn').addEventListener('click', function() {
                 logsLines = [];
@@ -452,6 +499,20 @@
                 logsAutoScroll = !logsAutoScroll;
                 this.classList.toggle('active', logsAutoScroll);
                 if (logsAutoScroll) scrollLogsToBottom();
+            });
+
+            // Disable auto-scroll when user scrolls up manually
+            el.querySelector('.logs-container').addEventListener('scroll', function() {
+                const atBottom = this.scrollHeight - this.scrollTop - this.clientHeight < 8;
+                if (!atBottom && logsAutoScroll) {
+                    logsAutoScroll = false;
+                    const btn = document.getElementById('logs-autoscroll-btn');
+                    if (btn) btn.classList.remove('active');
+                } else if (atBottom && !logsAutoScroll) {
+                    logsAutoScroll = true;
+                    const btn = document.getElementById('logs-autoscroll-btn');
+                    if (btn) btn.classList.add('active');
+                }
             });
         }
 
@@ -476,9 +537,15 @@
     function updateLogsOutput() {
         const out = document.getElementById('logs-output');
         if (!out) return;
-        out.textContent = logsLines.join('\n');
+        const filtered = getFilteredLines();
+        out.textContent = filtered.join('\n');
         const countEl = document.getElementById('logs-count');
-        if (countEl) countEl.textContent = logsLines.length + '/' + LOGS_MAX_LINES + ' lines';
+        if (countEl) {
+            const filterDesc = logsLevelFilter !== 'all' || logsTextFilter
+                ? filtered.length + ' of ' + logsLines.length
+                : logsLines.length + '/' + LOGS_MAX_LINES;
+            countEl.textContent = filterDesc + ' lines';
+        }
         if (logsAutoScroll) scrollLogsToBottom();
     }
 

@@ -30,11 +30,11 @@ type LogsView struct {
 }
 
 // NewLogsView creates a new logs view. If bc is nil, logs are unavailable.
-func NewLogsView(bc *logging.Broadcaster, theme Theme) LogsView {
+func NewLogsView(bc *logging.Broadcaster, theme Theme) *LogsView {
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
 
-	lv := LogsView{
+	lv := &LogsView{
 		viewport:    vp,
 		lines:       make([]string, 0, maxLogLines),
 		broadcaster: bc,
@@ -80,6 +80,34 @@ func (lv *LogsView) SetSize(width, height int) {
 	lv.viewport.Height = viewportHeight
 	lv.updateContent()
 	lv.ready = true
+}
+
+// ScrollUp scrolls the viewport up by n lines and disables auto-scroll.
+func (lv *LogsView) ScrollUp(n int) {
+	lv.viewport.LineUp(n)
+	lv.autoScroll = false
+}
+
+// ScrollDown scrolls the viewport down by n lines. Re-enables auto-scroll when at bottom.
+func (lv *LogsView) ScrollDown(n int) {
+	lv.viewport.LineDown(n)
+	if lv.viewport.AtBottom() {
+		lv.autoScroll = true
+	}
+}
+
+// ToggleAutoScroll flips the auto-scroll flag and jumps to bottom when enabling.
+func (lv *LogsView) ToggleAutoScroll() {
+	lv.autoScroll = !lv.autoScroll
+	if lv.autoScroll {
+		lv.viewport.GotoBottom()
+	}
+}
+
+// ClearLines discards all buffered log lines.
+func (lv *LogsView) ClearLines() {
+	lv.lines = lv.lines[:0]
+	lv.updateContent()
 }
 
 // Update handles a log line message and returns a command to wait for the next one.

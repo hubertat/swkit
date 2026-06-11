@@ -105,7 +105,7 @@ type Model struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	chat           ChatView
-	logs           LogsView
+	logs           *LogsView
 	agent          *agent.Agent
 	configEditor   ConfigEditor
 }
@@ -345,6 +345,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chat, cmd = m.chat.Update(msg)
 				return m, cmd
 			}
+		}
+
+		// Handle logs tab — scroll, auto-scroll toggle, clear
+		if m.activeTab == TabLogs {
+			switch {
+			case key.Matches(msg, m.keys.Quit):
+				m.logs.Close()
+				m.cancel()
+				return m, tea.Quit
+			case key.Matches(msg, m.keys.Tab):
+				m.activeTab = (m.activeTab + 1) % Tab(len(AllTabs()))
+				m.cursor = 0
+				if m.activeTab == TabChat {
+					m.chat.Focus()
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.ShiftTab):
+				if m.activeTab == 0 {
+					m.activeTab = Tab(len(AllTabs()) - 1)
+				} else {
+					m.activeTab--
+				}
+				m.cursor = 0
+				if m.activeTab == TabChat {
+					m.chat.Focus()
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.Up):
+				m.logs.ScrollUp(3)
+				return m, nil
+			case key.Matches(msg, m.keys.Down):
+				m.logs.ScrollDown(3)
+				return m, nil
+			case msg.String() == "pgup" || msg.String() == "ctrl+u":
+				m.logs.ScrollUp(m.logs.viewport.Height / 2)
+				return m, nil
+			case msg.String() == "pgdown" || msg.String() == "ctrl+d":
+				m.logs.ScrollDown(m.logs.viewport.Height / 2)
+				return m, nil
+			case msg.String() == "a":
+				m.logs.ToggleAutoScroll()
+				return m, nil
+			case msg.String() == "c":
+				m.logs.ClearLines()
+				return m, nil
+			case key.Matches(msg, m.keys.Help):
+				m.showHelp = !m.showHelp
+				return m, nil
+			}
+			return m, nil
 		}
 
 		switch {
@@ -1093,6 +1143,19 @@ func (m Model) renderHelp() string {
 	if m.activeTab == TabConfig {
 		configHelp := m.configEditor.ConfigHelpKeys(m.theme)
 		return m.theme.Help.Render(configHelp)
+	}
+	if m.activeTab == TabLogs {
+		scrollStatus := "off"
+		if m.logs.autoScroll {
+			scrollStatus = "on"
+		}
+		logsHelp := m.theme.HelpKey.Render("↑↓") + " " + m.theme.HelpDesc.Render("scroll") +
+			"  " + m.theme.HelpKey.Render("pgup/pgdn") + " " + m.theme.HelpDesc.Render("half page") +
+			"  " + m.theme.HelpKey.Render("a") + " " + m.theme.HelpDesc.Render("auto-scroll ["+scrollStatus+"]") +
+			"  " + m.theme.HelpKey.Render("c") + " " + m.theme.HelpDesc.Render("clear") +
+			"  " + m.theme.HelpKey.Render("tab") + " " + m.theme.HelpDesc.Render("next tab") +
+			"  " + m.theme.HelpKey.Render("q") + " " + m.theme.HelpDesc.Render("quit")
+		return m.theme.Help.Render(logsHelp)
 	}
 	bindings := m.keys.ShortHelp()
 	var parts []string
