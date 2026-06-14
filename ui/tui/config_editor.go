@@ -1064,6 +1064,24 @@ func (ce *ConfigEditor) updateIoPicker(msg tea.KeyMsg) tea.Cmd {
 			ce.applyIoSelection(ce.ioPointToIdForCurrentField(pts[ce.ioPickerCursor]))
 		}
 		ce.mode = ce.modeBeforePicker
+	case "t":
+		// Toggle the selected output for physical identification (digital outputs
+		// flip on/off; analog outputs toggle between 0 and full scale). Inputs
+		// cannot be driven, so this is a no-op for the input filter.
+		if len(pts) > 0 && ce.ioPickerCursor < len(pts) {
+			pt := pts[ce.ioPickerCursor]
+			if pt.Type == "output" || pt.Type == "analog_output" {
+				return func() tea.Msg {
+					return configIoToggleMsg{
+						DriverName: pt.DriverName,
+						Index:      pt.Index,
+						IoType:     pt.Type,
+						CurValue:   pt.Value,
+						Max:        pt.Max,
+					}
+				}
+			}
+		}
 	case "esc":
 		ce.mode = ce.modeBeforePicker
 	}
@@ -1714,10 +1732,12 @@ func (ce *ConfigEditor) viewIoPicker(theme Theme) string {
 
 	content := strings.Join(lines, "\n")
 	result := theme.Box.Render(content)
-	result += "\n" + theme.Help.Render(
-		theme.HelpKey.Render("enter")+" "+theme.HelpDesc.Render("select")+"  "+
-			theme.HelpKey.Render("esc")+" "+theme.HelpDesc.Render("cancel"),
-	)
+	help := theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("select") + "  "
+	if ce.ioPickerFilter == "output" || ce.ioPickerFilter == "analog_output" {
+		help += theme.HelpKey.Render("t") + " " + theme.HelpDesc.Render("toggle (identify)") + "  "
+	}
+	help += theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
+	result += "\n" + theme.Help.Render(help)
 	return result
 }
 
@@ -1951,8 +1971,12 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 		}
 		return strings.Join(parts, "  ")
 	case ConfigModeIoPicker:
-		return theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("select") + "  " +
-			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
+		s := theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("select") + "  "
+		if ce.ioPickerFilter == "output" || ce.ioPickerFilter == "analog_output" {
+			s += theme.HelpKey.Render("t") + " " + theme.HelpDesc.Render("toggle (identify)") + "  "
+		}
+		s += theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
+		return s
 	case ConfigModeCtrlWizardDevice:
 		return theme.HelpKey.Render("↑↓") + " " + theme.HelpDesc.Render("select") + "  " +
 			theme.HelpKey.Render("t") + " " + theme.HelpDesc.Render("toggle") + "  " +

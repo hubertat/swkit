@@ -562,6 +562,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case configIoToggleMsg:
+		switch msg.IoType {
+		case "output":
+			if controller, ok := m.provider.(app.IoOutputController); ok {
+				driver, index := msg.DriverName, msg.Index
+				return m, func() tea.Msg {
+					_ = controller.ToggleIoOutput(driver, index)
+					return nil
+				}
+			}
+		case "analog_output":
+			if controller, ok := m.provider.(app.IoAnalogOutputController); ok {
+				// Toggle between 0 and full scale for identification.
+				target := msg.Max
+				if msg.CurValue > 0 {
+					target = 0
+				}
+				driver, index := msg.DriverName, msg.Index
+				return m, func() tea.Msg {
+					_ = controller.SetIoAnalogOutput(driver, index, target)
+					return nil
+				}
+			}
+		}
+		return m, nil
+
 	case LogLineMsg:
 		cmd := m.logs.Update(msg)
 		return m, cmd
@@ -1489,6 +1515,16 @@ type configSaveClearMsg struct{}
 // configWizardToggleMsg is sent by the wizard to toggle a device for identification
 type configWizardToggleMsg struct {
 	DeviceName string
+}
+
+// configIoToggleMsg is sent by the IO picker to toggle a raw IO output for
+// identification (e.g. blinking the physical output while choosing it).
+type configIoToggleMsg struct {
+	DriverName string
+	Index      int
+	IoType     string // "output" or "analog_output"
+	CurValue   int    // analog only: current value
+	Max        int    // analog only: range maximum
 }
 
 func newIoNameInput() textinput.Model {

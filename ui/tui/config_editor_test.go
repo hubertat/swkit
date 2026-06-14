@@ -385,3 +385,38 @@ func TestConfigEditorAddPositionsCursorOnNewItem(t *testing.T) {
 		t.Fatal("viewEditDimmableLight returned empty")
 	}
 }
+
+// TestConfigEditorIoPickerToggleKey verifies 't' in the IO picker emits a toggle
+// message for outputs/analog outputs and is a no-op for inputs.
+func TestConfigEditorIoPickerToggleKey(t *testing.T) {
+	keyT := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}}
+
+	// Output: 't' should emit a configIoToggleMsg for the selected point.
+	ce := NewConfigEditor(nil, DefaultTheme())
+	ce.SetIoPoints([]app.IoPointDebugState{
+		{DriverName: "wago", Type: "output", Index: 5, Name: "M1:DO5"},
+	})
+	ce.openIoPicker("output", 1)
+	cmd := ce.updateIoPicker(keyT)
+	if cmd == nil {
+		t.Fatal("expected a toggle cmd for output, got nil")
+	}
+	msg := cmd()
+	tog, ok := msg.(configIoToggleMsg)
+	if !ok {
+		t.Fatalf("expected configIoToggleMsg, got %T", msg)
+	}
+	if tog.DriverName != "wago" || tog.Index != 5 || tog.IoType != "output" {
+		t.Errorf("unexpected toggle msg: %+v", tog)
+	}
+
+	// Input: 't' must be a no-op (inputs cannot be driven).
+	ceIn := NewConfigEditor(nil, DefaultTheme())
+	ceIn.SetIoPoints([]app.IoPointDebugState{
+		{DriverName: "wago", Type: "input", Index: 2, Name: "M1:DI2"},
+	})
+	ceIn.openIoPicker("input", 1)
+	if cmd := ceIn.updateIoPicker(keyT); cmd != nil {
+		t.Error("expected nil cmd for input toggle")
+	}
+}
