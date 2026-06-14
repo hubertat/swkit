@@ -21,14 +21,14 @@ const wagoDefaultModbusTimeoutMs = 1000
 const wagoDefaultPollIntervalMs = 10
 const wagoStaleThreshold = 1 * time.Second
 
-// Analog output process image. Output words live in the holding-register space
-// (separate from the digital coil space): write via FC6/FC16 and read back via
-// FC3 at the SAME address (0..N-1). Unlike digital coils there is no +512
-// readback mirror for words. The AO word index counts only analog/word output
-// channels.
-// NOTE: verify the register base and the 0..0x7FFF=0..10V word scaling against
+// Analog output process image (holding-register space, separate from the digital
+// coil space). Output words are WRITTEN via FC6/FC16 at 0..N-1, but FC3 at those
+// same addresses returns the INPUT process image — so outputs are READ BACK from
+// the output-image mirror at +512, mirroring the digital coil layout (write
+// 0..N-1, read 512..). The AO word index counts only analog/word output channels.
+// NOTE: verify the register offsets and the 0..0x7FFF=0..10V word scaling against
 // the coupler's WBM "Modbus Mapping" page before trusting hardware values.
-const wagoAnalogOutputReadOffset = 0
+const wagoAnalogOutputReadOffset = 512
 const wagoAnalogOutputMax = 0x7FFF // 32767, full-scale (10V) for a 0-10V module
 
 // The analog count register (0x1022) reports the process image size in bits;
