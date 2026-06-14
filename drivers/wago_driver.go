@@ -21,15 +21,20 @@ const wagoDefaultModbusTimeoutMs = 1000
 const wagoDefaultPollIntervalMs = 10
 const wagoStaleThreshold = 1 * time.Second
 
-// Analog output process image. Output words are written via FC6/FC16 to holding
-// registers starting at 0 and read back from the RW output image mirror at +512,
-// paralleling the digital coil layout (write 0..N-1, read 512..). The AO word
-// index counts only analog/word output channels and is independent of the
-// digital coil space.
-// NOTE: verify these register offsets and the 0..0x7FFF=0..10V word scaling
-// against the coupler's WBM "Modbus Mapping" page before trusting hardware values.
-const wagoAnalogOutputReadOffset = 512
+// Analog output process image. Output words live in the holding-register space
+// (separate from the digital coil space): write via FC6/FC16 and read back via
+// FC3 at the SAME address (0..N-1). Unlike digital coils there is no +512
+// readback mirror for words. The AO word index counts only analog/word output
+// channels.
+// NOTE: verify the register base and the 0..0x7FFF=0..10V word scaling against
+// the coupler's WBM "Modbus Mapping" page before trusting hardware values.
+const wagoAnalogOutputReadOffset = 0
 const wagoAnalogOutputMax = 0x7FFF // 32767, full-scale (10V) for a 0-10V module
+
+// The analog count register (0x1022) reports the process image size in bits;
+// WAGO analog channels are 16-bit words, so bits = channels * 16. (The digital
+// count registers report bits too, but there it equals the channel count.)
+const wagoAnalogBitsPerChannel = 16
 
 // Verification registers (holding registers, FC3)
 const wagoRegisterAOCount = 0x1022 // Number of analog output words
@@ -323,14 +328,18 @@ func (wio *WagoIO) verifyIOCounts() error {
 		return fmt.Errorf("wago driver: DI count mismatch - config expects %d, hardware reports %d", wio.totalDI, diCount)
 	}
 
-	// Read AO word count register (0x1022) and verify when analog outputs are configured.
+	// Read AO count register (0x1022) and verify when analog outputs are configured.
+	// The register reports the analog output process image size in bits, so the
+	// expected value is the configured channel count times 16 bits per channel.
 	if wio.totalAO > 0 {
-		aoCount, err := wio.client.ReadRegister(wagoRegisterAOCount, modbus.HOLDING_REGISTER)
+		aoBits, err := wio.client.ReadRegister(wagoRegisterAOCount, modbus.HOLDING_REGISTER)
 		if err != nil {
 			return errors.Join(err, errors.New("wago driver: failed to read AO count register"))
 		}
-		if int(aoCount) != wio.totalAO {
-			return fmt.Errorf("wago driver: AO count mismatch - config expects %d, hardware reports %d", wio.totalAO, aoCount)
+		expectedBits := wio.totalAO * wagoAnalogBitsPerChannel
+		if int(aoBits) != expectedBits {
+			return fmt.Errorf("wago driver: AO count mismatch - config expects %d channels (%d bits), hardware reports %d bits (%d channels)",
+				wio.totalAO, expectedBits, aoBits, int(aoBits)/wagoAnalogBitsPerChannel)
 		}
 	}
 
