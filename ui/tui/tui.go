@@ -436,6 +436,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
+		case key.Matches(msg, m.keys.PageUp):
+			m.cursor -= m.pageStep()
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			return m, nil
+
+		case key.Matches(msg, m.keys.PageDown):
+			m.cursor += m.pageStep()
+			if maxItems := m.getMaxItems(); m.cursor > maxItems-1 {
+				m.cursor = maxItems - 1
+			}
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			return m, nil
+
 		case key.Matches(msg, m.keys.Help):
 			m.showHelp = !m.showHelp
 			return m, nil
@@ -644,6 +661,22 @@ func clearExportMsg() tea.Cmd {
 }
 
 // getMaxItems returns the max navigable items for current tab
+// pageStep returns how many items a page up/down jump should move the cursor,
+// roughly one visible screen of the list. Falls back to a fixed step before the
+// terminal size is known.
+func (m Model) pageStep() int {
+	if m.height <= 0 {
+		return 10
+	}
+	// Approximate the visible list rows: terminal height minus the fixed
+	// chrome (header, tab bar, help, padding, box border ~ 10 lines).
+	step := m.height - 10
+	if step < 1 {
+		step = 1
+	}
+	return step
+}
+
 func (m Model) getMaxItems() int {
 	switch m.activeTab {
 	case TabDrivers:
@@ -691,42 +724,121 @@ func (m Model) ioDebugByType(filter IoDebugFilter) []app.IoPointDebugState {
 
 // View renders the UI
 func (m Model) View() string {
-	var b strings.Builder
-
-	// Header
 	header := m.theme.Header.Render(IconHome + " swkit - " + m.state.Name)
-	b.WriteString(header)
-	b.WriteString("\n\n")
+	top := header + "\n\n" + m.renderTabBar() + "\n\n"
+	bottom := "\n" + m.renderHelp()
 
-	// Tab bar
-	b.WriteString(m.renderTabBar())
-	b.WriteString("\n\n")
-
-	// Content based on active tab
-	switch m.activeTab {
-	case TabDashboard:
-		b.WriteString(m.renderDashboard())
-	case TabDrivers:
-		b.WriteString(m.renderDrivers())
-	case TabDevices:
-		b.WriteString(m.renderDevices())
-	case TabConfig:
-		b.WriteString(m.configEditor.View(m.theme))
-	case TabHomeKit:
-		b.WriteString(m.renderHomeKit())
-	case TabIoDebug:
-		b.WriteString(m.renderIoDebug())
-	case TabChat:
-		b.WriteString(m.chat.View())
-	case TabLogs:
-		b.WriteString(m.logs.View())
+	// Compute how many lines are available for the tab content so lists can
+	// window themselves and remain scrollable instead of overflowing the
+	// terminal (which scrolls the header and tab bar off the top).
+	contentH := -1
+	if m.height > 0 {
+		contentH = m.height - lipgloss.Height(m.theme.App.Render(top+bottom))
+		if contentH < 1 {
+			contentH = 1
+		}
 	}
 
-	// Help
-	b.WriteString("\n")
-	b.WriteString(m.renderHelp())
+	// Content based on active tab
+	var content string
+	switch m.activeTab {
+	case TabDashboard:
+		content = m.renderDashboard()
+	case TabDrivers:
+		content = m.renderDrivers(contentH)
+	case TabDevices:
+		content = m.renderDevices(contentH)
+	case TabConfig:
+		content = m.configEditor.View(m.theme, contentH)
+	case TabHomeKit:
+		content = m.renderHomeKit()
+	case TabIoDebug:
+		content = m.renderIoDebug(contentH)
+	case TabChat:
+		content = m.chat.View()
+	case TabLogs:
+		content = m.logs.View()
+	}
 
-	return m.theme.App.Render(b.String())
+	// Safety net: even after per-list windowing, clamp so the full view never
+	// exceeds the terminal height and crops the header/tabs off the top.
+	if contentH >= 0 {
+		content = clampHeight(content, contentH)
+	}
+
+	return m.theme.App.Render(top + content + bottom)
+}
+
+// clampHeight truncates s to at most max lines, keeping the top.
+func clampHeight(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= max {
+		return s
+	}
+	return strings.Join(lines[:max], "\n")
+}
+
+// scrollList windows a slice of single-line list entries to fit `rows`,
+// keeping the item at `cursor` visible and adding "↑/↓ N more" overflow
+// indicators. See windowLines for details.
+func (m Model) scrollList(lines []string, cursor, rows int) string {
+	return windowLines(m.theme, lines, cursor, rows)
+}
+
+// windowLines windows a slice of single-line entries to fit `rows`, keeping the
+// line at index `focus` visible and adding "↑/↓ N more" overflow indicators.
+// The returned block is at most `rows` lines tall. A negative `rows` (size not
+// yet known) disables windowing.
+func windowLines(theme Theme, lines []string, focus, rows int) string {
+	if rows < 0 || len(lines) <= rows {
+		return strings.Join(lines, "\n")
+	}
+	if rows == 0 {
+		return ""
+	}
+	if rows <= 2 {
+		// Too small for indicators; just show a window around the focus line.
+		start := focus
+		if start > len(lines)-rows {
+			start = len(lines) - rows
+		}
+		if start < 0 {
+			start = 0
+		}
+		return strings.Join(lines[start:start+rows], "\n")
+	}
+
+	// Reserve one row top and bottom for the overflow indicators.
+	inner := rows - 2
+	start := focus - inner/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + inner
+	if end > len(lines) {
+		end = len(lines)
+		start = end - inner
+		if start < 0 {
+			start = 0
+		}
+	}
+
+	var out []string
+	if start > 0 {
+		out = append(out, theme.Muted.Render(fmt.Sprintf("   ↑ %d more", start)))
+	} else {
+		out = append(out, "")
+	}
+	out = append(out, lines[start:end]...)
+	if end < len(lines) {
+		out = append(out, theme.Muted.Render(fmt.Sprintf("   ↓ %d more", len(lines)-end)))
+	} else {
+		out = append(out, "")
+	}
+	return strings.Join(out, "\n")
 }
 
 // renderTabBar renders the navigation tabs
@@ -783,7 +895,7 @@ func (m Model) renderDashboard() string {
 }
 
 // renderDrivers renders the drivers view
-func (m Model) renderDrivers() string {
+func (m Model) renderDrivers(height int) string {
 	if len(m.state.Drivers) == 0 {
 		return m.theme.Muted.Render("No drivers configured")
 	}
@@ -810,24 +922,45 @@ func (m Model) renderDrivers() string {
 		lines = append(lines, style.Render(line))
 	}
 
-	content := strings.Join(lines, "\n")
+	content := m.scrollList(lines, m.cursor, boxRows(height))
 	return m.theme.Box.Render(content)
 }
 
+// boxRows returns the number of content rows available inside a single bordered
+// box given the total height budget (subtracting the top and bottom border).
+// A negative budget (unknown size) is passed through to disable windowing.
+func boxRows(height int) int {
+	if height < 0 {
+		return -1
+	}
+	rows := height - 2
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
+
 // renderDevices renders the devices view with list and detail panel
-func (m Model) renderDevices() string {
+func (m Model) renderDevices(height int) string {
 	if len(m.state.Devices) == 0 {
 		return m.theme.Muted.Render("No devices configured")
 	}
 
-	listBox := m.theme.Box.Render(m.renderDeviceList())
-	detailBox := m.theme.Box.Width(40).Render(m.renderDeviceDetail())
+	rows := boxRows(height)
+	listBox := m.theme.Box.Render(m.renderDeviceList(rows))
+	// Keep the detail panel within the same height budget so the row block
+	// (whose height follows the taller side) never overflows the screen.
+	detail := m.renderDeviceDetail()
+	if rows >= 0 {
+		detail = clampHeight(detail, rows)
+	}
+	detailBox := m.theme.Box.Width(40).Render(detail)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, listBox, " ", detailBox)
 }
 
 // renderDeviceList renders the device list for the left column
-func (m Model) renderDeviceList() string {
+func (m Model) renderDeviceList(rows int) string {
 	var lines []string
 	for i, device := range m.state.Devices {
 		prefix := "   "
@@ -882,7 +1015,7 @@ func (m Model) renderDeviceList() string {
 		lines = append(lines, style.Render(line))
 	}
 
-	return strings.Join(lines, "\n")
+	return m.scrollList(lines, m.cursor, rows)
 }
 
 // renderDeviceDetail renders the detail panel for the selected device
@@ -990,9 +1123,29 @@ func (m Model) renderHomeKit() string {
 }
 
 // renderIoDebug renders the IO debug view
-func (m Model) renderIoDebug() string {
+func (m Model) renderIoDebug(height int) string {
 	if len(m.state.IoDebug) == 0 {
 		return m.theme.Muted.Render("No IO debug data available")
+	}
+
+	// Reserve rows for the chrome around the IO point lists: the filter header,
+	// any active text inputs, and the export status message.
+	reserved := 1 // filter header
+	if m.ioNaming {
+		reserved++
+	}
+	if m.ioImporting {
+		reserved++
+	}
+	if m.ioExportMsg != "" {
+		reserved++
+	}
+	listHeight := height
+	if listHeight >= 0 {
+		listHeight -= reserved
+		if listHeight < 1 {
+			listHeight = 1
+		}
 	}
 
 	// Filter header
@@ -1009,13 +1162,13 @@ func (m Model) renderIoDebug() string {
 
 	var result string
 	if m.ioDebugFilter == IoFilterAll {
-		result = header + "\n" + m.renderIoDebugColumns()
+		result = header + "\n" + m.renderIoDebugColumns(listHeight)
 	} else {
 		points := m.ioDebugByType(m.ioDebugFilter)
 		if len(points) == 0 {
 			result = header + "\n" + m.theme.Muted.Render("No matching IO points")
 		} else {
-			content := m.renderIoDebugList(points, true)
+			content := m.scrollList(m.ioDebugLines(points, true), m.cursor, boxRows(listHeight))
 			result = header + "\n" + m.theme.Box.Render(content)
 		}
 	}
@@ -1039,21 +1192,31 @@ func (m Model) renderIoDebug() string {
 }
 
 // renderIoDebugColumns renders inputs and outputs side by side
-func (m Model) renderIoDebugColumns() string {
+func (m Model) renderIoDebugColumns(height int) string {
 	inputs := m.ioDebugByType(IoFilterInputs)
 	outputs := m.ioDebugByType(IoFilterOutputs)
 
 	inputTitle := m.theme.BoxTitle.Render("Inputs (" + itoa(len(inputs)) + ")")
 	outputTitle := m.theme.BoxTitle.Render("Outputs (" + itoa(len(outputs)) + ")")
 
+	// One row of each box is the title; the rest is available for the list.
+	rows := boxRows(height)
+	if rows >= 0 {
+		rows--
+		if rows < 1 {
+			rows = 1
+		}
+	}
+
 	inputContent := m.theme.Muted.Render("none")
 	if len(inputs) > 0 {
-		inputContent = m.renderIoDebugList(inputs, false)
+		// No cursor in the side-by-side view; window from the top.
+		inputContent = m.scrollList(m.ioDebugLines(inputs, false), 0, rows)
 	}
 
 	outputContent := m.theme.Muted.Render("none")
 	if len(outputs) > 0 {
-		outputContent = m.renderIoDebugList(outputs, false)
+		outputContent = m.scrollList(m.ioDebugLines(outputs, false), 0, rows)
 	}
 
 	inputBox := m.theme.Box.Render(inputTitle + "\n" + inputContent)
@@ -1062,8 +1225,8 @@ func (m Model) renderIoDebugColumns() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, inputBox, "  ", outputBox)
 }
 
-// renderIoDebugList renders a list of IO points
-func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool) string {
+// ioDebugLines renders a list of IO points into one styled line per point.
+func (m Model) ioDebugLines(points []app.IoPointDebugState, withCursor bool) []string {
 	now := m.state.Timestamp
 	nameWidth := 8
 	for _, pt := range points {
@@ -1135,7 +1298,7 @@ func (m Model) renderIoDebugList(points []app.IoPointDebugState, withCursor bool
 		lines = append(lines, style.Render(line))
 	}
 
-	return strings.Join(lines, "\n")
+	return lines
 }
 
 // renderHelp renders the help bar
@@ -1161,6 +1324,10 @@ func (m Model) renderHelp() string {
 	var parts []string
 	for _, b := range bindings {
 		parts = append(parts, m.theme.HelpKey.Render(b.Help().Key)+" "+m.theme.HelpDesc.Render(b.Help().Desc))
+	}
+	// Surface the page up/down keys on tabs that have a scrollable list.
+	if m.getMaxItems() > 0 {
+		parts = append(parts, m.theme.HelpKey.Render("ctrl+u/d")+" "+m.theme.HelpDesc.Render("page"))
 	}
 	return m.theme.Help.Render(strings.Join(parts, "  "))
 }

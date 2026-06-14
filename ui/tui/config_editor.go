@@ -13,6 +13,9 @@ import (
 	"github.com/hubertat/swkit/app"
 )
 
+// configPageStep is how many items a page up/down jump moves the list cursor.
+const configPageStep = 10
+
 // ConfigMode represents the current mode of the config editor
 type ConfigMode int
 
@@ -329,6 +332,19 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 	case "down", "j":
 		if ce.cursor < len(ce.items)-1 {
 			ce.cursor++
+		}
+	case "pgup", "ctrl+u", "ctrl+b":
+		ce.cursor -= configPageStep
+		if ce.cursor < 0 {
+			ce.cursor = 0
+		}
+	case "pgdown", "ctrl+d", "ctrl+f":
+		ce.cursor += configPageStep
+		if ce.cursor > len(ce.items)-1 {
+			ce.cursor = len(ce.items) - 1
+		}
+		if ce.cursor < 0 {
+			ce.cursor = 0
 		}
 	case "enter":
 		if ce.cursor >= 0 && ce.cursor < len(ce.items) {
@@ -1064,11 +1080,13 @@ func cycleOption(options []string, current string, direction int) string {
 	return options[idx]
 }
 
-// View renders the config editor
-func (ce *ConfigEditor) View(theme Theme) string {
+// View renders the config editor. height is the number of lines available for
+// the content (negative when the terminal size is not yet known); it is used to
+// keep the device list scrollable rather than overflowing the screen.
+func (ce *ConfigEditor) View(theme Theme, height int) string {
 	switch ce.mode {
 	case ConfigModeList:
-		return ce.viewList(theme)
+		return ce.viewList(theme, height)
 	case ConfigModeEditLight:
 		return ce.viewEditLight(theme)
 	case ConfigModeEditButton:
@@ -1090,7 +1108,7 @@ func (ce *ConfigEditor) View(theme Theme) string {
 }
 
 // viewList renders the config item list
-func (ce *ConfigEditor) viewList(theme Theme) string {
+func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 	if len(ce.items) == 0 {
 		content := theme.Muted.Render("No lights or buttons configured") + "\n"
 		content += theme.Muted.Render("Press 'a' to add a new item")
@@ -1098,6 +1116,7 @@ func (ce *ConfigEditor) viewList(theme Theme) string {
 	}
 
 	var lines []string
+	focusLine := 0 // line index of the currently selected item
 
 	// Section: Lights
 	if len(ce.config.Lights) > 0 {
@@ -1108,6 +1127,7 @@ func (ce *ConfigEditor) viewList(theme Theme) string {
 			if i == ce.cursor {
 				prefix = " > "
 				style = theme.ListItemSelected
+				focusLine = len(lines)
 			}
 
 			hkText := ""
@@ -1140,6 +1160,7 @@ func (ce *ConfigEditor) viewList(theme Theme) string {
 			if listIdx == ce.cursor {
 				prefix = " > "
 				style = theme.ListItemSelected
+				focusLine = len(lines)
 			}
 
 			hkText := ""
@@ -1162,9 +1183,22 @@ func (ce *ConfigEditor) viewList(theme Theme) string {
 		}
 	}
 
-	content := strings.Join(lines, "\n")
+	status := ce.viewStatus(theme)
+
+	// Window the list to fit, reserving rows for the box border and the
+	// status line(s) below it so the whole view stays on screen.
+	rows := height
+	if rows >= 0 {
+		rows -= 2 // box border
+		rows -= lipgloss.Height(status) - 1
+		if rows < 1 {
+			rows = 1
+		}
+	}
+
+	content := windowLines(theme, lines, focusLine, rows)
 	result := theme.Box.Render(content)
-	result += ce.viewStatus(theme)
+	result += status
 	return result
 }
 
@@ -1619,6 +1653,9 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 			theme.HelpKey.Render("w") + " " + theme.HelpDesc.Render("add by relation"),
 			theme.HelpKey.Render("d") + " " + theme.HelpDesc.Render("delete"),
 			theme.HelpKey.Render("c") + " " + theme.HelpDesc.Render("clear"),
+		}
+		if len(ce.items) > configPageStep {
+			parts = append(parts, theme.HelpKey.Render("ctrl+u/d")+" "+theme.HelpDesc.Render("page"))
 		}
 		if ce.dirty {
 			parts = append(parts, theme.HelpKey.Render("ctrl+r")+" "+theme.HelpDesc.Render("save"))

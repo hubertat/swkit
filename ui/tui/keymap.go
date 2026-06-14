@@ -11,6 +11,8 @@ type KeyMap struct {
 	ShiftTab key.Binding
 	Up       key.Binding
 	Down     key.Binding
+	PageUp   key.Binding
+	PageDown key.Binding
 	Enter    key.Binding
 	Left     key.Binding
 	Right    key.Binding
@@ -50,6 +52,16 @@ func DefaultKeyMap() KeyMap {
 		Down: key.NewBinding(
 			key.WithKeys("down", "j"),
 			key.WithHelp("↓/j", "down"),
+		),
+		// PgUp/PgDn substitutes for keyboards without those keys (e.g. MacBook):
+		// ctrl+u/ctrl+d (vim half-page), matching the Logs tab bindings.
+		PageUp: key.NewBinding(
+			key.WithKeys("pgup", "ctrl+u", "ctrl+b"),
+			key.WithHelp("ctrl+u", "page up"),
+		),
+		PageDown: key.NewBinding(
+			key.WithKeys("pgdown", "ctrl+d", "ctrl+f"),
+			key.WithHelp("ctrl+d", "page down"),
 		),
 		Enter: key.NewBinding(
 			key.WithKeys("enter"),
