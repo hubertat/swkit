@@ -27,15 +27,17 @@ const homeKitBridgeAuthor = "github.com/hubertat"
 type SwKit struct {
 	Name string
 
-	Lights      []LightConfig
-	ColorLights []ColorLightConfig
-	Outlets     []OutletConfig
-	Buttons     []ButtonConfig
+	Lights         []LightConfig
+	ColorLights    []ColorLightConfig
+	DimmableLights []DimmableLightConfig
+	Outlets        []OutletConfig
+	Buttons        []ButtonConfig
 
-	lights      []*Light
-	colorLights []*ColorLight
-	outlets     []*Outlet
-	buttons     []*Button
+	lights         []*Light
+	colorLights    []*ColorLight
+	dimmableLights []*DimmableLight
+	outlets        []*Outlet
+	buttons        []*Button
 	// Switches      []*Switch
 	// MotionSensors []*MotionSensor
 
@@ -114,6 +116,10 @@ func (sw *SwKit) getHkThings() (things []HkThing) {
 		things = append(things, th)
 	}
 
+	for _, th := range sw.dimmableLights {
+		things = append(things, th)
+	}
+
 	for _, th := range sw.outlets {
 		things = append(things, th)
 	}
@@ -144,6 +150,10 @@ func (sw *SwKit) getDevices() (devices []Device) {
 		devices = append(devices, cl)
 	}
 
+	for _, dl := range sw.dimmableLights {
+		devices = append(devices, dl)
+	}
+
 	for _, d := range sw.outlets {
 		devices = append(devices, d)
 	}
@@ -167,6 +177,11 @@ func (sw *SwKit) getAllIoIds() []string {
 		allIds = append(allIds, clConf.RgbwOutName)
 	}
 
+	for _, dlConf := range sw.DimmableLights {
+		allIds = append(allIds, dlConf.DigitalOutName)
+		allIds = append(allIds, dlConf.AnalogOutName)
+	}
+
 	for _, d := range sw.Outlets {
 		allIds = append(allIds, d.DigitalOutName)
 	}
@@ -188,6 +203,10 @@ func (sw *SwKit) getControllableDevices() []Controllable {
 
 	for _, cl := range sw.colorLights {
 		devices = append(devices, cl)
+	}
+
+	for _, dl := range sw.dimmableLights {
+		devices = append(devices, dl)
 	}
 
 	for _, d := range sw.outlets {
@@ -305,6 +324,30 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		}
 
 		sw.colorLights = append(sw.colorLights, NewColorLight(coloLight, dOut, rgbw, logger))
+	}
+
+	for _, dimLight := range sw.DimmableLights {
+		ioName, driver, err := sw.getDriverAndNameForIo(dimLight.DigitalOutName, drivers.IoTypeDigitalOutput)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", dimLight.DigitalOutName))
+		}
+
+		dOut, err := driver.GetDigitalOutput(ioName)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to get digital output for dimmable light %s", dimLight.Name))
+		}
+
+		ioName, driver, err = sw.getDriverAndNameForIo(dimLight.AnalogOutName, drivers.IoTypeAnalogOutput)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", dimLight.AnalogOutName))
+		}
+
+		aOut, err := driver.GetAnalogOutput(ioName)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to get analog output for dimmable light %s", dimLight.Name))
+		}
+
+		sw.dimmableLights = append(sw.dimmableLights, NewDimmableLight(dimLight, dOut, aOut, logger))
 	}
 
 	for _, button := range sw.Buttons {

@@ -339,8 +339,8 @@ func TestWagoBuildPhysicalToProcessMapWithInterleavedModuleOrder(t *testing.T) {
 		totalDO: 8,
 	}
 
-	inMap := wio.buildPhysicalToProcessMap(true)
-	outMap := wio.buildPhysicalToProcessMap(false)
+	inMap := wio.buildPhysicalToProcessMap(wagoChannelDI)
+	outMap := wio.buildPhysicalToProcessMap(wagoChannelDO)
 
 	expected := []int{0, 2, 4, 6, 1, 3, 5, 7}
 	for i := range expected {

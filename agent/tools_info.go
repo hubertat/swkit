@@ -137,6 +137,7 @@ func makeGetSystemStatus(controller app.DeviceController) func(json.RawMessage) 
 			"drivers_ready":   summary.DriversReady,
 			"lights":          summary.LightsCount,
 			"color_lights":    summary.ColorLightsCount,
+			"dimmable_lights": summary.DimmableLightsCount,
 			"outlets":         summary.OutletsCount,
 			"buttons":         summary.ButtonsCount,
 			"homekit_enabled": summary.HomeKitEnabled,

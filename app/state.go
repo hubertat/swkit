@@ -21,13 +21,18 @@ type IoPointDebugState struct {
 	DriverName   string
 	Index        int
 	Name         string // e.g. "M1:DI3[2]"
-	Type         string // "input" or "output"
+	Type         string // "input", "output" or "analog_output"
 	State        bool
 	Healthy      bool
 	LastChanged  time.Time // zero if never changed since startup
 	LastEvent    time.Time // zero if no explicit event received (e.g. button press)
 	ConfiguredAs string    // name of device that uses this IO point, empty if unconfigured
 	CustomName   string    // user-assigned label; empty if not set
+
+	// Analog fields, populated only when Type == "analog_output".
+	Value int // raw analog value
+	Min   int // minimum of the analog range
+	Max   int // maximum of the analog range
 }
 
 // IoNamesManager is implemented by providers that support persistent, shared IO point naming.
@@ -57,10 +62,11 @@ type DriverState struct {
 type DeviceType string
 
 const (
-	DeviceTypeLight      DeviceType = "light"
-	DeviceTypeColorLight DeviceType = "color_light"
-	DeviceTypeOutlet     DeviceType = "outlet"
-	DeviceTypeButton     DeviceType = "button"
+	DeviceTypeLight         DeviceType = "light"
+	DeviceTypeColorLight    DeviceType = "color_light"
+	DeviceTypeDimmableLight DeviceType = "dimmable_light"
+	DeviceTypeOutlet        DeviceType = "outlet"
+	DeviceTypeButton        DeviceType = "button"
 )
 
 // DeviceState represents the status of a device
@@ -72,10 +78,13 @@ type DeviceState struct {
 	IsFaulty       bool
 	HomeKitEnabled bool
 
-	OutputIoId       string                  // lights, color lights, outlets
+	OutputIoId       string                  // lights, color lights, outlets, dimmable lights
 	RgbwIoId         string                  // color lights only
+	AnalogIoId       string                  // dimmable lights only
 	EventInputId     string                  // buttons only
 	ControlRelations []ButtonControlRelation // buttons only
+
+	Brightness int // dimmable lights only: 0-100
 
 	LastEventType string    // buttons only: last push event type, e.g. "single_press"
 	LastEventTime time.Time // buttons only: when last push event occurred; zero if never
@@ -113,6 +122,8 @@ func (s *AppState) Summary() StateSummary {
 			summary.LightsCount++
 		case DeviceTypeColorLight:
 			summary.ColorLightsCount++
+		case DeviceTypeDimmableLight:
+			summary.DimmableLightsCount++
 		case DeviceTypeOutlet:
 			summary.OutletsCount++
 		case DeviceTypeButton:
@@ -128,14 +139,15 @@ func (s *AppState) Summary() StateSummary {
 
 // StateSummary provides aggregated counts for dashboard
 type StateSummary struct {
-	DriversTotal     int
-	DriversReady     int
-	LightsCount      int
-	ColorLightsCount int
-	OutletsCount     int
-	ButtonsCount     int
-	HomeKitEnabled   bool
-	HomeKitDevices   int
+	DriversTotal        int
+	DriversReady        int
+	LightsCount         int
+	ColorLightsCount    int
+	DimmableLightsCount int
+	OutletsCount        int
+	ButtonsCount        int
+	HomeKitEnabled      bool
+	HomeKitDevices      int
 }
 
 // ControlResult represents the result of a device control operation

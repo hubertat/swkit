@@ -167,14 +167,15 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 		Name:      state.Name,
 		Timestamp: state.Timestamp,
 		Summary: apiSummary{
-			DriversTotal:     summary.DriversTotal,
-			DriversReady:     summary.DriversReady,
-			LightsCount:      summary.LightsCount,
-			ColorLightsCount: summary.ColorLightsCount,
-			OutletsCount:     summary.OutletsCount,
-			ButtonsCount:     summary.ButtonsCount,
-			HomeKitEnabled:   summary.HomeKitEnabled,
-			HomeKitDevices:   summary.HomeKitDevices,
+			DriversTotal:        summary.DriversTotal,
+			DriversReady:        summary.DriversReady,
+			LightsCount:         summary.LightsCount,
+			ColorLightsCount:    summary.ColorLightsCount,
+			DimmableLightsCount: summary.DimmableLightsCount,
+			OutletsCount:        summary.OutletsCount,
+			ButtonsCount:        summary.ButtonsCount,
+			HomeKitEnabled:      summary.HomeKitEnabled,
+			HomeKitDevices:      summary.HomeKitDevices,
 		},
 		Drivers: make([]apiDriver, 0, len(state.Drivers)),
 		Devices: make([]apiDevice, 0, len(state.Devices)),
@@ -232,6 +233,9 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 			Healthy:      pt.Healthy,
 			ConfiguredAs: pt.ConfiguredAs,
 			CustomName:   pt.CustomName,
+			Value:        pt.Value,
+			Min:          pt.Min,
+			Max:          pt.Max,
 		}
 		if !pt.LastChanged.IsZero() {
 			ioPt.LastChanged = &pt.LastChanged
@@ -343,14 +347,15 @@ type apiServices struct {
 }
 
 type apiSummary struct {
-	DriversTotal     int  `json:"drivers_total"`
-	DriversReady     int  `json:"drivers_ready"`
-	LightsCount      int  `json:"lights_count"`
-	ColorLightsCount int  `json:"color_lights_count"`
-	OutletsCount     int  `json:"outlets_count"`
-	ButtonsCount     int  `json:"buttons_count"`
-	HomeKitEnabled   bool `json:"homekit_enabled"`
-	HomeKitDevices   int  `json:"homekit_devices"`
+	DriversTotal        int  `json:"drivers_total"`
+	DriversReady        int  `json:"drivers_ready"`
+	LightsCount         int  `json:"lights_count"`
+	ColorLightsCount    int  `json:"color_lights_count"`
+	DimmableLightsCount int  `json:"dimmable_lights_count"`
+	OutletsCount        int  `json:"outlets_count"`
+	ButtonsCount        int  `json:"buttons_count"`
+	HomeKitEnabled      bool `json:"homekit_enabled"`
+	HomeKitDevices      int  `json:"homekit_devices"`
 }
 
 type apiDriver struct {
@@ -392,6 +397,11 @@ type apiIoPoint struct {
 	LastEvent    *time.Time `json:"last_event,omitempty"`
 	ConfiguredAs string     `json:"configured_as,omitempty"`
 	CustomName   string     `json:"custom_name,omitempty"`
+
+	// Analog fields, populated only when Type == "analog_output".
+	Value int `json:"value,omitempty"`
+	Min   int `json:"min,omitempty"`
+	Max   int `json:"max,omitempty"`
 }
 
 type apiHomeKit struct {

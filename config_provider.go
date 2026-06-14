@@ -51,6 +51,15 @@ func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 		})
 	}
 
+	for _, dl := range p.sw.DimmableLights {
+		config.DimmableLights = append(config.DimmableLights, app.DimmableLightEditConfig{
+			Name:           dl.Name,
+			DigitalOutName: dl.DigitalOutName,
+			AnalogOutName:  dl.AnalogOutName,
+			DisableHomekit: dl.DisableHomekit,
+		})
+	}
+
 	for _, b := range p.sw.Buttons {
 		bc := app.ButtonEditConfig{
 			Name:           b.Name,
@@ -69,6 +78,9 @@ func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 	}
 	for _, cl := range p.sw.ColorLights {
 		config.OutputDeviceNames = append(config.OutputDeviceNames, cl.Name)
+	}
+	for _, dl := range p.sw.DimmableLights {
+		config.OutputDeviceNames = append(config.OutputDeviceNames, dl.Name)
 	}
 	for _, o := range p.sw.Outlets {
 		config.OutputDeviceNames = append(config.OutputDeviceNames, o.Name)
@@ -91,6 +103,16 @@ func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
 			Name:           l.Name,
 			DigitalOutName: l.DigitalOutName,
 			DisableHomekit: l.DisableHomekit,
+		}
+	}
+
+	p.sw.DimmableLights = make([]DimmableLightConfig, len(config.DimmableLights))
+	for i, dl := range config.DimmableLights {
+		p.sw.DimmableLights[i] = DimmableLightConfig{
+			Name:           dl.Name,
+			DigitalOutName: dl.DigitalOutName,
+			AnalogOutName:  dl.AnalogOutName,
+			DisableHomekit: dl.DisableHomekit,
 		}
 	}
 

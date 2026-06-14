@@ -1,0 +1,149 @@
+package swkit
+
+import (
+	"errors"
+	"fmt"
+	"hash/fnv"
+	"sync"
+
+	"github.com/brutella/hap/accessory"
+	"github.com/brutella/hap/characteristic"
+	"github.com/charmbracelet/log"
+	drivers "github.com/hubertat/swkit/drivers"
+)
+
+type DimmableLightConfig struct {
+	Name           string
+	DigitalOutName string
+	AnalogOutName  string
+	DisableHomekit bool
+}
+
+// DimmableLight is an on/off light with brightness control, composing a
+// DigitalOutput (on/off) and an AnalogOutput (brightness). HomeKit brightness
+// (0-100) is scaled to the analog output's native range via GetMinMax().
+type DimmableLight struct {
+	name           string
+	disableHomekit bool
+	isFaulty       bool
+
+	onOut  drivers.DigitalOutput
+	briOut drivers.AnalogOutput
+	logger *log.Logger
+
+	hk         *accessory.Lightbulb
+	brightness *characteristic.Brightness
+	fault      *characteristic.StatusFault
+
+	lock sync.Mutex
+}
+
+func NewDimmableLight(config DimmableLightConfig, dOut drivers.DigitalOutput, aOut drivers.AnalogOutput, logger *log.Logger) *DimmableLight {
+	logger.Debug("dimmable light created", "name", config.Name, "digitalOut", dOut.String(), "analogOut", aOut.String())
+	return &DimmableLight{
+		name:           config.Name,
+		disableHomekit: config.DisableHomekit,
+		lock:           sync.Mutex{},
+		logger:         logger,
+		onOut:          dOut,
+		briOut:         aOut,
+	}
+}
+
+// Name returns the name of the dimmable light object
+func (dl *DimmableLight) Name() string {
+	return dl.name
+}
+
+func (dl *DimmableLight) GetUniqueId() uint64 {
+	hash := fnv.New64()
+	hash.Write([]byte("DimmableLight_" + dl.name))
+	return hash.Sum64()
+}
+
+func (dl *DimmableLight) InitHk() *accessory.A {
+	if dl.disableHomekit {
+		dl.logger.Debug("homekit disabled for dimmable light", "name", dl.name)
+		return nil
+	}
+
+	info := accessory.Info{
+		Name:         dl.name,
+		SerialNumber: fmt.Sprintf("dimmable_light:%s:%s", dl.onOut.String(), dl.briOut.String()),
+	}
+	dl.hk = accessory.NewLightbulb(info)
+
+	// The plain Lightbulb service only carries On; add Brightness explicitly.
+	dl.brightness = characteristic.NewBrightness()
+	dl.hk.Lightbulb.AddC(dl.brightness.C)
+
+	dl.fault = characteristic.NewStatusFault()
+	dl.fault.SetValue(characteristic.StatusFaultNoFault)
+	dl.hk.Lightbulb.AddC(dl.fault.C)
+
+	dl.hk.Lightbulb.On.OnValueRemoteUpdate(dl.SetValue)
+	dl.brightness.OnValueRemoteUpdate(dl.updateBrightness)
+
+	dl.logger.Debug("homekit accessory initialized", "dimmableLight", dl.name)
+	return dl.hk.A
+}
+
+// updateBrightness is called when Brightness state is changed by some kind of controller device.
+// brightness is between 0 and 100 and is scaled to the analog output's native range.
+// Setting brightness does not toggle the On state - the two are independent.
+func (dl *DimmableLight) updateBrightness(newBrightness int) {
+	min, max := dl.briOut.GetMinMax()
+	native := convertIntRange(newBrightness, 0, 100, min, max)
+	dl.logger.Debug("setting dimmable light brightness", "dimmableLight", dl.name, "brightness", newBrightness, "native", native)
+	if err := dl.briOut.Set(native); err != nil {
+		dl.logger.Error("failed to set dimmable light brightness", "dimmableLight", dl.name, "err", err)
+	}
+}
+
+// Sync() is called periodically by swkit managing server to sync from drivers io.
+// If there is no homekit, there is no internal state - skip.
+func (dl *DimmableLight) Sync(force bool) (err error) {
+	if dl.hk == nil {
+		return nil
+	}
+
+	dl.lock.Lock()
+	defer dl.lock.Unlock()
+
+	onState, onErr := dl.onOut.GetState()
+	native, briErr := dl.briOut.GetState()
+	if onErr != nil || briErr != nil {
+		err = errors.Join(errors.New("failed to get one of DimmableLight io values: On, Brightness"), onErr, briErr)
+		dl.isFaulty = true
+		dl.fault.SetValue(characteristic.StatusFaultGeneralFault)
+		return
+	}
+
+	dl.isFaulty = false
+	dl.fault.SetValue(characteristic.StatusFaultNoFault)
+
+	dl.hk.Lightbulb.On.SetValue(onState)
+
+	min, max := dl.briOut.GetMinMax()
+	brightness := convertIntRange(native, min, max, 0, 100)
+	dl.brightness.SetValue(brightness)
+
+	return nil
+}
+
+func (dl *DimmableLight) SetValue(state bool) {
+	dl.logger.Debug("setting dimmable light value", "dimmableLight", dl.name, "state", state)
+	if err := dl.onOut.Set(state); err != nil {
+		dl.logger.Error("failed to set dimmable light on state", "dimmableLight", dl.name, "err", err)
+	}
+}
+
+func (dl *DimmableLight) Toggle() {
+	currentState, err := dl.onOut.GetState()
+	if err == nil {
+		dl.logger.Debug("toggling dimmable light", "dimmableLight", dl.name, "oldState", currentState, "newState", !currentState)
+		dl.SetValue(!currentState)
+	} else {
+		dl.logger.Debug("toggle failed to get current state", "dimmableLight", dl.name, "err", err)
+	}
+}

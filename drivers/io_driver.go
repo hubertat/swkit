@@ -194,6 +194,11 @@ type IoPointState struct {
 	Healthy     bool
 	LastChanged time.Time // zero value if never changed since startup
 	LastEvent   time.Time // zero value if no event received; set for explicit button-press events
+
+	// Analog fields, populated only for analog IO types (e.g. IoTypeAnalogOutput).
+	Value int // raw analog value
+	Min   int // minimum of the analog range
+	Max   int // maximum of the analog range
 }
 
 // IoDebugSnapshot contains the state of all IO points from a driver
@@ -211,6 +216,12 @@ type IoDebugProvider interface {
 // toggling a digital output by its global index
 type IoOutputToggler interface {
 	ToggleOutput(index int) error
+}
+
+// IoAnalogOutputSetter is an optional interface for drivers that support
+// setting an analog output to a raw value by its global index.
+type IoAnalogOutputSetter interface {
+	SetAnalogOutput(index int, value int) error
 }
 
 func ResolveIoIdString(ioId string) (driver string, ioType IoType, name string, err error) {

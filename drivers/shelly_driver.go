@@ -30,26 +30,44 @@ const healthCheckInterval = 5 * time.Second
 const stateUpToDateDuration = 5 * time.Minute
 const unhealthyCountLimit = 5
 
-func parseShellyIoId(ioId string) (string, int, error) {
+// parseShellyIoId parses a shelly io name into its parts. Two forms are accepted:
+//   - "<device>:<index>"             (legacy; component defaults to switch/input by io type)
+//   - "<device>:<component>:<index>" (explicit component, e.g. "<device>:light:0")
+//
+// The returned component is lower-cased and may be empty for the legacy form.
+func parseShellyIoId(ioId string) (deviceId string, component string, ioNo int, err error) {
 	if len(ioId) == 0 {
-		return "", 0, errors.New("empty io id")
+		return "", "", 0, errors.New("empty io id")
 	}
 
 	split := strings.Split(ioId, idSeparator)
-	if len(split) != 2 {
-		return "", 0, errors.New("invalid io id format, expected 2 parts separated by '" + string(idSeparator) + "'")
+	switch len(split) {
+	case 2:
+		deviceId = split[0]
+	case 3:
+		deviceId = split[0]
+		component = strings.ToLower(split[1])
+	default:
+		return "", "", 0, errors.New("invalid shelly io id format, expected '<device>:<index>' or '<device>:<component>:<index>'")
 	}
 
-	deviceId := split[0]
-	inputNoStr := split[1]
-
-	inputNo, err := strconv.Atoi(inputNoStr)
+	ioNo, err = strconv.Atoi(split[len(split)-1])
 	if err != nil {
-		return "", 0, errors.New("invalid input number")
+		return "", "", 0, errors.New("invalid io index number")
 	}
 
-	return deviceId, inputNo, nil
+	return deviceId, component, ioNo, nil
 }
+
+// shellyOutputKind distinguishes which Shelly component backs a digital output.
+type shellyOutputKind int
+
+const (
+	outputKindSwitch shellyOutputKind = iota
+	outputKindLight
+)
+
+const componentLight = "light"
 
 func getShellyIoId(deviceId string, inputNo int) string {
 	return fmt.Sprintf("%s%s%d", deviceId, idSeparator, inputNo)
@@ -60,8 +78,9 @@ type ShellyIO struct {
 	MqttClientId string
 	DiscoverAll  bool // when true, auto-discover all devices on the MQTT broker
 
-	outputs []*ShellyOutput
-	inputs  []*ShellyInput
+	outputs       []*ShellyOutput
+	inputs        []*ShellyInput
+	analogOutputs []*ShellyAnalogOutput
 
 	devices    []*shelly.ShellyDevice
 	topicRoots map[string]string // topicRoot → deviceId for non-default topic roots
@@ -103,12 +122,12 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 			return errors.New("invalid io, driver name mismatch")
 		}
 
-		actualDeviceId, ioNo, err := parseShellyIoId(ioId)
+		actualDeviceId, component, ioNo, err := parseShellyIoId(ioId)
 		if err != nil {
-			return errors.Join(err, errors.New("invalid shelly io id format, expected 2 parts separated by '"+string(idSeparator)+"'"))
+			return errors.Join(err, errors.New("invalid shelly io id, expected '<device>:<index>' or '<device>:<component>:<index>'"))
 		}
 
-		logger.Debug("will process io", "id", ioId, "type", ioType.String())
+		logger.Debug("will process io", "id", ioId, "type", ioType.String(), "component", component)
 
 		switch ioType {
 		case IoTypeDigitalInput, IoTypePushEventEmitter:
@@ -122,8 +141,20 @@ func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
 
 		case IoTypeDigitalOutput:
 			devicesMap[actualDeviceId] = true
-			she.outputs = append(she.outputs, &ShellyOutput{deviceId: actualDeviceId, switchNo: ioNo})
-			logger.Debug("adding d_out", "dev id:", actualDeviceId, "io no:", ioNo)
+			kind := outputKindSwitch
+			if component == componentLight {
+				kind = outputKindLight
+			}
+			she.outputs = append(she.outputs, &ShellyOutput{deviceId: actualDeviceId, switchNo: ioNo, kind: kind})
+			logger.Debug("adding d_out", "dev id:", actualDeviceId, "io no:", ioNo, "kind", component)
+
+		case IoTypeAnalogOutput:
+			if component != componentLight {
+				return fmt.Errorf("shelly analog output requires the 'light' component, e.g. '<device>:light:<index>' (got io id: %s)", ioId)
+			}
+			devicesMap[actualDeviceId] = true
+			she.analogOutputs = append(she.analogOutputs, &ShellyAnalogOutput{deviceId: actualDeviceId, lightNo: ioNo})
+			logger.Debug("adding a_out (light brightness)", "dev id:", actualDeviceId, "io no:", ioNo)
 
 		default:
 			return errors.New("unsupported io type: " + ioType.String())
@@ -277,17 +308,36 @@ func (she *ShellyIO) matchDevices() error {
 			dev := she.getDevice(output.deviceId)
 			if dev == nil {
 				err = errors.Join(err, fmt.Errorf("device %s not found", output.deviceId))
-			} else {
-				if !dev.IsReady() {
-					err = errors.Join(err, fmt.Errorf("device %s is not ready", output.deviceId))
+			} else if !dev.IsReady() {
+				err = errors.Join(err, fmt.Errorf("device %s is not ready", output.deviceId))
+			} else if output.kind == outputKindLight {
+				if dev.LightCount() <= output.switchNo {
+					err = errors.Join(err, fmt.Errorf("device %s does not have light %d", output.deviceId, output.switchNo))
 				} else {
-					if dev.SwitchCount() <= output.switchNo {
-						err = errors.Join(err, fmt.Errorf("device %s does not have switch %d", output.deviceId, output.switchNo))
-					} else {
-						output.dev = dev
-						she.outputs[ix] = output
-					}
+					output.dev = dev
+					she.outputs[ix] = output
 				}
+			} else if dev.SwitchCount() <= output.switchNo {
+				err = errors.Join(err, fmt.Errorf("device %s does not have switch %d", output.deviceId, output.switchNo))
+			} else {
+				output.dev = dev
+				she.outputs[ix] = output
+			}
+		}
+	}
+
+	for ix, aout := range she.analogOutputs {
+		if aout.dev == nil {
+			dev := she.getDevice(aout.deviceId)
+			if dev == nil {
+				err = errors.Join(err, fmt.Errorf("device %s not found", aout.deviceId))
+			} else if !dev.IsReady() {
+				err = errors.Join(err, fmt.Errorf("device %s is not ready", aout.deviceId))
+			} else if dev.LightCount() <= aout.lightNo {
+				err = errors.Join(err, fmt.Errorf("device %s does not have light %d", aout.deviceId, aout.lightNo))
+			} else {
+				aout.dev = dev
+				she.analogOutputs[ix] = aout
 			}
 		}
 	}
@@ -412,8 +462,15 @@ func (she *ShellyIO) GetDigitalOutput(id string) (DigitalOutput, error) {
 }
 
 func (she *ShellyIO) GetAnalogOutput(id string) (AnalogOutput, error) {
-	// TODO
-	return nil, fmt.Errorf("analog output not implemented")
+	she.ioMu.RLock()
+	defer she.ioMu.RUnlock()
+	for _, aout := range she.analogOutputs {
+		if strings.EqualFold(aout.getStringId(), id) {
+			return aout, nil
+		}
+	}
+
+	return nil, fmt.Errorf("shelly analog output: %s not found", id)
 }
 
 func (she *ShellyIO) GetRgbwOutput(id string) (RgbwOutput, error) {
@@ -688,6 +745,7 @@ func (she *ShellyIO) detectSwitchChanges(dev *shelly.ShellyDevice) {
 type ShellyOutput struct {
 	switchNo int
 	deviceId string
+	kind     shellyOutputKind // switch (relay) or light (dimmer on/off)
 
 	onStateUpdate func(bool)
 
@@ -707,6 +765,10 @@ func (sout *ShellyOutput) GetState() (bool, error) {
 		return false, fmt.Errorf("shelly device (%s) internal dev nil error", sout.deviceId)
 	}
 
+	if sout.kind == outputKindLight {
+		on, _, err := sout.dev.GetLightState(sout.switchNo)
+		return on, err
+	}
 	return sout.dev.GetOutputState(sout.switchNo)
 }
 
@@ -714,7 +776,12 @@ func (sout *ShellyOutput) Set(state bool) error {
 	if sout.dev == nil {
 		return errors.New("shelly output internal Switch/Device nil error")
 	}
-	err := sout.dev.SetSwitch(sout.switchNo, state)
+	var err error
+	if sout.kind == outputKindLight {
+		err = sout.dev.SetLight(sout.switchNo, &state, nil)
+	} else {
+		err = sout.dev.SetSwitch(sout.switchNo, state)
+	}
 	if err != nil {
 		return errors.Join(errors.New("failed to set shelly output state"), err)
 	}
@@ -722,12 +789,19 @@ func (sout *ShellyOutput) Set(state bool) error {
 }
 
 func (sout *ShellyOutput) String() string {
+	if sout.kind == outputKindLight {
+		return fmt.Sprintf("shelly:%s:light%d", sout.deviceId, sout.switchNo)
+	}
 	return fmt.Sprintf("shelly:%s:switch%d", sout.deviceId, sout.switchNo)
 }
 
-// getStringId() string
-// return string representation of shelly output
+// getStringId returns the io name (third part of the io id) used to resolve this
+// output, matching the configured form: "<device>:<index>" for a switch or
+// "<device>:light:<index>" for a light.
 func (sout *ShellyOutput) getStringId() string {
+	if sout.kind == outputKindLight {
+		return fmt.Sprintf("%s%slight%s%d", sout.deviceId, idSeparator, idSeparator, sout.switchNo)
+	}
 	return fmt.Sprintf("%s%s%d", sout.deviceId, idSeparator, sout.switchNo)
 }
 
@@ -736,6 +810,54 @@ func (sout *ShellyOutput) IsHealthy() bool {
 		return false
 	}
 	return sout.dev.HealthCheck() == nil
+}
+
+// ShellyAnalogOutput exposes a Shelly Light component's brightness (0-100) as an
+// AnalogOutput. On/off for the same light is exposed separately via a
+// ShellyOutput with kind outputKindLight.
+type ShellyAnalogOutput struct {
+	lightNo  int
+	deviceId string
+
+	dev *shelly.ShellyDevice
+}
+
+func (sao *ShellyAnalogOutput) GetMinMax() (int, int) {
+	return 0, 100
+}
+
+func (sao *ShellyAnalogOutput) GetState() (int, error) {
+	if sao.dev == nil {
+		return 0, fmt.Errorf("shelly device (%s) internal dev nil error", sao.deviceId)
+	}
+	_, brightness, err := sao.dev.GetLightState(sao.lightNo)
+	return int(brightness + 0.5), err
+}
+
+func (sao *ShellyAnalogOutput) Set(value int) error {
+	if sao.dev == nil {
+		return errors.New("shelly analog output internal Light/Device nil error")
+	}
+	brightness := float64(value)
+	if err := sao.dev.SetLight(sao.lightNo, nil, &brightness); err != nil {
+		return errors.Join(errors.New("failed to set shelly light brightness"), err)
+	}
+	return nil
+}
+
+func (sao *ShellyAnalogOutput) String() string {
+	return fmt.Sprintf("shelly:%s:light%d:brightness", sao.deviceId, sao.lightNo)
+}
+
+func (sao *ShellyAnalogOutput) getStringId() string {
+	return fmt.Sprintf("%s%slight%s%d", sao.deviceId, idSeparator, idSeparator, sao.lightNo)
+}
+
+func (sao *ShellyAnalogOutput) IsHealthy() bool {
+	if sao.dev == nil {
+		return false
+	}
+	return sao.dev.HealthCheck() == nil
 }
 
 type ShellyInput struct {
@@ -902,6 +1024,7 @@ func (she *ShellyIO) GetIoDebugSnapshot() IoDebugSnapshot {
 	var points []IoPointState
 	outputIdx := 0
 	inputIdx := 0
+	analogIdx := 0
 	for _, dev := range she.devices {
 		healthy := dev.HealthCheck() == nil && dev.IsReady()
 		for i := 0; i < dev.SwitchCount(); i++ {
@@ -938,8 +1061,53 @@ func (she *ShellyIO) GetIoDebugSnapshot() IoDebugSnapshot {
 			})
 			inputIdx++
 		}
+		for i := 0; i < dev.LightCount(); i++ {
+			on := false
+			brightness := 0
+			if o, b, err := dev.GetLightState(i); err == nil {
+				on = o
+				brightness = int(b + 0.5)
+			}
+			key := fmt.Sprintf("%s:%d", dev.Id, i)
+			points = append(points, IoPointState{
+				Index:       analogIdx,
+				Name:        fmt.Sprintf("%s:light%d", dev.Id, i),
+				Type:        IoTypeAnalogOutput,
+				State:       on,
+				Healthy:     healthy,
+				LastChanged: she.outputLastChanged[key],
+				Value:       brightness,
+				Min:         0,
+				Max:         100,
+			})
+			analogIdx++
+		}
 	}
 	return IoDebugSnapshot{Points: points}
+}
+
+// SetAnalogOutput sets a Shelly light's brightness (0-100) by its global analog
+// output index. Satisfies drivers.IoAnalogOutputSetter.
+func (she *ShellyIO) SetAnalogOutput(index int, value int) error {
+	she.devicesMu.RLock()
+	defer she.devicesMu.RUnlock()
+	if value < 0 {
+		value = 0
+	}
+	if value > 100 {
+		value = 100
+	}
+	analogIdx := 0
+	for _, dev := range she.devices {
+		for i := 0; i < dev.LightCount(); i++ {
+			if analogIdx == index {
+				brightness := float64(value)
+				return dev.SetLight(i, nil, &brightness)
+			}
+			analogIdx++
+		}
+	}
+	return fmt.Errorf("shelly: analog output index %d out of range", index)
 }
 
 // ToggleOutput toggles a Shelly relay by its global output index.

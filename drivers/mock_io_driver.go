@@ -19,6 +19,11 @@ type MockOutput struct {
 	writeStateChange bool
 }
 
+// NewMockOutput creates a MockOutput with the given id (for tests).
+func NewMockOutput(id string) *MockOutput {
+	return &MockOutput{id: id}
+}
+
 func (mo *MockOutput) GetState() (bool, error) {
 	return mo.state, nil
 }
@@ -49,6 +54,40 @@ func (mi *MockInput) IsHealthy() bool {
 	return true
 }
 
+// MockAnalogOutput is an in-memory AnalogOutput for testing.
+type MockAnalogOutput struct {
+	value    int
+	id       string
+	min, max int
+}
+
+// NewMockAnalogOutput creates a MockAnalogOutput with the given id and range (for tests).
+func NewMockAnalogOutput(id string, min, max int) *MockAnalogOutput {
+	return &MockAnalogOutput{id: id, min: min, max: max}
+}
+
+func (mao *MockAnalogOutput) GetMinMax() (int, int) {
+	return mao.min, mao.max
+}
+
+func (mao *MockAnalogOutput) GetState() (int, error) {
+	return mao.value, nil
+}
+
+func (mao *MockAnalogOutput) Set(value int) error {
+	mao.value = value
+	return nil
+}
+
+func (mao *MockAnalogOutput) String() string {
+	return fmt.Sprintf("mock_analog_output:%s", mao.id)
+}
+
+// IsHealthy returns always true (mock)
+func (mao *MockAnalogOutput) IsHealthy() bool {
+	return true
+}
+
 type MockInput struct {
 	State bool
 	id    string
@@ -63,10 +102,11 @@ func (mi *MockInput) String() string {
 }
 
 type MockIoDriver struct {
-	inputs  []*MockInput
-	outputs []*MockOutput
-	ready   bool
-	logger  *log.Logger
+	inputs        []*MockInput
+	outputs       []*MockOutput
+	analogOutputs []*MockAnalogOutput
+	ready         bool
+	logger        *log.Logger
 }
 
 func (md *MockIoDriver) Setup(ctx context.Context, ios []string) (err error) {
@@ -140,7 +180,16 @@ func (md *MockIoDriver) GetDigitalOutput(id string) (DigitalOutput, error) {
 }
 
 func (md *MockIoDriver) GetAnalogOutput(id string) (AnalogOutput, error) {
-	return nil, fmt.Errorf("analog output not implemented in mock driver")
+	for _, output := range md.analogOutputs {
+		if strings.EqualFold(id, output.id) {
+			return output, nil
+		}
+	}
+	// Create on demand with a default 0-100 range so wiring works without
+	// explicit analog setup (mirrors how Setup pre-creates digital ios).
+	mao := NewMockAnalogOutput(id, 0, 100)
+	md.analogOutputs = append(md.analogOutputs, mao)
+	return mao, nil
 }
 
 func (md *MockIoDriver) GetRgbwOutput(id string) (RgbwOutput, error) {

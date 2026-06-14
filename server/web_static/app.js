@@ -354,6 +354,7 @@
         const now = Date.now();
         const inputs = state.io_debug.filter(p => p.type === 'input');
         const outputs = state.io_debug.filter(p => p.type === 'output');
+        const analog = state.io_debug.filter(p => p.type === 'analog_output');
 
         function applySortIfNeeded(pts) {
             if (ioSort !== 'recent') return pts;
@@ -363,13 +364,18 @@
         let filtered;
         if (ioFilter === 'inputs') filtered = applySortIfNeeded(inputs);
         else if (ioFilter === 'outputs') filtered = applySortIfNeeded(outputs);
+        else if (ioFilter === 'analog') filtered = applySortIfNeeded(analog);
         else filtered = null; // show columns
 
         // Filter + sort buttons
+        const analogBtn = analog.length > 0
+            ? '<button class="io-filter-btn' + (ioFilter === 'analog' ? ' active' : '') + '" onclick="swkit.setIoFilter(\'analog\')">Analog (' + analog.length + ')</button>'
+            : '';
         let filters = '<div class="io-filters">' +
             '<button class="io-filter-btn' + (ioFilter === 'all' ? ' active' : '') + '" onclick="swkit.setIoFilter(\'all\')">All</button>' +
             '<button class="io-filter-btn' + (ioFilter === 'inputs' ? ' active' : '') + '" onclick="swkit.setIoFilter(\'inputs\')">Inputs (' + inputs.length + ')</button>' +
             '<button class="io-filter-btn' + (ioFilter === 'outputs' ? ' active' : '') + '" onclick="swkit.setIoFilter(\'outputs\')">Outputs (' + outputs.length + ')</button>' +
+            analogBtn +
             '<div style="margin-left:auto;display:flex;gap:4px">' +
             '<button class="io-filter-btn' + (ioSort === 'recent' ? ' active' : '') + '" onclick="swkit.setIoSort(\'recent\')">\u2193 Recent</button>' +
             '<button class="io-filter-btn' + (ioSort === 'default' ? ' active' : '') + '" onclick="swkit.setIoSort(\'default\')">Default</button>' +
@@ -380,9 +386,13 @@
         if (filtered) {
             content = renderIoTable(filtered, now);
         } else {
+            const analogCol = analog.length > 0
+                ? '<div class="card"><div class="card-title">Analog (' + analog.length + ')</div>' + renderIoTable(applySortIfNeeded(analog), now) + '</div>'
+                : '';
             content = '<div class="io-columns">' +
                 '<div class="card"><div class="card-title">Inputs (' + inputs.length + ')</div>' + renderIoTable(applySortIfNeeded(inputs), now) + '</div>' +
                 '<div class="card"><div class="card-title">Outputs (' + outputs.length + ')</div>' + renderIoTable(applySortIfNeeded(outputs), now) + '</div>' +
+                analogCol +
                 '</div>';
         }
 
@@ -405,10 +415,19 @@
                 ? '<span class="fw-600">' + escHtml(pt.custom_name) + '</span> <span class="text-muted mono" style="font-size:0.75rem">' + escHtml(pt.name) + '</span>'
                 : '<span class="mono">' + escHtml(pt.name) + '</span>';
 
+            let stateCell;
+            if (pt.type === 'analog_output') {
+                const max = pt.max || 0;
+                const pct = max > 0 ? Math.round((pt.value || 0) * 100 / max) : 0;
+                stateCell = '<span class="mono">' + (pt.value || 0) + '</span> <span class="text-muted">(' + pct + '%)</span>';
+            } else {
+                stateCell = ind + (pt.state ? ' ON' : ' OFF');
+            }
+
             rows += '<tr>' +
                 '<td>' + escHtml(pt.driver_name) + '</td>' +
                 '<td>' + label + '</td>' +
-                '<td>' + ind + (pt.state ? ' ON' : ' OFF') + '</td>' +
+                '<td>' + stateCell + '</td>' +
                 '<td>' + healthBadge + '</td>' +
                 '<td class="text-muted">' + (changed || evtTime || '-') + '</td>' +
                 '<td>' + configured + '</td>' +

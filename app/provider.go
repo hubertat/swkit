@@ -22,9 +22,16 @@ type DeviceController interface {
 	ToggleDevice(index int) ControlResult
 	// SetDevice sets the device at the given index to the given state
 	SetDevice(index int, state bool) ControlResult
+	// SetDeviceBrightness sets the brightness (0-100) of the device at the given index
+	SetDeviceBrightness(index int, pct int) ControlResult
 }
 
 // IoOutputController extends StateProvider with raw IO output toggle
 type IoOutputController interface {
 	ToggleIoOutput(driverName string, outputIndex int) error
+}
+
+// IoAnalogOutputController extends StateProvider with raw analog IO output set
+type IoAnalogOutputController interface {
+	SetIoAnalogOutput(driverName string, outputIndex int, value int) error
 }

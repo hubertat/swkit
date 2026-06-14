@@ -13,10 +13,11 @@ const (
 	ComponentTypeUndefined ComponentType = iota
 	ComponentTypeSwitch
 	ComponentTypeInput
+	ComponentTypeLight
 )
 
 func AllComponentTypes() []ComponentType {
-	return []ComponentType{ComponentTypeSwitch, ComponentTypeInput}
+	return []ComponentType{ComponentTypeSwitch, ComponentTypeInput, ComponentTypeLight}
 }
 func (sct ComponentType) String() string {
 	switch sct {
@@ -24,6 +25,8 @@ func (sct ComponentType) String() string {
 		return "switch"
 	case ComponentTypeInput:
 		return "input"
+	case ComponentTypeLight:
+		return "light"
 	default:
 		return ""
 	}

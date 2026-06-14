@@ -186,6 +186,11 @@ func (p *SwKitProvider) GetState() app.AppState {
 		state.Devices = append(state.Devices, ds)
 	}
 
+	for _, dimmableLight := range p.sw.dimmableLights {
+		ds := p.buildDimmableLightState(dimmableLight)
+		state.Devices = append(state.Devices, ds)
+	}
+
 	for _, outlet := range p.sw.outlets {
 		ds := p.buildOutletState(outlet)
 		state.Devices = append(state.Devices, ds)
@@ -201,8 +206,11 @@ func (p *SwKitProvider) GetState() app.AppState {
 		snapshot := provider.GetIoDebugSnapshot()
 		for _, pt := range snapshot.Points {
 			ioType := "input"
-			if pt.Type == drivers.IoTypeDigitalOutput {
+			switch pt.Type {
+			case drivers.IoTypeDigitalOutput:
 				ioType = "output"
+			case drivers.IoTypeAnalogOutput:
+				ioType = "analog_output"
 			}
 			state.IoDebug = append(state.IoDebug, app.IoPointDebugState{
 				DriverName:  driverName,
@@ -213,6 +221,9 @@ func (p *SwKitProvider) GetState() app.AppState {
 				Healthy:     pt.Healthy,
 				LastChanged: pt.LastChanged,
 				LastEvent:   pt.LastEvent,
+				Value:       pt.Value,
+				Min:         pt.Min,
+				Max:         pt.Max,
 			})
 		}
 	}
@@ -232,6 +243,9 @@ func (p *SwKitProvider) GetState() app.AppState {
 		if ds.RgbwIoId != "" {
 			ioDeviceMap[ds.RgbwIoId] = ds.Name
 		}
+		if ds.AnalogIoId != "" {
+			ioDeviceMap[ds.AnalogIoId] = ds.Name
+		}
 		if ds.EventInputId != "" {
 			ioDeviceMap[ds.EventInputId] = ds.Name
 		}
@@ -239,8 +253,11 @@ func (p *SwKitProvider) GetState() app.AppState {
 	// Annotate each IO point with the device that uses it (if any)
 	for i, pt := range state.IoDebug {
 		ioTypeStr := "d_in"
-		if pt.Type == "output" {
+		switch pt.Type {
+		case "output":
 			ioTypeStr = "d_out"
+		case "analog_output":
+			ioTypeStr = "a_out"
 		}
 		ioId := fmt.Sprintf("%s|%s|%d", pt.DriverName, ioTypeStr, pt.Index)
 		if deviceName, ok := ioDeviceMap[ioId]; ok {
@@ -353,6 +370,42 @@ func (p *SwKitProvider) buildColorLightState(cl *ColorLight) app.DeviceState {
 		HomeKitEnabled: !cl.disableHomekit,
 		OutputIoId:     outputIoId,
 		RgbwIoId:       rgbwIoId,
+	}
+}
+
+func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceState {
+	isOn := false
+	isHealthy := true
+	outputIoId := ""
+	analogIoId := ""
+	brightness := 0
+
+	if dl.onOut != nil {
+		if state, err := dl.onOut.GetState(); err == nil {
+			isOn = state
+		}
+		isHealthy = isOutputHealthy(dl.onOut)
+		outputIoId = dl.onOut.String()
+	}
+
+	if dl.briOut != nil {
+		analogIoId = dl.briOut.String()
+		if raw, err := dl.briOut.GetState(); err == nil {
+			min, max := dl.briOut.GetMinMax()
+			brightness = convertIntRange(raw, min, max, 0, 100)
+		}
+	}
+
+	return app.DeviceState{
+		Name:           dl.name,
+		Type:           app.DeviceTypeDimmableLight,
+		IsOn:           isOn,
+		IsHealthy:      isHealthy,
+		IsFaulty:       dl.isFaulty,
+		HomeKitEnabled: !dl.disableHomekit,
+		OutputIoId:     outputIoId,
+		AnalogIoId:     analogIoId,
+		Brightness:     brightness,
 	}
 }
 
@@ -481,16 +534,51 @@ func (p *SwKitProvider) SetDevice(index int, state bool) app.ControlResult {
 	}
 }
 
+// SetDeviceBrightness sets the brightness (0-100) of the dimmable device at the
+// given index. Only dimmable lights support brightness.
+func (p *SwKitProvider) SetDeviceBrightness(index int, pct int) app.ControlResult {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	device, deviceName, _, err := p.getControllableByIndex(index)
+	if err != nil {
+		return app.ControlResult{Error: err}
+	}
+	dl, ok := device.(*DimmableLight)
+	if !ok {
+		return app.ControlResult{
+			DeviceName: deviceName,
+			Action:     "brightness",
+			Error:      fmt.Errorf("device does not support brightness"),
+		}
+	}
+
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	dl.updateBrightness(pct)
+
+	newState := p.getDeviceState(device)
+	return app.ControlResult{
+		DeviceName: dl.Name(),
+		Action:     "brightness",
+		NewState:   newState,
+	}
+}
+
 // getControllableByIndex returns the Controllable device at the given index
-// Device order matches GetState(): lights -> colorLights -> outlets -> buttons
+// Device order matches GetState(): lights -> colorLights -> dimmableLights -> outlets -> buttons
 // Returns nil Controllable for buttons since they don't implement the interface
 func (p *SwKitProvider) getControllableByIndex(index int) (Controllable, string, app.DeviceType, error) {
 	lightsCount := len(p.sw.lights)
 	colorLightsCount := len(p.sw.colorLights)
+	dimmableLightsCount := len(p.sw.dimmableLights)
 	outletsCount := len(p.sw.outlets)
 	buttonsCount := len(p.sw.buttons)
 
-	if index < 0 || index >= lightsCount+colorLightsCount+outletsCount+buttonsCount {
+	if index < 0 || index >= lightsCount+colorLightsCount+dimmableLightsCount+outletsCount+buttonsCount {
 		return nil, "", "", fmt.Errorf("device index %d out of range", index)
 	}
 
@@ -505,6 +593,12 @@ func (p *SwKitProvider) getControllableByIndex(index int) (Controllable, string,
 		return p.sw.colorLights[index], p.sw.colorLights[index].name, app.DeviceTypeColorLight, nil
 	}
 	index -= colorLightsCount
+
+	// DimmableLights
+	if index < dimmableLightsCount {
+		return p.sw.dimmableLights[index], p.sw.dimmableLights[index].name, app.DeviceTypeDimmableLight, nil
+	}
+	index -= dimmableLightsCount
 
 	// Outlets
 	if index < outletsCount {
@@ -532,6 +626,12 @@ func (p *SwKitProvider) getDeviceState(device Controllable) bool {
 	case *ColorLight:
 		if d.onDigitalOut != nil {
 			if state, err := d.onDigitalOut.GetState(); err == nil {
+				return state
+			}
+		}
+	case *DimmableLight:
+		if d.onOut != nil {
+			if state, err := d.onOut.GetState(); err == nil {
 				return state
 			}
 		}
@@ -565,4 +665,19 @@ func (p *SwKitProvider) ToggleIoOutput(driverName string, outputIndex int) error
 		return fmt.Errorf("driver %q does not support output toggling", driverName)
 	}
 	return toggler.ToggleOutput(outputIndex)
+}
+
+// SetIoAnalogOutput sets a raw analog IO output by driver name and output index.
+func (p *SwKitProvider) SetIoAnalogOutput(driverName string, outputIndex int, value int) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	driver, ok := p.sw.ioDrivers[driverName]
+	if !ok {
+		return fmt.Errorf("driver %q not found", driverName)
+	}
+	setter, ok := driver.(drivers.IoAnalogOutputSetter)
+	if !ok {
+		return fmt.Errorf("driver %q does not support analog output setting", driverName)
+	}
+	return setter.SetAnalogOutput(outputIndex, value)
 }

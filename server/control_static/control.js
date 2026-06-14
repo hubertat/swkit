@@ -24,6 +24,8 @@ function toggleTheme() {
 
 let devices = [];
 const pendingSet = new Set(); // indices being toggled
+const activeSliders = new Set(); // indices with a brightness slider being dragged
+const briTimers = {}; // debounce timers per index for brightness
 let pollTimer = null;
 
 // --- API ---
@@ -54,6 +56,30 @@ async function toggleDevice(index) {
     }
 }
 
+async function setBrightness(index, value) {
+    try {
+        const resp = await fetch(ENDPOINT + '/api/devices/' + index + '/set_brightness', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: value }),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const dev = devices.find(d => d.index === index);
+        if (dev) dev.brightness = value;
+    } catch (e) {
+        console.error('set brightness failed', e);
+    }
+}
+
+// scheduleBrightness debounces rapid slider movements while dragging.
+function scheduleBrightness(index, value) {
+    if (briTimers[index]) clearTimeout(briTimers[index]);
+    briTimers[index] = setTimeout(() => {
+        setBrightness(index, value);
+        delete briTimers[index];
+    }, 150);
+}
+
 // --- Poll ---
 
 function setStatus(ok) {
@@ -67,7 +93,10 @@ async function poll() {
     try {
         const data = await fetchDevices();
         devices = data;
-        renderDevices();
+        // Avoid clobbering a brightness slider while it is being dragged.
+        if (activeSliders.size === 0) {
+            renderDevices();
+        }
         setStatus(true);
     } catch (e) {
         console.error('poll error', e);
@@ -90,10 +119,11 @@ document.addEventListener('visibilitychange', () => {
 
 // --- Render ---
 
-const TYPE_ORDER = ['light', 'color_light', 'outlet', 'button'];
+const TYPE_ORDER = ['light', 'color_light', 'dimmable_light', 'outlet', 'button'];
 const TYPE_LABELS = {
     'light': 'Lights',
     'color_light': 'Color Lights',
+    'dimmable_light': 'Dimmable Lights',
     'outlet': 'Outlets',
     'button': 'Buttons',
 };
@@ -148,6 +178,24 @@ function renderDevices() {
             toggleDevice(idx);
         });
     });
+
+    // Attach brightness slider listeners
+    content.querySelectorAll('.brightness-slider[data-index]').forEach(sl => {
+        sl.addEventListener('input', () => {
+            const idx = parseInt(sl.dataset.index, 10);
+            const val = parseInt(sl.value, 10);
+            const lbl = document.getElementById('bri-val-' + idx);
+            if (lbl) lbl.textContent = val + '%';
+            activeSliders.add(idx);
+            scheduleBrightness(idx, val);
+        });
+        sl.addEventListener('change', () => {
+            const idx = parseInt(sl.dataset.index, 10);
+            const val = parseInt(sl.value, 10);
+            activeSliders.delete(idx);
+            setBrightness(idx, val);
+        });
+    });
 }
 
 function renderCard(dev) {
@@ -186,10 +234,21 @@ function renderCard(dev) {
         eventHtml = '<span class="last-event">Last: ' + escHtml(dev.last_event_type) + '</span>';
     }
 
+    let brightnessHtml = '';
+    if (dev.has_brightness) {
+        const b = dev.brightness || 0;
+        const disabled = !dev.is_healthy ? 'disabled' : '';
+        brightnessHtml = `<div class="brightness-row">
+    <input type="range" class="brightness-slider" data-index="${dev.index}" min="0" max="100" value="${b}" ${disabled}>
+    <span class="brightness-val" id="bri-val-${dev.index}">${b}%</span>
+  </div>`;
+    }
+
     return `<div class="${cardClass}" id="card-${dev.index}">
   <div class="device-name">${escHtml(dev.name)}</div>
   <div class="device-meta">${badgeHtml}${eventHtml}</div>
   ${btnHtml}
+  ${brightnessHtml}
 </div>`;
 }
 

@@ -25,7 +25,11 @@ const (
 	IoFilterAll IoDebugFilter = iota
 	IoFilterInputs
 	IoFilterOutputs
+	IoFilterAnalog
 )
+
+// ioFilterCount is the number of IO debug filters (used for cycling).
+const ioFilterCount = 4
 
 func (f IoDebugFilter) String() string {
 	switch f {
@@ -33,6 +37,8 @@ func (f IoDebugFilter) String() string {
 		return "Inputs"
 	case IoFilterOutputs:
 		return "Outputs"
+	case IoFilterAnalog:
+		return "Analog"
 	default:
 		return "All"
 	}
@@ -463,7 +469,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keys.Filter):
 			if m.activeTab == TabIoDebug {
-				m.ioDebugFilter = (m.ioDebugFilter + 1) % 3
+				m.ioDebugFilter = (m.ioDebugFilter + 1) % ioFilterCount
 				m.cursor = 0
 				return m, nil
 			}
@@ -495,6 +501,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ioImportInput.Focus()
 				m.ioImporting = true
 				return m, textinput.Blink
+			}
+
+		case msg.String() == "+" || msg.String() == "=" || msg.String() == "-" || msg.String() == "_":
+			if m.activeTab == TabIoDebug && m.ioDebugFilter == IoFilterAnalog {
+				delta := 5
+				if msg.String() == "-" || msg.String() == "_" {
+					delta = -5
+				}
+				return m, m.stepSelectedIoAnalog(delta)
 			}
 
 		case key.Matches(msg, m.keys.Enter):
@@ -593,6 +608,38 @@ func (m Model) toggleSelectedIoOutput() tea.Cmd {
 	pt := outputs[m.cursor]
 	return func() tea.Msg {
 		_ = controller.ToggleIoOutput(pt.DriverName, pt.Index)
+		return nil
+	}
+}
+
+// stepSelectedIoAnalog adjusts the selected analog output by deltaPct percent of
+// its range (continuous-slider style, +/- steps).
+func (m Model) stepSelectedIoAnalog(deltaPct int) tea.Cmd {
+	controller, ok := m.provider.(app.IoAnalogOutputController)
+	if !ok {
+		return nil
+	}
+	points := m.ioDebugByType(IoFilterAnalog)
+	if m.cursor < 0 || m.cursor >= len(points) {
+		return nil
+	}
+	pt := points[m.cursor]
+	span := pt.Max - pt.Min
+	if span <= 0 {
+		return nil
+	}
+	// current percent of range, stepped, clamped to 0-100
+	curPct := (pt.Value - pt.Min) * 100 / span
+	newPct := curPct + deltaPct
+	if newPct < 0 {
+		newPct = 0
+	}
+	if newPct > 100 {
+		newPct = 100
+	}
+	newValue := pt.Min + newPct*span/100
+	return func() tea.Msg {
+		_ = controller.SetIoAnalogOutput(pt.DriverName, pt.Index, newValue)
 		return nil
 	}
 }
@@ -710,8 +757,11 @@ func (m Model) detectIoStateChanges(pts []app.IoPointDebugState) {
 // ioDebugByType returns IO debug points filtered to a specific type
 func (m Model) ioDebugByType(filter IoDebugFilter) []app.IoPointDebugState {
 	filterType := "input"
-	if filter == IoFilterOutputs {
+	switch filter {
+	case IoFilterOutputs:
 		filterType = "output"
+	case IoFilterAnalog:
+		filterType = "analog_output"
 	}
 	var filtered []app.IoPointDebugState
 	for _, pt := range m.state.IoDebug {
@@ -874,6 +924,9 @@ func (m Model) renderDashboard() string {
 	devicesContent += IconLight + " Lights: " + m.theme.Secondary.Render(itoa(summary.LightsCount)) + "\n"
 	if summary.ColorLightsCount > 0 {
 		devicesContent += IconColorLight + " Color: " + m.theme.Secondary.Render(itoa(summary.ColorLightsCount)) + "\n"
+	}
+	if summary.DimmableLightsCount > 0 {
+		devicesContent += IconLight + " Dimmable: " + m.theme.Secondary.Render(itoa(summary.DimmableLightsCount)) + "\n"
 	}
 	devicesContent += IconOutlet + " Outlets: " + m.theme.Secondary.Render(itoa(summary.OutletsCount)) + "\n"
 	devicesContent += IconButton + " Buttons: " + m.theme.Secondary.Render(itoa(summary.ButtonsCount))
@@ -1054,8 +1107,12 @@ func (m Model) renderDeviceDetail() string {
 
 	lines := []string{title, "", typeLabel, hkLabel, healthLabel}
 
+	if device.Type == app.DeviceTypeDimmableLight {
+		lines = append(lines, m.theme.Secondary.Render("Brightness: ")+itoa(device.Brightness)+"%")
+	}
+
 	// IO Config section
-	hasIo := device.OutputIoId != "" || device.RgbwIoId != "" || device.EventInputId != ""
+	hasIo := device.OutputIoId != "" || device.RgbwIoId != "" || device.AnalogIoId != "" || device.EventInputId != ""
 	if hasIo {
 		lines = append(lines, "", m.theme.BoxTitle.Render("IO Config"))
 		if device.OutputIoId != "" {
@@ -1063,6 +1120,9 @@ func (m Model) renderDeviceDetail() string {
 		}
 		if device.RgbwIoId != "" {
 			lines = append(lines, m.theme.Secondary.Render("RGBW:   ")+device.RgbwIoId)
+		}
+		if device.AnalogIoId != "" {
+			lines = append(lines, m.theme.Secondary.Render("Analog: ")+device.AnalogIoId)
 		}
 		if device.EventInputId != "" {
 			lines = append(lines, m.theme.Secondary.Render("Input:  ")+device.EventInputId)
@@ -1157,6 +1217,12 @@ func (m Model) renderIoDebug(height int) string {
 		if m.ioNamesMan != nil {
 			hint += "  i: import"
 		}
+		if m.ioDebugFilter == IoFilterOutputs {
+			hint += "  enter: toggle"
+		}
+		if m.ioDebugFilter == IoFilterAnalog {
+			hint += "  +/-: set"
+		}
 		header += m.theme.Muted.Render(hint)
 	}
 
@@ -1243,13 +1309,24 @@ func (m Model) ioDebugLines(points []app.IoPointDebugState, withCursor bool) []s
 			style = m.theme.ListItemSelected
 		}
 
-		// State indicator — orange for 2s after an explicit event, then back to normal
-		stateText := m.theme.Off.Render(IconOff)
-		if pt.State {
-			stateText = m.theme.On.Render(IconOn)
-		}
-		if !pt.LastEvent.IsZero() && now.Sub(pt.LastEvent) < 2*time.Second {
-			stateText = m.theme.Event.Render(IconOn)
+		// State indicator — orange for 2s after an explicit event, then back to normal.
+		// Analog outputs show their value and percent-of-range instead of on/off.
+		var stateText string
+		if pt.Type == "analog_output" {
+			span := pt.Max - pt.Min
+			pct := 0
+			if span > 0 {
+				pct = (pt.Value - pt.Min) * 100 / span
+			}
+			stateText = m.theme.On.Render(fmt.Sprintf("%d (%d%%)", pt.Value, pct))
+		} else {
+			stateText = m.theme.Off.Render(IconOff)
+			if pt.State {
+				stateText = m.theme.On.Render(IconOn)
+			}
+			if !pt.LastEvent.IsZero() && now.Sub(pt.LastEvent) < 2*time.Second {
+				stateText = m.theme.Event.Render(IconOn)
+			}
 		}
 
 		// Health indicator
@@ -1340,6 +1417,8 @@ func deviceIcon(t app.DeviceType) string {
 		return IconLight
 	case app.DeviceTypeColorLight:
 		return IconColorLight
+	case app.DeviceTypeDimmableLight:
+		return IconLight
 	case app.DeviceTypeOutlet:
 		return IconOutlet
 	case app.DeviceTypeButton:

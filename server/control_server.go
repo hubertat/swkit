@@ -160,6 +160,8 @@ type controlDeviceResponse struct {
 	IsHealthy     bool   `json:"is_healthy"`
 	IsFaulty      bool   `json:"is_faulty"`
 	Controllable  bool   `json:"controllable"`
+	HasBrightness bool   `json:"has_brightness"`
+	Brightness    int    `json:"brightness"`
 	LastEventType string `json:"last_event_type,omitempty"`
 }
 
@@ -176,7 +178,9 @@ func (cs *ControlServer) handleDeviceList(w http.ResponseWriter, r *http.Request
 	for i, d := range state.Devices {
 		controllable := d.Type == app.DeviceTypeLight ||
 			d.Type == app.DeviceTypeColorLight ||
+			d.Type == app.DeviceTypeDimmableLight ||
 			d.Type == app.DeviceTypeOutlet
+		hasBrightness := d.Type == app.DeviceTypeDimmableLight
 
 		result = append(result, controlDeviceResponse{
 			Index:         i,
@@ -186,6 +190,8 @@ func (cs *ControlServer) handleDeviceList(w http.ResponseWriter, r *http.Request
 			IsHealthy:     d.IsHealthy,
 			IsFaulty:      d.IsFaulty,
 			Controllable:  controllable,
+			HasBrightness: hasBrightness,
+			Brightness:    d.Brightness,
 			LastEventType: d.LastEventType,
 		})
 	}
@@ -238,6 +244,15 @@ func (cs *ControlServer) handleDeviceAction(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		result = cs.provider.SetDevice(index, body.Value)
+	case "set_brightness":
+		var body struct {
+			Value int `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		result = cs.provider.SetDeviceBrightness(index, body.Value)
 	default:
 		http.NotFound(w, r)
 		return

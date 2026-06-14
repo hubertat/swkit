@@ -19,6 +19,10 @@ type GetStatus struct {
 	Input1  json.RawMessage `json:"input:1"`
 	Input2  json.RawMessage `json:"input:2"`
 	Input3  json.RawMessage `json:"input:3"`
+	Light0  json.RawMessage `json:"light:0"`
+	Light1  json.RawMessage `json:"light:1"`
+	Light2  json.RawMessage `json:"light:2"`
+	Light3  json.RawMessage `json:"light:3"`
 }
 
 func (gs *GetStatus) rawSwitchSlice() [][]byte {
@@ -36,6 +40,24 @@ func (gs *GetStatus) GetSwitches() (switches []components.SwitchStatus) {
 			if json.Unmarshal(rawSwitch, &sw) == nil {
 				sw.ID = swId
 				switches = append(switches, sw)
+			}
+		}
+	}
+
+	return
+}
+
+func (gs *GetStatus) rawLightSlice() [][]byte {
+	return [][]byte{gs.Light0, gs.Light1, gs.Light2, gs.Light3}
+}
+
+func (gs *GetStatus) GetLights() (lights []components.LightStatus) {
+	for lightId, rawLight := range gs.rawLightSlice() {
+		if len(rawLight) > 0 {
+			light := components.LightStatus{}
+			if json.Unmarshal(rawLight, &light) == nil {
+				light.ID = lightId
+				lights = append(lights, light)
 			}
 		}
 	}

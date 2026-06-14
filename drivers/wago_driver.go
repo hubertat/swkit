@@ -21,7 +21,18 @@ const wagoDefaultModbusTimeoutMs = 1000
 const wagoDefaultPollIntervalMs = 10
 const wagoStaleThreshold = 1 * time.Second
 
+// Analog output process image. Output words are written via FC6/FC16 to holding
+// registers starting at 0 and read back from the RW output image mirror at +512,
+// paralleling the digital coil layout (write 0..N-1, read 512..). The AO word
+// index counts only analog/word output channels and is independent of the
+// digital coil space.
+// NOTE: verify these register offsets and the 0..0x7FFF=0..10V word scaling
+// against the coupler's WBM "Modbus Mapping" page before trusting hardware values.
+const wagoAnalogOutputReadOffset = 512
+const wagoAnalogOutputMax = 0x7FFF // 32767, full-scale (10V) for a 0-10V module
+
 // Verification registers (holding registers, FC3)
+const wagoRegisterAOCount = 0x1022 // Number of analog output words
 const wagoRegisterDOCount = 0x1024 // Number of digital output bits
 const wagoRegisterDICount = 0x1025 // Number of digital input bits
 
@@ -29,8 +40,10 @@ const wagoRegisterDICount = 0x1025 // Number of digital input bits
 type wagoModuleSpec struct {
 	di          int // digital input count
 	do          int // digital output count
+	ao          int // analog output channel count
 	diOrder     []int
 	doOrder     []int
+	aoOrder     []int
 	description string
 }
 
@@ -44,6 +57,7 @@ var wagoModuleSpecs = map[string]wagoModuleSpec{
 	"750-610": {di: 2, do: 0, description: "Fused power (24VDC) supply with diagnostics 2DI"},  // Power supply with 2DI
 	// Keep output channel semantics consistent with 8-channel physical terminal order.
 	"750-530": {di: 0, do: 8, doOrder: []int{1, 3, 5, 7, 2, 4, 6, 8}, description: "8DO output 24VDC (+)"},
+	"750-550": {ao: 2, description: "2AO 0-10V DC"},
 }
 
 // WagoIO implements IoDriver for Wago 750-3xx modbus controllers
@@ -58,26 +72,31 @@ type WagoIO struct {
 	isReady bool
 	logger  *log.Logger
 
-	modules []wagoModuleSpec
-	inputs  []WagoDI
-	outputs []WagoDO
-	pushers []*PushEventDetector
+	modules       []wagoModuleSpec
+	inputs        []WagoDI
+	outputs       []WagoDO
+	analogOutputs []WagoAO
+	pushers       []*PushEventDetector
 
 	totalDI int
 	totalDO int
+	totalAO int
 
 	// Local state cache
-	inputStates       []bool
-	outputStates      []bool
-	inputLastChanged  []time.Time
-	outputLastChanged []time.Time
-	lastPollOk        time.Time
-	pollTicker        *time.Ticker
-	stopPoll          chan struct{}
+	inputStates             []bool
+	outputStates            []bool
+	analogOutputStates      []uint16
+	inputLastChanged        []time.Time
+	outputLastChanged       []time.Time
+	analogOutputLastChanged []time.Time
+	lastPollOk              time.Time
+	pollTicker              *time.Ticker
+	stopPoll                chan struct{}
 
 	// Mapping between physical channel order (driver-facing) and coupler process-image order.
 	diPhysicalToProcess []int
 	doPhysicalToProcess []int
+	aoPhysicalToProcess []int
 }
 
 // WagoDI implements DigitalInput for Wago digital inputs
@@ -91,6 +110,14 @@ type WagoDO struct {
 	driver        *WagoIO
 	index         uint16
 	onStateUpdate func(bool)
+}
+
+// WagoAO implements AnalogOutput for Wago analog output channels (e.g. 750-550).
+// The value is the raw 16-bit process word; for a 0-10V module 0 = 0V and
+// 0x7FFF (32767) = 10V.
+type WagoAO struct {
+	driver *WagoIO
+	index  uint16
 }
 
 func (wio *WagoIO) String() string {
@@ -129,15 +156,19 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 		wio.modules = append(wio.modules, spec)
 		wio.totalDI += spec.di
 		wio.totalDO += spec.do
+		wio.totalAO += spec.ao
 	}
 
 	// Initialize state caches
 	wio.inputStates = make([]bool, wio.totalDI)
 	wio.outputStates = make([]bool, wio.totalDO)
+	wio.analogOutputStates = make([]uint16, wio.totalAO)
 	wio.inputLastChanged = make([]time.Time, wio.totalDI)
 	wio.outputLastChanged = make([]time.Time, wio.totalDO)
-	wio.diPhysicalToProcess = wio.buildPhysicalToProcessMap(true)
-	wio.doPhysicalToProcess = wio.buildPhysicalToProcessMap(false)
+	wio.analogOutputLastChanged = make([]time.Time, wio.totalAO)
+	wio.diPhysicalToProcess = wio.buildPhysicalToProcessMap(wagoChannelDI)
+	wio.doPhysicalToProcess = wio.buildPhysicalToProcessMap(wagoChannelDO)
+	wio.aoPhysicalToProcess = wio.buildPhysicalToProcessMap(wagoChannelAO)
 
 	// Create modbus client
 	connString := fmt.Sprintf("tcp://%s:%d", wio.Address, wio.Port)
@@ -229,6 +260,22 @@ func (wio *WagoIO) Setup(ctx context.Context, ios []string) error {
 				index:  uint16(index),
 			})
 
+		case IoTypeAnalogOutput:
+			index := relIndex
+			if moduleNo != 0 {
+				index = wio.getAoGlobalIndex(moduleNo, relIndex)
+				if index < 0 {
+					return fmt.Errorf("wago driver: failed to get global analog output index (module: %d, rel index: %d)", moduleNo, relIndex)
+				}
+			}
+			if index < 0 || index >= wio.totalAO {
+				return fmt.Errorf("wago driver: analog output index %d out of range (0-%d)", index, wio.totalAO-1)
+			}
+			wio.analogOutputs = append(wio.analogOutputs, WagoAO{
+				driver: wio,
+				index:  uint16(index),
+			})
+
 		default:
 			return fmt.Errorf("wago driver: unsupported io type: %s", ioType.String())
 		}
@@ -274,6 +321,17 @@ func (wio *WagoIO) verifyIOCounts() error {
 
 	if int(diCount) != wio.totalDI {
 		return fmt.Errorf("wago driver: DI count mismatch - config expects %d, hardware reports %d", wio.totalDI, diCount)
+	}
+
+	// Read AO word count register (0x1022) and verify when analog outputs are configured.
+	if wio.totalAO > 0 {
+		aoCount, err := wio.client.ReadRegister(wagoRegisterAOCount, modbus.HOLDING_REGISTER)
+		if err != nil {
+			return errors.Join(err, errors.New("wago driver: failed to read AO count register"))
+		}
+		if int(aoCount) != wio.totalAO {
+			return fmt.Errorf("wago driver: AO count mismatch - config expects %d, hardware reports %d", wio.totalAO, aoCount)
+		}
 	}
 
 	return nil
@@ -349,6 +407,7 @@ func (wio *WagoIO) refreshStates() error {
 	var errs error
 	var inputs []bool
 	var outputs []bool
+	var analogOutputs []uint16
 
 	// FC2 - batch read all discrete inputs
 	if wio.totalDI > 0 {
@@ -365,6 +424,15 @@ func (wio *WagoIO) refreshStates() error {
 		outputs, err = wio.client.ReadCoils(wagoOutputReadOffset, uint16(wio.totalDO))
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("failed to read coils: %w", err))
+		}
+	}
+
+	// FC3 - batch read analog output readback words at offset 512
+	if wio.totalAO > 0 {
+		var err error
+		analogOutputs, err = wio.client.ReadRegisters(wagoAnalogOutputReadOffset, uint16(wio.totalAO), modbus.HOLDING_REGISTER)
+		if err != nil {
+			errs = errors.Join(errs, fmt.Errorf("failed to read analog output registers: %w", err))
 		}
 	}
 
@@ -393,6 +461,15 @@ func (wio *WagoIO) refreshStates() error {
 			}
 		}
 		copy(wio.outputStates, physicalOutputs)
+	}
+	if analogOutputs != nil {
+		physicalAnalogOutputs := wio.remapAnalogOutputsToPhysical(analogOutputs)
+		for i, v := range physicalAnalogOutputs {
+			if i < len(wio.analogOutputStates) && wio.analogOutputStates[i] != v {
+				wio.analogOutputLastChanged[i] = now
+			}
+		}
+		copy(wio.analogOutputStates, physicalAnalogOutputs)
 	}
 	if errs == nil {
 		wio.lastPollOk = now
@@ -493,6 +570,34 @@ func (wio *WagoIO) getOutGlobalIndex(moduleNo int, ioIndex int) int {
 	return -1
 }
 
+func (wio *WagoIO) getAoGlobalIndex(moduleNo int, ioIndex int) int {
+	if moduleNo > len(wio.modules) {
+		return -1
+	}
+	module := wio.modules[moduleNo-1]
+	if ioIndex > module.ao {
+		return -1
+	}
+
+	// Count all analog outputs until we get to our moduleNo and ioIndex (1 based!)
+	aoCount := 0
+	for ix, m := range wio.modules {
+		if ix+1 == moduleNo {
+			return aoCount + ioIndex - 1
+		}
+		aoCount += m.ao
+	}
+
+	return -1
+}
+
+func (wio *WagoIO) mapAoPhysicalToProcess(physicalIndex int) int {
+	if physicalIndex < 0 || physicalIndex >= len(wio.aoPhysicalToProcess) {
+		return physicalIndex
+	}
+	return wio.aoPhysicalToProcess[physicalIndex]
+}
+
 func (wio *WagoIO) Close() error {
 	wio.mu.Lock()
 	defer wio.mu.Unlock()
@@ -518,6 +623,12 @@ func (wio *WagoIO) Close() error {
 	for i := range wio.outputs {
 		processIndex := wio.mapOutputPhysicalToProcess(int(wio.outputs[i].index))
 		_ = wio.client.WriteCoil(uint16(processIndex), false)
+	}
+
+	// Drive all analog outputs to 0 before closing
+	for i := range wio.analogOutputs {
+		processIndex := wio.mapAoPhysicalToProcess(int(wio.analogOutputs[i].index))
+		_ = wio.client.WriteRegister(uint16(processIndex), 0)
 	}
 
 	return wio.client.Close()
@@ -594,7 +705,37 @@ func (wio *WagoIO) GetDigitalOutput(id string) (DigitalOutput, error) {
 }
 
 func (wio *WagoIO) GetAnalogOutput(id string) (AnalogOutput, error) {
-	return nil, errors.New("wago driver: analog output not implemented")
+	moduleNo, index, err := wio.parseIoId(id)
+	if err != nil {
+		return nil, errors.Join(err, fmt.Errorf("wago driver: failed to parse analog output id: %s", id))
+	}
+
+	if moduleNo == 0 {
+		for ix := range wio.analogOutputs {
+			if wio.analogOutputs[ix].index == uint16(index) {
+				return &wio.analogOutputs[ix], nil
+			}
+		}
+	} else {
+		if moduleNo > len(wio.modules) {
+			return nil, fmt.Errorf("wago driver: analog output not found, module %d not found", moduleNo)
+		}
+		module := wio.modules[moduleNo-1]
+		if index > module.ao {
+			return nil, fmt.Errorf("wago driver: analog output %d not found, selected module (%d) has %d analog outputs", index, moduleNo, module.ao)
+		}
+		globIndex := wio.getAoGlobalIndex(moduleNo, index)
+		if globIndex < 0 {
+			return nil, fmt.Errorf("wago driver: analog output %d not found, failed to get global index", index)
+		}
+		for ix := range wio.analogOutputs {
+			if wio.analogOutputs[ix].index == uint16(globIndex) {
+				return &wio.analogOutputs[ix], nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("wago driver: analog output %d not found", index)
 }
 
 func (wio *WagoIO) GetRgbwOutput(id string) (RgbwOutput, error) {
@@ -715,6 +856,62 @@ func (wdo *WagoDO) IsHealthy() bool {
 	return wdo.driver.isReady && !wdo.driver.isStateStale()
 }
 
+// WagoAO methods
+
+func (wao *WagoAO) GetMinMax() (int, int) {
+	return 0, wagoAnalogOutputMax
+}
+
+func (wao *WagoAO) GetState() (int, error) {
+	wao.driver.mu.RLock()
+	defer wao.driver.mu.RUnlock()
+
+	if !wao.driver.isReady {
+		return 0, errors.New("wago driver: not ready")
+	}
+
+	if wao.driver.isStateStale() {
+		return 0, errors.New("wago driver: state is stale, last successful poll >1s ago")
+	}
+
+	return int(wao.driver.analogOutputStates[wao.index]), nil
+}
+
+func (wao *WagoAO) Set(value int) error {
+	if value < 0 {
+		value = 0
+	}
+	if value > wagoAnalogOutputMax {
+		value = wagoAnalogOutputMax
+	}
+
+	wao.driver.mu.Lock()
+	defer wao.driver.mu.Unlock()
+
+	if !wao.driver.isReady {
+		return errors.New("wago driver: not ready")
+	}
+
+	// FC6 - Write Single (holding) Register
+	processIndex := wao.driver.mapAoPhysicalToProcess(int(wao.index))
+	err := wao.driver.client.WriteRegister(uint16(processIndex), uint16(value))
+	if err != nil {
+		return errors.Join(err, fmt.Errorf("wago driver: failed to write analog output %d", wao.index))
+	}
+
+	return nil
+}
+
+func (wao *WagoAO) String() string {
+	return GetIoIdString(wagoDriverName, IoTypeAnalogOutput, strconv.Itoa(int(wao.index)))
+}
+
+func (wao *WagoAO) IsHealthy() bool {
+	wao.driver.mu.RLock()
+	defer wao.driver.mu.RUnlock()
+	return wao.driver.isReady && !wao.driver.isStateStale()
+}
+
 // GetIoDebugSnapshot returns a snapshot of all IO points for debug display
 func (wio *WagoIO) GetIoDebugSnapshot() IoDebugSnapshot {
 	wio.mu.RLock()
@@ -725,6 +922,7 @@ func (wio *WagoIO) GetIoDebugSnapshot() IoDebugSnapshot {
 
 	diIndex := 0
 	doIndex := 0
+	aoIndex := 0
 	for mIdx, mod := range wio.modules {
 		moduleNum := mIdx + 1
 
@@ -763,6 +961,26 @@ func (wio *WagoIO) GetIoDebugSnapshot() IoDebugSnapshot {
 			})
 			doIndex++
 		}
+
+		for i := 0; i < mod.ao; i++ {
+			value := 0
+			var lastChanged time.Time
+			if aoIndex < len(wio.analogOutputStates) {
+				value = int(wio.analogOutputStates[aoIndex])
+				lastChanged = wio.analogOutputLastChanged[aoIndex]
+			}
+			points = append(points, IoPointState{
+				Index:       aoIndex,
+				Name:        fmt.Sprintf("M%d:AO%d[%d]", moduleNum, i+1, aoIndex),
+				Type:        IoTypeAnalogOutput,
+				Healthy:     healthy,
+				LastChanged: lastChanged,
+				Value:       value,
+				Min:         0,
+				Max:         wagoAnalogOutputMax,
+			})
+			aoIndex++
+		}
 	}
 
 	return IoDebugSnapshot{Points: points}
@@ -786,6 +1004,35 @@ func (wio *WagoIO) ToggleOutput(index int) error {
 	err := wio.client.WriteCoil(uint16(processIndex), newState)
 	if err != nil {
 		return fmt.Errorf("wago driver: failed to toggle output %d: %w", index, err)
+	}
+
+	return nil
+}
+
+// SetAnalogOutput sets an analog output to a raw value by its global index.
+// Satisfies drivers.IoAnalogOutputSetter.
+func (wio *WagoIO) SetAnalogOutput(index int, value int) error {
+	wio.mu.Lock()
+	defer wio.mu.Unlock()
+
+	if !wio.isReady {
+		return errors.New("wago driver: not ready")
+	}
+
+	if index < 0 || index >= wio.totalAO {
+		return fmt.Errorf("wago driver: analog output index %d out of range (0-%d)", index, wio.totalAO-1)
+	}
+
+	if value < 0 {
+		value = 0
+	}
+	if value > wagoAnalogOutputMax {
+		value = wagoAnalogOutputMax
+	}
+
+	processIndex := wio.mapAoPhysicalToProcess(index)
+	if err := wio.client.WriteRegister(uint16(processIndex), uint16(value)); err != nil {
+		return fmt.Errorf("wago driver: failed to set analog output %d: %w", index, err)
 	}
 
 	return nil
@@ -837,10 +1084,37 @@ func (wio *WagoIO) Status() string {
 	return fmt.Sprintf("%s:%d DI:%d DO:%d [%s]", wio.Address, wio.Port, wio.totalDI, wio.totalDO, modules)
 }
 
-func (wio *WagoIO) buildPhysicalToProcessMap(isInput bool) []int {
-	total := wio.totalDO
-	if isInput {
+type wagoChannelKind int
+
+const (
+	wagoChannelDI wagoChannelKind = iota
+	wagoChannelDO
+	wagoChannelAO
+)
+
+// moduleChannels returns the channel count and process-image order for a module
+// for the given channel kind.
+func (m wagoModuleSpec) channels(kind wagoChannelKind) (count int, order []int) {
+	switch kind {
+	case wagoChannelDI:
+		return m.di, m.diOrder
+	case wagoChannelDO:
+		return m.do, m.doOrder
+	case wagoChannelAO:
+		return m.ao, m.aoOrder
+	}
+	return 0, nil
+}
+
+func (wio *WagoIO) buildPhysicalToProcessMap(kind wagoChannelKind) []int {
+	var total int
+	switch kind {
+	case wagoChannelDI:
 		total = wio.totalDI
+	case wagoChannelDO:
+		total = wio.totalDO
+	case wagoChannelAO:
+		total = wio.totalAO
 	}
 	if total == 0 {
 		return nil
@@ -850,12 +1124,7 @@ func (wio *WagoIO) buildPhysicalToProcessMap(isInput bool) []int {
 	physBase := 0
 	procBase := 0
 	for _, module := range wio.modules {
-		channelCount := module.do
-		order := module.doOrder
-		if isInput {
-			channelCount = module.di
-			order = module.diOrder
-		}
+		channelCount, order := module.channels(kind)
 		if channelCount == 0 {
 			continue
 		}
@@ -903,6 +1172,24 @@ func (wio *WagoIO) remapOutputsToPhysical(processOutputs []bool) []bool {
 	}
 	physical := make([]bool, len(processOutputs))
 	for physIx, processIx := range wio.doPhysicalToProcess {
+		if processIx >= 0 && processIx < len(processOutputs) {
+			physical[physIx] = processOutputs[processIx]
+		}
+	}
+	return physical
+}
+
+func (wio *WagoIO) remapAnalogOutputsToPhysical(processOutputs []uint16) []uint16 {
+	if processOutputs == nil {
+		return nil
+	}
+	if len(wio.aoPhysicalToProcess) != len(processOutputs) {
+		cp := make([]uint16, len(processOutputs))
+		copy(cp, processOutputs)
+		return cp
+	}
+	physical := make([]uint16, len(processOutputs))
+	for physIx, processIx := range wio.aoPhysicalToProcess {
 		if processIx >= 0 && processIx < len(processOutputs) {
 			physical[physIx] = processOutputs[processIx]
 		}

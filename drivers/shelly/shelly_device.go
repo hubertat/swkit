@@ -25,6 +25,7 @@ type ShellyDevice struct {
 
 	Switches []components.Switch
 	Inputs   []components.Input
+	Lights   []components.Light
 
 	setError      error
 	lastRefreshed time.Time
@@ -109,6 +110,19 @@ func (sd *ShellyDevice) String() string {
 			str.WriteString("\n")
 		}
 	}
+	str.WriteString("## Lights:\n")
+	for _, li := range sd.Lights {
+		stateString := "[ ] off"
+		if li.Status.Output != nil && *li.Status.Output {
+			stateString = "[x]  on"
+		}
+		str.WriteString(fmt.Sprintf("## Light:%d %s\t", li.Status.ID, stateString))
+		if li.Status.Brightness != nil {
+			str.WriteString(fmt.Sprintf("[brightness: %.0f%%]\n", *li.Status.Brightness))
+		} else {
+			str.WriteString("\n")
+		}
+	}
 	str.WriteString("## Inputs:\n")
 	for _, in := range sd.Inputs {
 		if in.Status.State == nil {
@@ -145,6 +159,53 @@ func (sd *ShellyDevice) SetSwitch(id int, state bool) error {
 	return nil
 }
 
+// SetLight controls a light component via the Light.Set RPC. on and brightness
+// are optional (nil = leave unchanged), allowing on/off and brightness to be
+// driven independently. brightness is 0-100.
+func (sd *ShellyDevice) SetLight(id int, on *bool, brightness *float64) error {
+	params := map[string]interface{}{"id": id}
+	if on != nil {
+		params["on"] = *on
+	}
+	if brightness != nil {
+		params["brightness"] = *brightness
+	}
+
+	req := mqtt.RpcRequest{
+		Method: "Light.Set",
+		Params: params,
+		Dst:    sd.Id,
+	}
+	// SendRequest is a network call; keep it outside the lock.
+	err := sd.messenger.SendRequest(sd.Id, req)
+
+	sd.mu.Lock()
+	sd.setError = err
+	sd.mu.Unlock()
+
+	if err != nil {
+		return errors.Join(errors.New("failed to send rpc Light.Set message"), err)
+	}
+	return nil
+}
+
+// GetLightState returns the on state and brightness (0-100) of a light component.
+func (sd *ShellyDevice) GetLightState(id int) (on bool, brightness float64, err error) {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+	if len(sd.Lights) <= id {
+		return false, 0, errors.New("light id out of range")
+	}
+	if sd.Lights[id].Status.Output == nil {
+		return false, 0, fmt.Errorf("light %d output state not yet available", id)
+	}
+	on = *sd.Lights[id].Status.Output
+	if sd.Lights[id].Status.Brightness != nil {
+		brightness = *sd.Lights[id].Status.Brightness
+	}
+	return on, brightness, sd.healthCheckLocked()
+}
+
 func (sd *ShellyDevice) GetInputState(id int) (bool, error) {
 	sd.mu.RLock()
 	defer sd.mu.RUnlock()
@@ -178,6 +239,7 @@ func (sd *ShellyDevice) FillStatus(status GetStatus) error {
 	// Parse incoming data before acquiring the lock (no shared state accessed here).
 	switches := status.GetSwitches()
 	inputs := status.GetInputs()
+	lights := status.GetLights()
 	wifiStatus := status.GetWifi()
 	ethernetStatus := status.GetEthernet()
 
@@ -190,6 +252,9 @@ func (sd *ShellyDevice) FillStatus(status GetStatus) error {
 	if len(sd.Switches) > len(switches) {
 		return fmt.Errorf("rejecting GetStatus response: device %s has %d known switches but response contains only %d (partial or corrupted data?)", sd.Id, len(sd.Switches), len(switches))
 	}
+	if len(sd.Lights) > len(lights) {
+		return fmt.Errorf("rejecting GetStatus response: device %s has %d known lights but response contains only %d (partial or corrupted data?)", sd.Id, len(sd.Lights), len(lights))
+	}
 
 	sd.Switches = make([]components.Switch, len(switches))
 	for _, sw := range switches {
@@ -197,6 +262,14 @@ func (sd *ShellyDevice) FillStatus(status GetStatus) error {
 			return fmt.Errorf("FillStatus failed: switch id %d out of range", sw.ID)
 		}
 		sd.Switches[sw.ID] = components.Switch{Status: sw}
+	}
+
+	sd.Lights = make([]components.Light, len(lights))
+	for _, li := range lights {
+		if len(sd.Lights) <= li.ID {
+			return fmt.Errorf("FillStatus failed: light id %d out of range", li.ID)
+		}
+		sd.Lights[li.ID] = components.Light{Status: li}
 	}
 
 	sd.Inputs = make([]components.Input, len(inputs))
@@ -222,6 +295,7 @@ func (sd *ShellyDevice) UpdateFromStatus(status GetStatus) error {
 	// Parse incoming data before acquiring the lock (no shared state accessed here).
 	switches := status.GetSwitches()
 	inputs := status.GetInputs()
+	lights := status.GetLights()
 	wifiStatus := status.GetWifi()
 	ethernetStatus := status.GetEthernet()
 
@@ -233,6 +307,13 @@ func (sd *ShellyDevice) UpdateFromStatus(status GetStatus) error {
 			return errors.New("update from status failed, switch id out of range")
 		}
 		sd.Switches[sw.ID].Status.Update(sw)
+	}
+
+	for _, li := range lights {
+		if li.ID >= len(sd.Lights) {
+			return errors.New("update from status failed, light id out of range")
+		}
+		sd.Lights[li.ID].Status.Update(li)
 	}
 
 	for _, in := range inputs {
@@ -274,6 +355,12 @@ func (sd *ShellyDevice) SwitchCount() int {
 	sd.mu.RLock()
 	defer sd.mu.RUnlock()
 	return len(sd.Switches)
+}
+
+func (sd *ShellyDevice) LightCount() int {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+	return len(sd.Lights)
 }
 
 func (sd *ShellyDevice) InputCount() int {
