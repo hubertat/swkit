@@ -504,12 +504,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case msg.String() == "+" || msg.String() == "=" || msg.String() == "-" || msg.String() == "_":
+			delta := 5
+			if msg.String() == "-" || msg.String() == "_" {
+				delta = -5
+			}
 			if m.activeTab == TabIoDebug && m.ioDebugFilter == IoFilterAnalog {
-				delta := 5
-				if msg.String() == "-" || msg.String() == "_" {
-					delta = -5
-				}
 				return m, m.stepSelectedIoAnalog(delta)
+			}
+			if m.activeTab == TabDevices {
+				return m, m.stepSelectedDeviceBrightness(delta)
 			}
 
 		case key.Matches(msg, m.keys.Enter):
@@ -592,6 +595,33 @@ func (m Model) toggleSelectedDevice() tea.Cmd {
 	}
 	return func() tea.Msg {
 		return ControlResultMsg{Result: controller.ToggleDevice(m.cursor)}
+	}
+}
+
+// stepSelectedDeviceBrightness adjusts the brightness of the selected device by
+// deltaPct (clamped 0-100). Only dimmable lights respond; other devices are ignored.
+func (m Model) stepSelectedDeviceBrightness(deltaPct int) tea.Cmd {
+	controller, ok := m.provider.(app.DeviceController)
+	if !ok {
+		return nil
+	}
+	if m.cursor < 0 || m.cursor >= len(m.state.Devices) {
+		return nil
+	}
+	dev := m.state.Devices[m.cursor]
+	if dev.Type != app.DeviceTypeDimmableLight {
+		return nil
+	}
+	newPct := dev.Brightness + deltaPct
+	if newPct < 0 {
+		newPct = 0
+	}
+	if newPct > 100 {
+		newPct = 100
+	}
+	index := m.cursor
+	return func() tea.Msg {
+		return ControlResultMsg{Result: controller.SetDeviceBrightness(index, newPct)}
 	}
 }
 
@@ -1062,8 +1092,14 @@ func (m Model) renderDeviceList(rows int) string {
 			}
 		}
 
+		// Brightness for dimmable lights
+		brightnessText := ""
+		if device.Type == app.DeviceTypeDimmableLight {
+			brightnessText = " " + m.theme.Secondary.Render(itoa(device.Brightness)+"%")
+		}
+
 		line := prefix + icon + " " + m.theme.Primary.Render(padRight(device.Name, 20)) +
-			" " + stateText + eventTimerText + healthText + hkText
+			" " + stateText + brightnessText + eventTimerText + healthText + hkText
 
 		lines = append(lines, style.Render(line))
 	}
@@ -1401,6 +1437,11 @@ func (m Model) renderHelp() string {
 	var parts []string
 	for _, b := range bindings {
 		parts = append(parts, m.theme.HelpKey.Render(b.Help().Key)+" "+m.theme.HelpDesc.Render(b.Help().Desc))
+	}
+	// Surface brightness control when a dimmable light is selected on the Devices tab.
+	if m.activeTab == TabDevices && m.cursor >= 0 && m.cursor < len(m.state.Devices) &&
+		m.state.Devices[m.cursor].Type == app.DeviceTypeDimmableLight {
+		parts = append(parts, m.theme.HelpKey.Render("+/-")+" "+m.theme.HelpDesc.Render("brightness"))
 	}
 	// Surface the page up/down keys on tabs that have a scrollable list.
 	if m.getMaxItems() > 0 {
