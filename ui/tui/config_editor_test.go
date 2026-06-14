@@ -346,3 +346,42 @@ func keyMsg(key string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 	}
 }
+
+// TestConfigEditorAddPositionsCursorOnNewItem guards against the panic where
+// adding a light/dimmable light while buttons exist left the cursor on the last
+// (button) item while the mode was EditLight/EditDimmableLight.
+func TestConfigEditorAddPositionsCursorOnNewItem(t *testing.T) {
+	ce := NewConfigEditor(nil, DefaultTheme())
+	// Start with buttons present so the new light is NOT the last list item.
+	ce.config.Buttons = []app.ButtonEditConfig{{Name: "B1"}, {Name: "B2"}, {Name: "B3"}}
+	ce.config.Lights = []app.LightEditConfig{{Name: "L1"}}
+	ce.rebuildItems()
+
+	// Add a light: cursor must land on the new light item, mode EditLight.
+	ce.addDeviceOfType(configItemLight)
+	if ce.mode != ConfigModeEditLight {
+		t.Fatalf("mode = %v, want ConfigModeEditLight", ce.mode)
+	}
+	item := ce.items[ce.cursor]
+	if item.itemType != configItemLight || item.index != len(ce.config.Lights)-1 {
+		t.Fatalf("cursor on %v idx %d, want new light idx %d", item.itemType, item.index, len(ce.config.Lights)-1)
+	}
+	// Rendering must not panic and must show the edit form.
+	if out := ce.viewEditLight(DefaultTheme()); out == "" {
+		t.Fatal("viewEditLight returned empty")
+	}
+
+	// Add a dimmable light: same guarantees.
+	ce.mode = ConfigModeList
+	ce.addDeviceOfType(configItemDimmableLight)
+	if ce.mode != ConfigModeEditDimmableLight {
+		t.Fatalf("mode = %v, want ConfigModeEditDimmableLight", ce.mode)
+	}
+	item = ce.items[ce.cursor]
+	if item.itemType != configItemDimmableLight || item.index != len(ce.config.DimmableLights)-1 {
+		t.Fatalf("cursor on %v idx %d, want new dimmable idx %d", item.itemType, item.index, len(ce.config.DimmableLights)-1)
+	}
+	if out := ce.viewEditDimmableLight(DefaultTheme()); out == "" {
+		t.Fatal("viewEditDimmableLight returned empty")
+	}
+}

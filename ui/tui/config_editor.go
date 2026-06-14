@@ -410,6 +410,24 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
+// setCursorToItem positions the list cursor on the item matching (itemType, index).
+// The new item is not necessarily last in the flattened list (lights and dimmable
+// lights are rendered before buttons), so the cursor must be looked up rather than
+// assumed to be len(items)-1.
+func (ce *ConfigEditor) setCursorToItem(itemType configListItemType, index int) {
+	for i, it := range ce.items {
+		if it.itemType == itemType && it.index == index {
+			ce.cursor = i
+			return
+		}
+	}
+	if len(ce.items) > 0 {
+		ce.cursor = len(ce.items) - 1
+	} else {
+		ce.cursor = 0
+	}
+}
+
 // addDeviceOfType adds a new device of the given type and opens the edit view
 // with the Name field focused so the user can enter a name immediately.
 func (ce *ConfigEditor) addDeviceOfType(itemType configListItemType) tea.Cmd {
@@ -419,19 +437,19 @@ func (ce *ConfigEditor) addDeviceOfType(itemType configListItemType) tea.Cmd {
 	case configItemLight:
 		ce.config.Lights = append(ce.config.Lights, app.LightEditConfig{})
 		ce.rebuildItems()
-		ce.cursor = len(ce.items) - 1
+		ce.setCursorToItem(configItemLight, len(ce.config.Lights)-1)
 		ce.mode = ConfigModeEditLight
 		return ce.startEditingLightField(&ce.config.Lights[len(ce.config.Lights)-1])
 	case configItemDimmableLight:
 		ce.config.DimmableLights = append(ce.config.DimmableLights, app.DimmableLightEditConfig{})
 		ce.rebuildItems()
-		ce.cursor = len(ce.items) - 1
+		ce.setCursorToItem(configItemDimmableLight, len(ce.config.DimmableLights)-1)
 		ce.mode = ConfigModeEditDimmableLight
 		return ce.startEditingDimmableLightField(&ce.config.DimmableLights[len(ce.config.DimmableLights)-1])
 	case configItemButton:
 		ce.config.Buttons = append(ce.config.Buttons, app.ButtonEditConfig{})
 		ce.rebuildItems()
-		ce.cursor = len(ce.items) - 1
+		ce.setCursorToItem(configItemButton, len(ce.config.Buttons)-1)
 		ce.mode = ConfigModeEditButton
 		return ce.startEditingButtonField(&ce.config.Buttons[len(ce.config.Buttons)-1])
 	}
@@ -504,11 +522,15 @@ func (ce *ConfigEditor) updateEditLight(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 
-	if ce.cursor >= len(ce.items) {
+	if ce.cursor < 0 || ce.cursor >= len(ce.items) {
 		ce.mode = ConfigModeList
 		return nil
 	}
 	item := ce.items[ce.cursor]
+	if item.itemType != configItemLight || item.index >= len(ce.config.Lights) {
+		ce.mode = ConfigModeList
+		return nil
+	}
 	light := &ce.config.Lights[item.index]
 
 	// If text input is active, handle it
@@ -570,11 +592,15 @@ func (ce *ConfigEditor) updateEditDimmableLight(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 
-	if ce.cursor >= len(ce.items) {
+	if ce.cursor < 0 || ce.cursor >= len(ce.items) {
 		ce.mode = ConfigModeList
 		return nil
 	}
 	item := ce.items[ce.cursor]
+	if item.itemType != configItemDimmableLight || item.index >= len(ce.config.DimmableLights) {
+		ce.mode = ConfigModeList
+		return nil
+	}
 	dl := &ce.config.DimmableLights[item.index]
 
 	// If text input is active, handle it
@@ -721,11 +747,15 @@ func (ce *ConfigEditor) updateEditButton(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 
-	if ce.cursor >= len(ce.items) {
+	if ce.cursor < 0 || ce.cursor >= len(ce.items) {
 		ce.mode = ConfigModeList
 		return nil
 	}
 	item := ce.items[ce.cursor]
+	if item.itemType != configItemButton || item.index >= len(ce.config.Buttons) {
+		ce.mode = ConfigModeList
+		return nil
+	}
 	button := &ce.config.Buttons[item.index]
 
 	// If text input is active, handle it
@@ -1404,11 +1434,14 @@ func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 
 // viewEditLight renders the light edit form
 func (ce *ConfigEditor) viewEditLight(theme Theme) string {
-	if ce.cursor >= len(ce.items) {
+	if ce.cursor < 0 || ce.cursor >= len(ce.items) {
 		return theme.Muted.Render("No item selected")
 	}
 
 	item := ce.items[ce.cursor]
+	if item.itemType != configItemLight || item.index >= len(ce.config.Lights) {
+		return theme.Muted.Render("No item selected")
+	}
 	light := ce.config.Lights[item.index]
 
 	title := theme.BoxTitle.Render(IconLight + " Edit Light")
@@ -1432,11 +1465,14 @@ func (ce *ConfigEditor) viewEditLight(theme Theme) string {
 
 // viewEditDimmableLight renders the dimmable light edit form
 func (ce *ConfigEditor) viewEditDimmableLight(theme Theme) string {
-	if ce.cursor >= len(ce.items) {
+	if ce.cursor < 0 || ce.cursor >= len(ce.items) {
 		return theme.Muted.Render("No item selected")
 	}
 
 	item := ce.items[ce.cursor]
+	if item.itemType != configItemDimmableLight || item.index >= len(ce.config.DimmableLights) {
+		return theme.Muted.Render("No item selected")
+	}
 	dl := ce.config.DimmableLights[item.index]
 
 	title := theme.BoxTitle.Render(IconLight + " Edit Dimmable Light")
@@ -1455,11 +1491,14 @@ func (ce *ConfigEditor) viewEditDimmableLight(theme Theme) string {
 
 // viewEditButton renders the button edit form
 func (ce *ConfigEditor) viewEditButton(theme Theme) string {
-	if ce.cursor >= len(ce.items) {
+	if ce.cursor < 0 || ce.cursor >= len(ce.items) {
 		return theme.Muted.Render("No item selected")
 	}
 
 	item := ce.items[ce.cursor]
+	if item.itemType != configItemButton || item.index >= len(ce.config.Buttons) {
+		return theme.Muted.Render("No item selected")
+	}
 	button := ce.config.Buttons[item.index]
 
 	title := theme.BoxTitle.Render(IconButton + " Edit Button")
