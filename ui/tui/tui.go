@@ -1014,7 +1014,7 @@ func (m Model) renderDrivers(height int) string {
 		prefix := "   "
 		style := m.theme.ListItem
 		if i == m.cursor {
-			prefix = " > "
+			prefix = " ▶ "
 			style = m.theme.ListItemSelected
 		}
 
@@ -1075,7 +1075,7 @@ func (m Model) renderDeviceList(rows int) string {
 		prefix := "   "
 		style := m.theme.ListItem
 		if i == m.cursor {
-			prefix = " > "
+			prefix = " ▶ "
 			style = m.theme.ListItemSelected
 		}
 
@@ -1367,7 +1367,7 @@ func (m Model) ioDebugLines(points []app.IoPointDebugState, withCursor bool) []s
 		prefix := "   "
 		style := m.theme.ListItem
 		if withCursor && i == m.cursor {
-			prefix = " > "
+			prefix = " ▶ "
 			style = m.theme.ListItemSelected
 		}
 

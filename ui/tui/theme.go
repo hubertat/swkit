@@ -144,7 +144,7 @@ func ThemeWithRenderer(r *lipgloss.Renderer) Theme {
 
 		ListItemSelected: r.NewStyle().
 			PaddingLeft(0).
-			Foreground(ColorHeader).
+			Foreground(lipgloss.AdaptiveColor{Light: "19", Dark: "86"}).
 			Bold(true),
 
 		Help: r.NewStyle().

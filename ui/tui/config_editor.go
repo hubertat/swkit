@@ -1506,7 +1506,7 @@ func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 			prefix := "   "
 			style := theme.ListItem
 			if i == ce.cursor {
-				prefix = " > "
+				prefix = " ▶ "
 				style = theme.ListItemSelected
 				focusLine = len(lines)
 			}
@@ -1537,7 +1537,7 @@ func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 			prefix := "   "
 			style := theme.ListItem
 			if listIdx == ce.cursor {
-				prefix = " > "
+				prefix = " ▶ "
 				style = theme.ListItemSelected
 				focusLine = len(lines)
 			}
@@ -1568,7 +1568,7 @@ func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 			prefix := "   "
 			style := theme.ListItem
 			if listIdx == ce.cursor {
-				prefix = " > "
+				prefix = " ▶ "
 				style = theme.ListItemSelected
 				focusLine = len(lines)
 			}
@@ -1601,7 +1601,7 @@ func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 			prefix := "   "
 			style := theme.ListItem
 			if listIdx == ce.cursor {
-				prefix = " > "
+				prefix = " ▶ "
 				style = theme.ListItemSelected
 				focusLine = len(lines)
 			}
@@ -1779,7 +1779,7 @@ func (ce *ConfigEditor) viewEditButton(theme Theme) string {
 func (ce *ConfigEditor) renderTextField(theme Theme, label, value string, fieldIdx int) string {
 	prefix := "  "
 	if ce.fieldCursor == fieldIdx {
-		prefix = "> "
+		prefix = "▶ "
 	}
 
 	labelStr := theme.Secondary.Render(padRight(label+":", 18))
@@ -1802,7 +1802,7 @@ func (ce *ConfigEditor) renderTextField(theme Theme, label, value string, fieldI
 func (ce *ConfigEditor) renderBoolField(theme Theme, label string, value bool, fieldIdx int) string {
 	prefix := "  "
 	if ce.fieldCursor == fieldIdx {
-		prefix = "> "
+		prefix = "▶ "
 	}
 
 	labelStr := theme.Secondary.Render(padRight(label+":", 18))
@@ -1819,7 +1819,7 @@ func (ce *ConfigEditor) renderBoolField(theme Theme, label string, value bool, f
 func (ce *ConfigEditor) renderControlDevice(theme Theme, cd app.ControlDeviceEdit, fieldIdx int, ctrlIdx int) string {
 	prefix := "  "
 	if ce.fieldCursor == fieldIdx {
-		prefix = "> "
+		prefix = "▶ "
 	}
 
 	// If this control device is being edited inline
@@ -1849,21 +1849,21 @@ func (ce *ConfigEditor) renderControlDeviceEditor(theme Theme, cd app.ControlDev
 	// Event type
 	eventPrefix := "    "
 	if ce.ctrlFieldCursor == 0 {
-		eventPrefix = "  > "
+		eventPrefix = "  ▶ "
 	}
 	lines = append(lines, eventPrefix+theme.Secondary.Render("Event:  ")+arrowL+theme.Primary.Render(cd.EventType)+arrowR)
 
 	// Action
 	actionPrefix := "    "
 	if ce.ctrlFieldCursor == 1 {
-		actionPrefix = "  > "
+		actionPrefix = "  ▶ "
 	}
 	lines = append(lines, actionPrefix+theme.Secondary.Render("Action: ")+arrowL+theme.On.Render(cd.Action)+arrowR)
 
 	// Device
 	devicePrefix := "    "
 	if ce.ctrlFieldCursor == 2 {
-		devicePrefix = "  > "
+		devicePrefix = "  ▶ "
 	}
 	devName := cd.DeviceName
 	if devName == "" {
@@ -1884,7 +1884,7 @@ func (ce *ConfigEditor) viewAddSelector(theme Theme) string {
 		prefix := "  "
 		style := theme.ListItem
 		if i == ce.addTypeCursor {
-			prefix = "> "
+			prefix = "▶ "
 			style = theme.ListItemSelected
 		}
 		lines = append(lines, style.Render(prefix+t.label))
@@ -1927,11 +1927,14 @@ func (ce *ConfigEditor) viewIoPicker(theme Theme) string {
 		}
 	}
 
+	now := time.Now()
+	const ioPickerRecentThreshold = 10 * time.Minute
+
 	for i, pt := range pts {
 		prefix := "  "
 		style := theme.ListItem
 		if i == ce.ioPickerCursor {
-			prefix = "> "
+			prefix = "▶ "
 			style = theme.ListItemSelected
 		}
 
@@ -1945,9 +1948,34 @@ func (ce *ConfigEditor) viewIoPicker(theme Theme) string {
 			healthIcon = theme.Faulty.Render(IconFaulty)
 		}
 
+		// Activity time: show how long ago this IO was last active (within 10 min)
+		actTime := pt.LastEvent
+		if pt.LastChanged.After(actTime) {
+			actTime = pt.LastChanged
+		}
+		activityText := ""
+		if !actTime.IsZero() {
+			ago := now.Sub(actTime)
+			if ago < ioPickerRecentThreshold {
+				var agoStr string
+				if ago < time.Minute {
+					agoStr = fmt.Sprintf("%ds ago", int(ago.Seconds()))
+				} else {
+					agoStr = fmt.Sprintf("%dm%ds ago", int(ago.Minutes()), int(ago.Seconds())%60)
+				}
+				actStyle := theme.Secondary
+				if ago < 5*time.Second {
+					actStyle = theme.Event
+				} else if ago < 30*time.Second {
+					actStyle = theme.On
+				}
+				activityText = "  " + actStyle.Render(agoStr)
+			}
+		}
+
 		ioId := theme.Muted.Render(ce.ioPointToIdForCurrentField(pt))
 		displayName := ce.ioPickerDisplayName(pt)
-		line := prefix + theme.Primary.Render(padRight(displayName, nameWidth)) + " " + stateIcon + " " + healthIcon + "  " + ioId
+		line := prefix + theme.Primary.Render(padRight(displayName, nameWidth)) + " " + stateIcon + " " + healthIcon + activityText + "  " + ioId
 		lines = append(lines, style.Render(line))
 	}
 
@@ -1978,7 +2006,7 @@ func (ce *ConfigEditor) viewCtrlWizardDevice(theme Theme) string {
 		prefix := "  "
 		style := theme.ListItem
 		if i == ce.wizardDeviceCursor {
-			prefix = "> "
+			prefix = "▶ "
 			style = theme.ListItemSelected
 		}
 
@@ -2037,7 +2065,7 @@ func (ce *ConfigEditor) viewCtrlWizardEvent(theme Theme) string {
 		prefix := "  "
 		style := theme.ListItem
 		if i == ce.wizardEventCursor {
-			prefix = "> "
+			prefix = "▶ "
 			style = theme.ListItemSelected
 		}
 
@@ -2088,7 +2116,7 @@ func (ce *ConfigEditor) viewClearSelect(theme Theme) string {
 		prefix := "  "
 		style := theme.ListItem
 		if i == ce.clearCursor {
-			prefix = "> "
+			prefix = "▶ "
 			style = theme.ListItemSelected
 		}
 		lines = append(lines, style.Render(prefix+opt.label))
