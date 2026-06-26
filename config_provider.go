@@ -53,10 +53,11 @@ func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 
 	for _, dl := range p.sw.DimmableLights {
 		config.DimmableLights = append(config.DimmableLights, app.DimmableLightEditConfig{
-			Name:           dl.Name,
-			DigitalOutName: dl.DigitalOutName,
-			AnalogOutName:  dl.AnalogOutName,
-			DisableHomekit: dl.DisableHomekit,
+			Name:            dl.Name,
+			DigitalOutName:  dl.DigitalOutName,
+			AnalogOutName:   dl.AnalogOutName,
+			DefaultSetpoint: dl.DefaultSetpoint,
+			DisableHomekit:  dl.DisableHomekit,
 		})
 	}
 
@@ -117,10 +118,11 @@ func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
 	p.sw.DimmableLights = make([]DimmableLightConfig, len(config.DimmableLights))
 	for i, dl := range config.DimmableLights {
 		p.sw.DimmableLights[i] = DimmableLightConfig{
-			Name:           dl.Name,
-			DigitalOutName: dl.DigitalOutName,
-			AnalogOutName:  dl.AnalogOutName,
-			DisableHomekit: dl.DisableHomekit,
+			Name:            dl.Name,
+			DigitalOutName:  dl.DigitalOutName,
+			AnalogOutName:   dl.AnalogOutName,
+			DefaultSetpoint: dl.DefaultSetpoint,
+			DisableHomekit:  dl.DisableHomekit,
 		}
 	}
 

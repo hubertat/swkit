@@ -288,7 +288,7 @@ func (ce *ConfigEditor) rebuildItems() {
 func lightFieldCount() int { return 3 } // Name, DigitalOutName, DisableHomekit
 
 // dimmableLightFieldCount returns the number of editable fields for a DimmableLight
-func dimmableLightFieldCount() int { return 4 } // Name, DigitalOutName, AnalogOutName, DisableHomekit
+func dimmableLightFieldCount() int { return 5 } // Name, DigitalOutName, AnalogOutName, DefaultSetpoint, DisableHomekit
 
 // outletFieldCount returns the number of editable fields for an Outlet
 func outletFieldCount() int { return 3 } // Name, DigitalOutName, DisableHomekit
@@ -658,7 +658,7 @@ func (ce *ConfigEditor) updateEditDimmableLight(msg tea.Msg) tea.Cmd {
 			ce.openIoPicker("analog_output", 2)
 		}
 	case " ":
-		if ce.fieldCursor == 3 { // DisableHomekit
+		if ce.fieldCursor == 4 { // DisableHomekit
 			dl.DisableHomekit = !dl.DisableHomekit
 			ce.dirty = true
 		}
@@ -687,7 +687,12 @@ func (ce *ConfigEditor) startEditingDimmableLightField(dl *app.DimmableLightEdit
 		ce.textInput.Focus()
 		ce.editing = true
 		return textinput.Blink
-	case 3: // DisableHomekit (toggle)
+	case 3: // DefaultSetpoint
+		ce.textInput.SetValue(strconv.Itoa(dl.DefaultSetpoint))
+		ce.textInput.Focus()
+		ce.editing = true
+		return textinput.Blink
+	case 4: // DisableHomekit (toggle)
 		dl.DisableHomekit = !dl.DisableHomekit
 		ce.dirty = true
 	}
@@ -712,6 +717,16 @@ func (ce *ConfigEditor) handleDimmableTextEditing(msg tea.KeyMsg, dl *app.Dimmab
 		case 2:
 			dl.AnalogOutName = value
 			ce.dirty = true
+		case 3:
+			if v, err := strconv.Atoi(value); err == nil {
+				if v < 0 {
+					v = 0
+				} else if v > 100 {
+					v = 100
+				}
+				dl.DefaultSetpoint = v
+				ce.dirty = true
+			}
 		}
 		ce.editing = false
 		ce.textInput.Blur()
@@ -1679,7 +1694,8 @@ func (ce *ConfigEditor) viewEditDimmableLight(theme Theme) string {
 	fields = append(fields, ce.renderTextField(theme, "Name", dl.Name, 0))
 	fields = append(fields, ce.renderTextField(theme, "IO Output (on/off)", dl.DigitalOutName, 1))
 	fields = append(fields, ce.renderTextField(theme, "IO Analog (bright)", dl.AnalogOutName, 2))
-	fields = append(fields, ce.renderBoolField(theme, "Disable HomeKit", dl.DisableHomekit, 3))
+	fields = append(fields, ce.renderTextField(theme, "Default Brightness (0-100)", strconv.Itoa(dl.DefaultSetpoint), 3))
+	fields = append(fields, ce.renderBoolField(theme, "Disable HomeKit", dl.DisableHomekit, 4))
 
 	content := strings.Join(fields, "\n")
 	result := theme.Box.Width(50).Render(content)

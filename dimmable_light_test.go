@@ -63,6 +63,42 @@ func TestDimmableLightSetValueDrivesDigitalOutput(t *testing.T) {
 	}
 }
 
+func TestDimmableLightDefaultSetpointAppliedOnNew(t *testing.T) {
+	dOut := drivers.NewMockOutput("dl_on")
+	aOut := drivers.NewMockAnalogOutput("dl_bri", 0, 100)
+	NewDimmableLight(DimmableLightConfig{
+		Name: "Test", DigitalOutName: "x", AnalogOutName: "y", DefaultSetpoint: 75,
+	}, dOut, aOut, log.New(nil))
+	got, _ := aOut.GetState()
+	if got != 75 {
+		t.Errorf("DefaultSetpoint 75 with identity range: native = %d, want 75", got)
+	}
+}
+
+func TestDimmableLightDefaultSetpointScalesNativeRange(t *testing.T) {
+	dOut := drivers.NewMockOutput("dl_on")
+	aOut := drivers.NewMockAnalogOutput("dl_bri", 0, 32767)
+	NewDimmableLight(DimmableLightConfig{
+		Name: "Test", DigitalOutName: "x", AnalogOutName: "y", DefaultSetpoint: 100,
+	}, dOut, aOut, log.New(nil))
+	got, _ := aOut.GetState()
+	if got != 32767 {
+		t.Errorf("DefaultSetpoint 100 with range 0-32767: native = %d, want 32767", got)
+	}
+}
+
+func TestDimmableLightDefaultSetpointZeroSkipsInit(t *testing.T) {
+	dOut := drivers.NewMockOutput("dl_on")
+	aOut := drivers.NewMockAnalogOutput("dl_bri", 0, 32767)
+	NewDimmableLight(DimmableLightConfig{
+		Name: "Test", DigitalOutName: "x", AnalogOutName: "y", DefaultSetpoint: 0,
+	}, dOut, aOut, log.New(nil))
+	got, _ := aOut.GetState()
+	if got != 0 {
+		t.Errorf("DefaultSetpoint 0 should not init: native = %d, want 0", got)
+	}
+}
+
 func TestDimmableLightSyncWithoutHomekitIsNoop(t *testing.T) {
 	dl, _ := newTestDimmableLight(t, 0, 32767)
 	// hk is nil until InitHk; Sync must be a safe no-op.

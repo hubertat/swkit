@@ -37,7 +37,9 @@ type DimmableLightEditConfig struct {
 	Name           string
 	DigitalOutName string
 	AnalogOutName  string
-	DisableHomekit bool
+	// DefaultSetpoint is the startup brightness (0-100, HomeKit %). 0 = do not initialise.
+	DefaultSetpoint int
+	DisableHomekit  bool
 }
 
 // ButtonEditConfig represents an editable Button configuration

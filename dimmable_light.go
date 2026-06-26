@@ -16,7 +16,17 @@ type DimmableLightConfig struct {
 	Name           string
 	DigitalOutName string
 	AnalogOutName  string
-	DisableHomekit bool
+	// DefaultSetpoint is the brightness (0-100, HomeKit %) written to the
+	// analog output on startup. Zero means "do not initialise" (hardware
+	// keeps its own power-on default). Set to e.g. 100 to ensure full
+	// brightness after every restart.
+	//
+	// Pattern: any device type that owns an AnalogOutput and needs a
+	// configurable startup value should follow this same approach —
+	// store the setpoint in config (0 = skip), scale to native range in
+	// the constructor, and call Set() before returning.
+	DefaultSetpoint int
+	DisableHomekit  bool
 }
 
 // DimmableLight is an on/off light with brightness control, composing a
@@ -40,7 +50,7 @@ type DimmableLight struct {
 
 func NewDimmableLight(config DimmableLightConfig, dOut drivers.DigitalOutput, aOut drivers.AnalogOutput, logger *log.Logger) *DimmableLight {
 	logger.Debug("dimmable light created", "name", config.Name, "digitalOut", dOut.String(), "analogOut", aOut.String())
-	return &DimmableLight{
+	dl := &DimmableLight{
 		name:           config.Name,
 		disableHomekit: config.DisableHomekit,
 		lock:           sync.Mutex{},
@@ -48,6 +58,16 @@ func NewDimmableLight(config DimmableLightConfig, dOut drivers.DigitalOutput, aO
 		onOut:          dOut,
 		briOut:         aOut,
 	}
+	if config.DefaultSetpoint > 0 {
+		min, max := aOut.GetMinMax()
+		native := convertIntRange(config.DefaultSetpoint, 0, 100, min, max)
+		if err := aOut.Set(native); err != nil {
+			logger.Warn("failed to apply default setpoint", "dimmableLight", config.Name, "err", err)
+		} else {
+			logger.Debug("applied default setpoint", "dimmableLight", config.Name, "setpoint", config.DefaultSetpoint, "native", native)
+		}
+	}
+	return dl
 }
 
 // Name returns the name of the dimmable light object
