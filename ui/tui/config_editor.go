@@ -23,6 +23,7 @@ const (
 	ConfigModeList ConfigMode = iota
 	ConfigModeEditLight
 	ConfigModeEditDimmableLight
+	ConfigModeEditOutlet
 	ConfigModeEditButton
 	ConfigModeAddSelector      // inline device type picker when pressing 'a'
 	ConfigModeIoPicker         // inline IO point browser for IO field assignment
@@ -38,6 +39,7 @@ type clearOption int
 const (
 	clearAll       clearOption = iota // clear all devices and relations
 	clearLights                       // clear only lights
+	clearOutlets                      // clear only outlets
 	clearButtons                      // clear only buttons
 	clearRelations                    // clear all control relations from buttons
 )
@@ -48,6 +50,7 @@ var clearOptions = []struct {
 }{
 	{label: "All devices and relations", option: clearAll},
 	{label: IconLight + " Lights only", option: clearLights},
+	{label: IconOutlet + " Outlets only", option: clearOutlets},
 	{label: IconButton + " Buttons only", option: clearButtons},
 	{label: "Control relations only", option: clearRelations},
 }
@@ -58,6 +61,7 @@ type configListItemType int
 const (
 	configItemLight configListItemType = iota
 	configItemDimmableLight
+	configItemOutlet
 	configItemButton
 )
 
@@ -77,6 +81,7 @@ type addableDeviceType struct {
 var addableDeviceTypes = []addableDeviceType{
 	{label: IconLight + " Light", itemType: configItemLight},
 	{label: IconLight + " Dimmable Light", itemType: configItemDimmableLight},
+	{label: IconOutlet + " Outlet", itemType: configItemOutlet},
 	{label: IconButton + " Button", itemType: configItemButton},
 }
 
@@ -263,6 +268,13 @@ func (ce *ConfigEditor) rebuildItems() {
 			name:     dl.Name,
 		})
 	}
+	for i, o := range ce.config.Outlets {
+		ce.items = append(ce.items, configListItem{
+			itemType: configItemOutlet,
+			index:    i,
+			name:     o.Name,
+		})
+	}
 	for i, b := range ce.config.Buttons {
 		ce.items = append(ce.items, configListItem{
 			itemType: configItemButton,
@@ -278,6 +290,9 @@ func lightFieldCount() int { return 3 } // Name, DigitalOutName, DisableHomekit
 // dimmableLightFieldCount returns the number of editable fields for a DimmableLight
 func dimmableLightFieldCount() int { return 4 } // Name, DigitalOutName, AnalogOutName, DisableHomekit
 
+// outletFieldCount returns the number of editable fields for an Outlet
+func outletFieldCount() int { return 3 } // Name, DigitalOutName, DisableHomekit
+
 // buttonBaseFieldCount returns the number of base fields for a Button (before ControlDevices)
 func buttonBaseFieldCount() int { return 3 } // Name, EventInputName, DisableHomekit
 
@@ -290,6 +305,8 @@ func (ce *ConfigEditor) Update(msg tea.Msg) tea.Cmd {
 		return ce.updateEditLight(msg)
 	case ConfigModeEditDimmableLight:
 		return ce.updateEditDimmableLight(msg)
+	case ConfigModeEditOutlet:
+		return ce.updateEditOutlet(msg)
 	case ConfigModeEditButton:
 		return ce.updateEditButton(msg)
 	case ConfigModeAddSelector:
@@ -373,6 +390,8 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 				ce.mode = ConfigModeEditLight
 			case configItemDimmableLight:
 				ce.mode = ConfigModeEditDimmableLight
+			case configItemOutlet:
+				ce.mode = ConfigModeEditOutlet
 			default:
 				ce.mode = ConfigModeEditButton
 			}
@@ -388,12 +407,15 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 		}
 		ce.wizardTargetAction = "toggle"
 		ce.wizardDeviceCursor = 0
-		// Pre-position cursor if selected list item is an output device
-		if ce.cursor < len(ce.items) && ce.items[ce.cursor].itemType == configItemLight {
-			for i, d := range devices {
-				if d.Name == ce.items[ce.cursor].name {
-					ce.wizardDeviceCursor = i
-					break
+		// Pre-position cursor if selected list item is a controllable output device
+		if ce.cursor < len(ce.items) {
+			item := ce.items[ce.cursor]
+			if item.itemType == configItemLight || item.itemType == configItemDimmableLight || item.itemType == configItemOutlet {
+				for i, d := range devices {
+					if d.Name == item.name {
+						ce.wizardDeviceCursor = i
+						break
+					}
 				}
 			}
 		}
@@ -446,6 +468,12 @@ func (ce *ConfigEditor) addDeviceOfType(itemType configListItemType) tea.Cmd {
 		ce.setCursorToItem(configItemDimmableLight, len(ce.config.DimmableLights)-1)
 		ce.mode = ConfigModeEditDimmableLight
 		return ce.startEditingDimmableLightField(&ce.config.DimmableLights[len(ce.config.DimmableLights)-1])
+	case configItemOutlet:
+		ce.config.Outlets = append(ce.config.Outlets, app.OutletEditConfig{})
+		ce.rebuildItems()
+		ce.setCursorToItem(configItemOutlet, len(ce.config.Outlets)-1)
+		ce.mode = ConfigModeEditOutlet
+		return ce.startEditingOutletField(&ce.config.Outlets[len(ce.config.Outlets)-1])
 	case configItemButton:
 		ce.config.Buttons = append(ce.config.Buttons, app.ButtonEditConfig{})
 		ce.rebuildItems()
@@ -485,10 +513,12 @@ func (ce *ConfigEditor) deleteItem() tea.Cmd {
 	switch item.itemType {
 	case configItemLight:
 		ce.config.Lights = append(ce.config.Lights[:item.index], ce.config.Lights[item.index+1:]...)
-		// Also update OutputDeviceNames if we're removing a light
 		ce.refreshOutputDeviceNames()
 	case configItemDimmableLight:
 		ce.config.DimmableLights = append(ce.config.DimmableLights[:item.index], ce.config.DimmableLights[item.index+1:]...)
+		ce.refreshOutputDeviceNames()
+	case configItemOutlet:
+		ce.config.Outlets = append(ce.config.Outlets[:item.index], ce.config.Outlets[item.index+1:]...)
 		ce.refreshOutputDeviceNames()
 	default:
 		ce.config.Buttons = append(ce.config.Buttons[:item.index], ce.config.Buttons[item.index+1:]...)
@@ -511,8 +541,9 @@ func (ce *ConfigEditor) refreshOutputDeviceNames() {
 	for _, dl := range ce.config.DimmableLights {
 		ce.config.OutputDeviceNames = append(ce.config.OutputDeviceNames, dl.Name)
 	}
-	// Keep any names from color lights and outlets that were loaded originally
-	// (we don't edit those yet, but they're available as targets)
+	for _, o := range ce.config.Outlets {
+		ce.config.OutputDeviceNames = append(ce.config.OutputDeviceNames, o.Name)
+	}
 }
 
 // updateEditLight handles keys in light edit mode
@@ -680,6 +711,105 @@ func (ce *ConfigEditor) handleDimmableTextEditing(msg tea.KeyMsg, dl *app.Dimmab
 			ce.dirty = true
 		case 2:
 			dl.AnalogOutName = value
+			ce.dirty = true
+		}
+		ce.editing = false
+		ce.textInput.Blur()
+		return nil
+	case tea.KeyEsc:
+		ce.editing = false
+		ce.textInput.Blur()
+		return nil
+	default:
+		var cmd tea.Cmd
+		ce.textInput, cmd = ce.textInput.Update(msg)
+		return cmd
+	}
+}
+
+// updateEditOutlet handles keys in outlet edit mode
+func (ce *ConfigEditor) updateEditOutlet(msg tea.Msg) tea.Cmd {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return nil
+	}
+
+	if ce.cursor < 0 || ce.cursor >= len(ce.items) {
+		ce.mode = ConfigModeList
+		return nil
+	}
+	item := ce.items[ce.cursor]
+	if item.itemType != configItemOutlet || item.index >= len(ce.config.Outlets) {
+		ce.mode = ConfigModeList
+		return nil
+	}
+	outlet := &ce.config.Outlets[item.index]
+
+	if ce.editing {
+		return ce.handleOutletTextEditing(keyMsg, outlet)
+	}
+
+	switch keyMsg.String() {
+	case "up", "k":
+		if ce.fieldCursor > 0 {
+			ce.fieldCursor--
+		}
+	case "down", "j":
+		if ce.fieldCursor < outletFieldCount()-1 {
+			ce.fieldCursor++
+		}
+	case "enter":
+		return ce.startEditingOutletField(outlet)
+	case "p":
+		if ce.fieldCursor == 1 { // DigitalOutName field
+			ce.openIoPicker("output", 1)
+		}
+	case " ":
+		if ce.fieldCursor == 2 { // DisableHomekit
+			outlet.DisableHomekit = !outlet.DisableHomekit
+			ce.dirty = true
+		}
+	case "esc":
+		ce.mode = ConfigModeList
+	}
+
+	return nil
+}
+
+// startEditingOutletField begins editing the selected outlet field
+func (ce *ConfigEditor) startEditingOutletField(outlet *app.OutletEditConfig) tea.Cmd {
+	switch ce.fieldCursor {
+	case 0: // Name
+		ce.textInput.SetValue(outlet.Name)
+		ce.textInput.Focus()
+		ce.editing = true
+		return textinput.Blink
+	case 1: // DigitalOutName
+		ce.textInput.SetValue(outlet.DigitalOutName)
+		ce.textInput.Focus()
+		ce.editing = true
+		return textinput.Blink
+	case 2: // DisableHomekit (toggle)
+		outlet.DisableHomekit = !outlet.DisableHomekit
+		ce.dirty = true
+	}
+	return nil
+}
+
+// handleOutletTextEditing handles keystrokes when editing an outlet text field
+func (ce *ConfigEditor) handleOutletTextEditing(msg tea.KeyMsg, outlet *app.OutletEditConfig) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyEnter:
+		value := strings.TrimSpace(ce.textInput.Value())
+		switch ce.fieldCursor {
+		case 0:
+			if value != "" {
+				outlet.Name = value
+				ce.dirty = true
+				ce.rebuildItems()
+			}
+		case 1:
+			outlet.DigitalOutName = value
 			ce.dirty = true
 		}
 		ce.editing = false
@@ -1015,6 +1145,11 @@ func (ce *ConfigEditor) applyIoSelection(ioId string) {
 			ce.config.DimmableLights[item.index].AnalogOutName = ioId
 			ce.dirty = true
 		}
+	case configItemOutlet:
+		if ce.ioPickerField == 1 {
+			ce.config.Outlets[item.index].DigitalOutName = ioId
+			ce.dirty = true
+		}
 	case configItemButton:
 		if ce.ioPickerField == 1 {
 			ce.config.Buttons[item.index].EventInputName = ioId
@@ -1037,6 +1172,10 @@ func (ce *ConfigEditor) ioPointToIdForCurrentField(pt app.IoPointDebugState) str
 				return ioPointToIdWithType(pt, "d_out")
 			case 2:
 				return ioPointToIdWithType(pt, "a_out")
+			}
+		case configItemOutlet:
+			if ce.ioPickerField == 1 {
+				return ioPointToIdWithType(pt, "d_out")
 			}
 		case configItemButton:
 			if ce.ioPickerField == 1 {
@@ -1219,14 +1358,20 @@ func (ce *ConfigEditor) updateClearConfirm(msg tea.KeyMsg) tea.Cmd {
 func (ce *ConfigEditor) executeClear() {
 	switch ce.clearChoice {
 	case clearAll:
-		cleared := len(ce.config.Lights) + len(ce.config.Buttons)
+		cleared := len(ce.config.Lights) + len(ce.config.DimmableLights) + len(ce.config.Outlets) + len(ce.config.Buttons)
 		ce.config.Lights = nil
+		ce.config.DimmableLights = nil
+		ce.config.Outlets = nil
 		ce.config.Buttons = nil
 		ce.statusMsg = fmt.Sprintf("Cleared all %d devices", cleared)
 	case clearLights:
 		cleared := len(ce.config.Lights)
 		ce.config.Lights = nil
 		ce.statusMsg = fmt.Sprintf("Cleared %d lights", cleared)
+	case clearOutlets:
+		cleared := len(ce.config.Outlets)
+		ce.config.Outlets = nil
+		ce.statusMsg = fmt.Sprintf("Cleared %d outlets", cleared)
 	case clearButtons:
 		cleared := len(ce.config.Buttons)
 		ce.config.Buttons = nil
@@ -1249,15 +1394,17 @@ func (ce *ConfigEditor) executeClear() {
 func (ce *ConfigEditor) clearOptionDescription() string {
 	switch ce.clearChoice {
 	case clearAll:
-		total := len(ce.config.Lights) + len(ce.config.Buttons)
+		total := len(ce.config.Lights) + len(ce.config.DimmableLights) + len(ce.config.Outlets) + len(ce.config.Buttons)
 		relCount := 0
 		for _, b := range ce.config.Buttons {
 			relCount += len(b.ControlDevices)
 		}
-		return fmt.Sprintf("%d devices (%d lights, %d buttons) and %d control relations",
-			total, len(ce.config.Lights), len(ce.config.Buttons), relCount)
+		return fmt.Sprintf("%d devices (%d lights, %d dimmable, %d outlets, %d buttons) and %d control relations",
+			total, len(ce.config.Lights), len(ce.config.DimmableLights), len(ce.config.Outlets), len(ce.config.Buttons), relCount)
 	case clearLights:
 		return fmt.Sprintf("%d lights", len(ce.config.Lights))
+	case clearOutlets:
+		return fmt.Sprintf("%d outlets", len(ce.config.Outlets))
 	case clearButtons:
 		relCount := 0
 		for _, b := range ce.config.Buttons {
@@ -1306,6 +1453,8 @@ func (ce *ConfigEditor) View(theme Theme, height int) string {
 		return ce.viewEditLight(theme)
 	case ConfigModeEditDimmableLight:
 		return ce.viewEditDimmableLight(theme)
+	case ConfigModeEditOutlet:
+		return ce.viewEditOutlet(theme)
 	case ConfigModeEditButton:
 		return ce.viewEditButton(theme)
 	case ConfigModeAddSelector:
@@ -1327,7 +1476,7 @@ func (ce *ConfigEditor) View(theme Theme, height int) string {
 // viewList renders the config item list
 func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 	if len(ce.items) == 0 {
-		content := theme.Muted.Render("No lights or buttons configured") + "\n"
+		content := theme.Muted.Render("No devices configured") + "\n"
 		content += theme.Muted.Render("Press 'a' to add a new item")
 		return theme.Box.Render(content) + ce.viewStatus(theme)
 	}
@@ -1393,8 +1542,39 @@ func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 		}
 	}
 
+	// Section: Outlets
+	if len(ce.config.Outlets) > 0 {
+		if len(ce.config.Lights) > 0 || len(ce.config.DimmableLights) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, theme.BoxTitle.Render("Outlets"))
+		for i, o := range ce.config.Outlets {
+			listIdx := len(ce.config.Lights) + len(ce.config.DimmableLights) + i
+			prefix := "   "
+			style := theme.ListItem
+			if listIdx == ce.cursor {
+				prefix = " > "
+				style = theme.ListItemSelected
+				focusLine = len(lines)
+			}
+
+			hkText := ""
+			if o.DisableHomekit {
+				hkText = theme.Muted.Render(" (no HK)")
+			}
+
+			ioText := theme.Secondary.Render(o.DigitalOutName)
+			if o.DigitalOutName == "" {
+				ioText = theme.Muted.Render("[no IO]")
+			}
+
+			line := prefix + IconOutlet + " " + theme.Primary.Render(padRight(o.Name, 20)) + " " + ioText + hkText
+			lines = append(lines, style.Render(line))
+		}
+	}
+
 	// Separator
-	if (len(ce.config.Lights) > 0 || len(ce.config.DimmableLights) > 0) && len(ce.config.Buttons) > 0 {
+	if (len(ce.config.Lights) > 0 || len(ce.config.DimmableLights) > 0 || len(ce.config.Outlets) > 0) && len(ce.config.Buttons) > 0 {
 		lines = append(lines, "")
 	}
 
@@ -1402,7 +1582,7 @@ func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 	if len(ce.config.Buttons) > 0 {
 		lines = append(lines, theme.BoxTitle.Render("Buttons"))
 		for i, b := range ce.config.Buttons {
-			listIdx := len(ce.config.Lights) + len(ce.config.DimmableLights) + i
+			listIdx := len(ce.config.Lights) + len(ce.config.DimmableLights) + len(ce.config.Outlets) + i
 			prefix := "   "
 			style := theme.ListItem
 			if listIdx == ce.cursor {
@@ -1500,6 +1680,31 @@ func (ce *ConfigEditor) viewEditDimmableLight(theme Theme) string {
 	fields = append(fields, ce.renderTextField(theme, "IO Output (on/off)", dl.DigitalOutName, 1))
 	fields = append(fields, ce.renderTextField(theme, "IO Analog (bright)", dl.AnalogOutName, 2))
 	fields = append(fields, ce.renderBoolField(theme, "Disable HomeKit", dl.DisableHomekit, 3))
+
+	content := strings.Join(fields, "\n")
+	result := theme.Box.Width(50).Render(content)
+	result += ce.viewStatus(theme)
+	return result
+}
+
+// viewEditOutlet renders the outlet edit form
+func (ce *ConfigEditor) viewEditOutlet(theme Theme) string {
+	if ce.cursor < 0 || ce.cursor >= len(ce.items) {
+		return theme.Muted.Render("No item selected")
+	}
+
+	item := ce.items[ce.cursor]
+	if item.itemType != configItemOutlet || item.index >= len(ce.config.Outlets) {
+		return theme.Muted.Render("No item selected")
+	}
+	outlet := ce.config.Outlets[item.index]
+
+	title := theme.BoxTitle.Render(IconOutlet + " Edit Outlet")
+
+	fields := []string{title, ""}
+	fields = append(fields, ce.renderTextField(theme, "Name", outlet.Name, 0))
+	fields = append(fields, ce.renderTextField(theme, "IO Output", outlet.DigitalOutName, 1))
+	fields = append(fields, ce.renderBoolField(theme, "Disable HomeKit", outlet.DisableHomekit, 2))
 
 	content := strings.Join(fields, "\n")
 	result := theme.Box.Width(50).Render(content)
@@ -1949,7 +2154,7 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 	case ConfigModeAddSelector:
 		return theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("confirm") + "  " +
 			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
-	case ConfigModeEditLight, ConfigModeEditDimmableLight, ConfigModeEditButton:
+	case ConfigModeEditLight, ConfigModeEditDimmableLight, ConfigModeEditOutlet, ConfigModeEditButton:
 		parts := []string{
 			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("edit"),
 			theme.HelpKey.Render("space") + " " + theme.HelpDesc.Render("toggle"),

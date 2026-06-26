@@ -1,3 +1,10 @@
+// OUTDATED: MotionSensor has not been updated to the current device architecture and is not wired into SwKit.
+// To bring it up to date it needs:
+//   - Constructor injection (NewMotionSensor(...) taking a drivers.DigitalInput) instead of Init(driver)
+//   - InitHk() *accessory.A instead of GetHk()
+//   - Sync(force bool) error signature (currently missing the force parameter)
+//   - Registration in SwKit.Setup(), getHkThings(), getDevices(), and a state-provider builder
+//   - A config struct (MotionSensorConfig) and a MotionSensors []MotionSensorConfig field on SwKit
 package swkit
 
 import (

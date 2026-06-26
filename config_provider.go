@@ -60,6 +60,14 @@ func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 		})
 	}
 
+	for _, o := range p.sw.Outlets {
+		config.Outlets = append(config.Outlets, app.OutletEditConfig{
+			Name:           o.Name,
+			DigitalOutName: o.DigitalOutName,
+			DisableHomekit: o.DisableHomekit,
+		})
+	}
+
 	for _, b := range p.sw.Buttons {
 		bc := app.ButtonEditConfig{
 			Name:           b.Name,
@@ -113,6 +121,15 @@ func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
 			DigitalOutName: dl.DigitalOutName,
 			AnalogOutName:  dl.AnalogOutName,
 			DisableHomekit: dl.DisableHomekit,
+		}
+	}
+
+	p.sw.Outlets = make([]OutletConfig, len(config.Outlets))
+	for i, o := range config.Outlets {
+		p.sw.Outlets[i] = OutletConfig{
+			Name:           o.Name,
+			DigitalOutName: o.DigitalOutName,
+			DisableHomekit: o.DisableHomekit,
 		}
 	}
 

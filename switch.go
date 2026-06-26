@@ -1,3 +1,10 @@
+// OUTDATED: Switch has not been updated to the current device architecture and is not wired into SwKit.
+// To bring it up to date it needs:
+//   - Constructor injection (NewSwitch(...) taking a drivers.DigitalInput) instead of Init(driver)
+//   - InitHk() *accessory.A instead of GetHk()
+//   - Sync(force bool) error signature (currently missing the force parameter)
+//   - Registration in SwKit.Setup(), getHkThings(), getDevices(), and a state-provider builder
+//   - A config struct (SwitchConfig) and a Switches []SwitchConfig field on SwKit
 package swkit
 
 import (

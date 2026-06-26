@@ -12,6 +12,7 @@ type ConfigProvider interface {
 type EditableConfig struct {
 	Lights         []LightEditConfig
 	DimmableLights []DimmableLightEditConfig
+	Outlets        []OutletEditConfig
 	Buttons        []ButtonEditConfig
 	// OutputDeviceNames provides available target device names for button control relations
 	OutputDeviceNames []string
@@ -19,6 +20,13 @@ type EditableConfig struct {
 
 // LightEditConfig represents an editable Light configuration
 type LightEditConfig struct {
+	Name           string
+	DigitalOutName string
+	DisableHomekit bool
+}
+
+// OutletEditConfig represents an editable Outlet configuration
+type OutletEditConfig struct {
 	Name           string
 	DigitalOutName string
 	DisableHomekit bool

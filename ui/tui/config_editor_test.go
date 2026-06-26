@@ -268,7 +268,7 @@ func TestClearSelectEscReturnsToList(t *testing.T) {
 func TestClearSelectEnterMovesToConfirm(t *testing.T) {
 	ce := newTestConfigEditor()
 	ce.mode = ConfigModeClearSelect
-	ce.clearCursor = 2 // clearButtons
+	ce.clearCursor = 3 // clearButtons
 	ce.updateClearSelect(keyMsg("enter"))
 
 	if ce.mode != ConfigModeClearConfirm {
