@@ -32,12 +32,14 @@ type SwKit struct {
 	DimmableLights []DimmableLightConfig
 	Outlets        []OutletConfig
 	Buttons        []ButtonConfig
+	Scenes         []SceneConfig
 
 	lights         []*Light
 	colorLights    []*ColorLight
 	dimmableLights []*DimmableLight
 	outlets        []*Outlet
 	buttons        []*Button
+	scenes         []*Scene
 	// Switches      []*Switch
 	// MotionSensors []*MotionSensor
 
@@ -228,7 +230,26 @@ func (sw *SwKit) getControllableDevices() []Controllable {
 		devices = append(devices, d)
 	}
 
+	// Scenes are Controllable too, so buttons (and other scenes) can drive
+	// them. Listed last, after the physical devices they may reference.
+	for _, sc := range sw.scenes {
+		devices = append(devices, sc)
+	}
+
 	return devices
+}
+
+// resolveControllable looks up a controllable device or scene by name. Devices
+// are matched before scenes; only scenes already built are visible, so a scene
+// can reference earlier-defined scenes but not later ones (which also prevents
+// reference cycles).
+func (sw *SwKit) resolveControllable(name string) (Controllable, bool) {
+	for _, dev := range sw.getControllableDevices() {
+		if dev.Name() == name {
+			return dev, true
+		}
+	}
+	return nil, false
 }
 
 func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
@@ -364,6 +385,17 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		}
 
 		sw.dimmableLights = append(sw.dimmableLights, NewDimmableLight(dimLight, dOut, aOut, logger))
+	}
+
+	// Scenes are built after all physical devices exist, since they reference
+	// devices (and earlier scenes) by name. They appear in
+	// getControllableDevices(), so the button loop below can target them.
+	for _, sceneConf := range sw.Scenes {
+		scene, err := NewScene(sceneConf, sw.resolveControllable, logger)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to setup scene %s", sceneConf.Name))
+		}
+		sw.scenes = append(sw.scenes, scene)
 	}
 
 	for _, button := range sw.Buttons {

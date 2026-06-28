@@ -199,7 +199,19 @@ Notes:
 - Integration via `cmd/mock` style setup: button toggles a scene, member device
   states reflect the active scene state.
 
-**Status**: Not Started
+**Status**: Complete
+
+Notes:
+- Added `Scenes []SceneConfig` / `scenes []*Scene` fields, a
+  `resolveControllable(name)` helper, and a scene-build loop in `Setup` placed
+  after physical devices and before buttons. Scenes are appended to
+  `getControllableDevices()` (last), so buttons can target them.
+- Resolution ordering: a scene sees devices + earlier-built scenes only, so it
+  can reference earlier scenes but not later ones — this also prevents cycles by
+  construction. Covered by `TestSetupSceneReferences{Earlier,Later}Scene`.
+- Drive-by bugfix: `MockIoDriver.Setup` stored IOs by full id but lookups use
+  the resolved name part, so `cmd/mock` and any Setup-based test errored with
+  "mock output N not found". Now stores by name. (Committed separately.)
 
 ---
 
