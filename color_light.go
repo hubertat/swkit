@@ -150,6 +150,11 @@ func (cl *ColorLight) Sync(force bool) (err error) {
 	return nil
 }
 
+// GetState reports the current on/off state from the digital output.
+func (cl *ColorLight) GetState() (bool, error) {
+	return cl.onDigitalOut.GetState()
+}
+
 func (cl *ColorLight) SetValue(state bool) {
 	cl.logger.Debug("setting color light value", "colorLight", cl.name, "state", state)
 	cl.onDigitalOut.Set(state)

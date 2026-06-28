@@ -61,6 +61,7 @@ type SwKit struct {
 	ioDrivers  map[string]drivers.IoDriver
 	mqttClient *mqtt.MqttClient
 	ticker     *time.Ticker
+	timed      *timedController
 	logger     *log.Logger
 }
 
@@ -112,6 +113,13 @@ type Controllable interface {
 type Dimmable interface {
 	// SetBrightness sets brightness as a HomeKit percentage (0-100).
 	SetBrightness(pct int)
+}
+
+// Stateful is an optional capability for Controllable devices that can report
+// their current on/off state. Used by the timed controller to restore the
+// prior state after a temporary override.
+type Stateful interface {
+	GetState() (bool, error)
 }
 
 func (sw *SwKit) getHkThings() (things []HkThing) {
@@ -225,6 +233,7 @@ func (sw *SwKit) getControllableDevices() []Controllable {
 
 func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 	sw.logger = logger
+	sw.timed = newTimedController(logger)
 	sw.ioDrivers = make(map[string]drivers.IoDriver)
 	ioSlice := map[string][]string{}
 
@@ -440,7 +449,17 @@ func (sw *SwKit) StartTicker(ctx context.Context, interval time.Duration, forceE
 	}
 }
 
+// SetDeviceValueFor sets a controllable device to state for the given duration,
+// then reverts to its prior state. See timedController.SetValueFor.
+func (sw *SwKit) SetDeviceValueFor(dev Controllable, state bool, d time.Duration) {
+	sw.timed.SetValueFor(dev, state, d)
+}
+
 func (sw *SwKit) Close() (err error) {
+	if sw.timed != nil {
+		sw.timed.Close()
+	}
+
 	for _, driver := range sw.ioDrivers {
 		if driver != nil {
 			closeErr := driver.Close()

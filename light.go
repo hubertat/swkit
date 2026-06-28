@@ -132,6 +132,11 @@ func (li *Light) Sync(force bool) (err error) {
 	return nil
 }
 
+// GetState reports the current on/off state from the digital output.
+func (li *Light) GetState() (bool, error) {
+	return li.output.GetState()
+}
+
 func (li *Light) SetValue(state bool) {
 	li.logger.Debug("setting light value", "light", li.name, "state", state)
 	li.output.Set(state)

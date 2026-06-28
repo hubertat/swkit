@@ -96,7 +96,15 @@ with Scenes and avoids duplicating timer/`Close` logic across four device types.
   clock; assert state after expiry equals prior state.
 - Re-trigger before expiry extends correctly.
 
-**Status**: Not Started
+**Status**: Complete
+
+Notes:
+- Added a `Stateful` capability interface (`GetState() (bool, error)`) and
+  implemented it on Light, Outlet, ColorLight, DimmableLight. The orchestrator
+  reads prior state via this; non-Stateful devices revert to the opposite.
+- Did not add the per-device `Timed` interface — the SwKit-level orchestrator
+  (`timedController`, exposed via `SwKit.SetDeviceValueFor`) is the only path.
+- `timedController.afterFunc` is injectable for deterministic tests.
 
 ---
 

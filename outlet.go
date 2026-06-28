@@ -123,6 +123,11 @@ func (ou *Outlet) Sync(force bool) error {
 	return nil
 }
 
+// GetState reports the current on/off state from the digital output.
+func (ou *Outlet) GetState() (bool, error) {
+	return ou.output.GetState()
+}
+
 func (ou *Outlet) SetValue(state bool) {
 	ou.logger.Debug("setting outlet value", "outlet", ou.name, "state", state)
 	ou.output.Set(state)

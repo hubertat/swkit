@@ -166,6 +166,11 @@ func (dl *DimmableLight) Sync(force bool) (err error) {
 	return nil
 }
 
+// GetState reports the current on/off state from the digital output.
+func (dl *DimmableLight) GetState() (bool, error) {
+	return dl.onOut.GetState()
+}
+
 func (dl *DimmableLight) SetValue(state bool) {
 	dl.logger.Debug("setting dimmable light value", "dimmableLight", dl.name, "state", state)
 	if err := dl.onOut.Set(state); err != nil {
