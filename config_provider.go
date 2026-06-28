@@ -81,6 +81,17 @@ func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 		config.Buttons = append(config.Buttons, bc)
 	}
 
+	for _, s := range p.sw.Scenes {
+		sc := app.SceneEditConfig{Name: s.Name}
+		for _, st := range s.States {
+			sc.States = append(sc.States, app.SceneStateEditConfig{
+				Name:    st.Name,
+				Actions: append([]string(nil), st.Actions...),
+			})
+		}
+		config.Scenes = append(config.Scenes, sc)
+	}
+
 	// Collect output device names from all controllable device configs
 	for _, l := range p.sw.Lights {
 		config.OutputDeviceNames = append(config.OutputDeviceNames, l.Name)
@@ -93,6 +104,10 @@ func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 	}
 	for _, o := range p.sw.Outlets {
 		config.OutputDeviceNames = append(config.OutputDeviceNames, o.Name)
+	}
+	// Scenes are Controllable too, so they are valid control targets.
+	for _, s := range p.sw.Scenes {
+		config.OutputDeviceNames = append(config.OutputDeviceNames, s.Name)
 	}
 
 	return config
@@ -146,6 +161,18 @@ func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
 			bc.ControlDevices = append(bc.ControlDevices, cd.FormatControlDeviceString())
 		}
 		p.sw.Buttons[i] = bc
+	}
+
+	p.sw.Scenes = make([]SceneConfig, len(config.Scenes))
+	for i, s := range config.Scenes {
+		sc := SceneConfig{Name: s.Name}
+		for _, st := range s.States {
+			sc.States = append(sc.States, SceneStateConfig{
+				Name:    st.Name,
+				Actions: append([]string(nil), st.Actions...),
+			})
+		}
+		p.sw.Scenes[i] = sc
 	}
 
 	// Marshal and write (drop nil values so they are not persisted as explicit null)

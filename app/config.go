@@ -14,6 +14,7 @@ type EditableConfig struct {
 	DimmableLights []DimmableLightEditConfig
 	Outlets        []OutletEditConfig
 	Buttons        []ButtonEditConfig
+	Scenes         []SceneEditConfig
 	// OutputDeviceNames provides available target device names for button control relations
 	OutputDeviceNames []string
 }
@@ -48,6 +49,21 @@ type ButtonEditConfig struct {
 	EventInputName string
 	ControlDevices []ControlDeviceEdit
 	DisableHomekit bool
+}
+
+// SceneEditConfig represents an editable Scene configuration. Scene actions use
+// the scene grammar (on|off|toggle:<device>, brightness:<pct>:<device>) and are
+// kept as raw strings here, since that grammar differs from the button control
+// grammar.
+type SceneEditConfig struct {
+	Name   string
+	States []SceneStateEditConfig
+}
+
+// SceneStateEditConfig represents one state of a scene.
+type SceneStateEditConfig struct {
+	Name    string
+	Actions []string
 }
 
 // ControlDeviceEdit represents a parsed control device mapping

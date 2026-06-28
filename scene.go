@@ -150,6 +150,15 @@ func (sc *Scene) CurrentState() int {
 	return int(sc.currentState.Load())
 }
 
+// StateNames returns the names of all states, in order.
+func (sc *Scene) StateNames() []string {
+	names := make([]string, len(sc.states))
+	for i, st := range sc.states {
+		names[i] = st.name
+	}
+	return names
+}
+
 // Activate applies every action in the given state, aggregating failures, and
 // records it as the current state even if some actions fail.
 func (sc *Scene) Activate(stateIndex int) error {

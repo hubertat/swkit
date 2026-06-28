@@ -67,6 +67,7 @@ const (
 	DeviceTypeDimmableLight DeviceType = "dimmable_light"
 	DeviceTypeOutlet        DeviceType = "outlet"
 	DeviceTypeButton        DeviceType = "button"
+	DeviceTypeScene         DeviceType = "scene"
 )
 
 // DeviceState represents the status of a device
@@ -88,6 +89,9 @@ type DeviceState struct {
 
 	LastEventType string    // buttons only: last push event type, e.g. "single_press"
 	LastEventTime time.Time // buttons only: when last push event occurred; zero if never
+
+	SceneStateIndex int      // scenes only: index of the active state (0 = off)
+	SceneStateNames []string // scenes only: names of all states, in order
 }
 
 // ButtonControlRelation describes a button's control mapping
@@ -128,6 +132,8 @@ func (s *AppState) Summary() StateSummary {
 			summary.OutletsCount++
 		case DeviceTypeButton:
 			summary.ButtonsCount++
+		case DeviceTypeScene:
+			summary.ScenesCount++
 		}
 	}
 
@@ -146,6 +152,7 @@ type StateSummary struct {
 	DimmableLightsCount int
 	OutletsCount        int
 	ButtonsCount        int
+	ScenesCount         int
 	HomeKitEnabled      bool
 	HomeKitDevices      int
 }

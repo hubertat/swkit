@@ -179,7 +179,8 @@ func (cs *ControlServer) handleDeviceList(w http.ResponseWriter, r *http.Request
 		controllable := d.Type == app.DeviceTypeLight ||
 			d.Type == app.DeviceTypeColorLight ||
 			d.Type == app.DeviceTypeDimmableLight ||
-			d.Type == app.DeviceTypeOutlet
+			d.Type == app.DeviceTypeOutlet ||
+			d.Type == app.DeviceTypeScene
 		hasBrightness := d.Type == app.DeviceTypeDimmableLight
 
 		result = append(result, controlDeviceResponse{

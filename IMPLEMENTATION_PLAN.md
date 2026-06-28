@@ -236,7 +236,23 @@ Notes:
 - Config round-trip test (parallel to `config_provider_test.go`):
   load → edit → save → reload preserves scenes and actions.
 
-**Status**: Not Started
+**Status**: Complete
+
+Notes:
+- `app`: added `SceneEditConfig`/`SceneStateEditConfig` + `EditableConfig.Scenes`;
+  `DeviceTypeScene`, `DeviceState.SceneStateIndex`/`SceneStateNames`, and
+  `StateSummary.ScenesCount`.
+- `config_provider.go`: scenes round-trip in `GetEditableConfig`/`SaveConfig`;
+  scene names added to `OutputDeviceNames` (valid control targets).
+- `state_provider.go`: `buildSceneState`, scenes appended to `GetState` device
+  list, `getControllableByIndex` extended (scenes after buttons; scenes return
+  a non-nil Controllable), `getDeviceState` handles `*Scene` (on = state != 0).
+- TUI/control server: scene icon (`🎬`), scenes are controllable in the control
+  server. The device list and toggle/set paths are generic, so scenes show and
+  toggle without further per-type UI code. Scene-action editing in the config
+  editor form is not added (raw action strings round-trip); deferred to UI work.
+- Scene action edit configs keep raw strings (the scene grammar differs from the
+  button control grammar, so `ControlDeviceEdit` is not reused).
 
 ---
 

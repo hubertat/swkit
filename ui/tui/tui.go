@@ -1490,6 +1490,8 @@ func deviceIcon(t app.DeviceType) string {
 		return IconOutlet
 	case app.DeviceTypeButton:
 		return IconButton
+	case app.DeviceTypeScene:
+		return IconScene
 	default:
 		return "?"
 	}

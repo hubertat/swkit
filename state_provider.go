@@ -201,6 +201,11 @@ func (p *SwKitProvider) GetState() app.AppState {
 		state.Devices = append(state.Devices, ds)
 	}
 
+	for _, scene := range p.sw.scenes {
+		ds := p.buildSceneState(scene)
+		state.Devices = append(state.Devices, ds)
+	}
+
 	// Collect IO debug data from drivers that support it (typed fields for stable order)
 	collectIoDebug := func(driverName string, provider drivers.IoDebugProvider) {
 		snapshot := provider.GetIoDebugSnapshot()
@@ -474,6 +479,19 @@ func (p *SwKitProvider) buildButtonState(button *Button) app.DeviceState {
 	}
 }
 
+func (p *SwKitProvider) buildSceneState(scene *Scene) app.DeviceState {
+	idx := scene.CurrentState()
+	return app.DeviceState{
+		Name:            scene.name,
+		Type:            app.DeviceTypeScene,
+		IsOn:            idx != 0, // state 0 is "off" by convention
+		IsHealthy:       true,
+		HomeKitEnabled:  false, // scenes have no HomeKit representation yet
+		SceneStateIndex: idx,
+		SceneStateNames: scene.StateNames(),
+	}
+}
+
 func isOutputHealthy(output drivers.DigitalOutput) bool {
 	if output == nil {
 		return false
@@ -563,7 +581,7 @@ func (p *SwKitProvider) SetDeviceBrightness(index int, pct int) app.ControlResul
 }
 
 // getControllableByIndex returns the Controllable device at the given index
-// Device order matches GetState(): lights -> colorLights -> dimmableLights -> outlets -> buttons
+// Device order matches GetState(): lights -> colorLights -> dimmableLights -> outlets -> buttons -> scenes
 // Returns nil Controllable for buttons since they don't implement the interface
 func (p *SwKitProvider) getControllableByIndex(index int) (Controllable, string, app.DeviceType, error) {
 	lightsCount := len(p.sw.lights)
@@ -571,8 +589,9 @@ func (p *SwKitProvider) getControllableByIndex(index int) (Controllable, string,
 	dimmableLightsCount := len(p.sw.dimmableLights)
 	outletsCount := len(p.sw.outlets)
 	buttonsCount := len(p.sw.buttons)
+	scenesCount := len(p.sw.scenes)
 
-	if index < 0 || index >= lightsCount+colorLightsCount+dimmableLightsCount+outletsCount+buttonsCount {
+	if index < 0 || index >= lightsCount+colorLightsCount+dimmableLightsCount+outletsCount+buttonsCount+scenesCount {
 		return nil, "", "", fmt.Errorf("device index %d out of range", index)
 	}
 
@@ -603,6 +622,12 @@ func (p *SwKitProvider) getControllableByIndex(index int) (Controllable, string,
 	// Buttons - return nil for Controllable since they don't implement the interface
 	if index < buttonsCount {
 		return nil, p.sw.buttons[index].name, app.DeviceTypeButton, nil
+	}
+	index -= buttonsCount
+
+	// Scenes
+	if index < scenesCount {
+		return p.sw.scenes[index], p.sw.scenes[index].name, app.DeviceTypeScene, nil
 	}
 
 	return nil, "", "", fmt.Errorf("device index %d out of range", index)
@@ -635,6 +660,8 @@ func (p *SwKitProvider) getDeviceState(device Controllable) bool {
 				return state
 			}
 		}
+	case *Scene:
+		return d.CurrentState() != 0
 	}
 	return false
 }

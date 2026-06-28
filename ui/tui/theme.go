@@ -167,6 +167,7 @@ const (
 	IconColorLight = "🌈"
 	IconOutlet     = "🔌"
 	IconButton     = "👆"
+	IconScene      = "🎬"
 	IconDriver     = "⚡"
 	IconHomeKit    = "🍎"
 	IconChat       = "💬"
