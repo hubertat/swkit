@@ -29,6 +29,9 @@ type DimmableLightConfig struct {
 	DisableHomekit  bool
 }
 
+// DimmableLight supports brightness control.
+var _ Dimmable = (*DimmableLight)(nil)
+
 // DimmableLight is an on/off light with brightness control, composing a
 // DigitalOutput (on/off) and an AnalogOutput (brightness). HomeKit brightness
 // (0-100) is scaled to the analog output's native range via GetMinMax().
@@ -108,13 +111,25 @@ func (dl *DimmableLight) InitHk() *accessory.A {
 	return dl.hk.A
 }
 
-// updateBrightness is called when Brightness state is changed by some kind of controller device.
-// brightness is between 0 and 100 and is scaled to the analog output's native range.
-// Setting brightness does not toggle the On state - the two are independent.
+// updateBrightness is the HomeKit callback for Brightness changes; it delegates
+// to SetBrightness. Brightness is independent of the On state.
 func (dl *DimmableLight) updateBrightness(newBrightness int) {
+	dl.SetBrightness(newBrightness)
+}
+
+// SetBrightness sets brightness as a HomeKit percentage (0-100), scaled to the
+// analog output's native range. Values are clamped to [0, 100]. Setting
+// brightness does not toggle the On state - the two are independent.
+func (dl *DimmableLight) SetBrightness(pct int) {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
 	min, max := dl.briOut.GetMinMax()
-	native := convertIntRange(newBrightness, 0, 100, min, max)
-	dl.logger.Debug("setting dimmable light brightness", "dimmableLight", dl.name, "brightness", newBrightness, "native", native)
+	native := convertIntRange(pct, 0, 100, min, max)
+	dl.logger.Debug("setting dimmable light brightness", "dimmableLight", dl.name, "brightness", pct, "native", native)
 	if err := dl.briOut.Set(native); err != nil {
 		dl.logger.Error("failed to set dimmable light brightness", "dimmableLight", dl.name, "err", err)
 	}

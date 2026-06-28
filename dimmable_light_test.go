@@ -99,6 +99,37 @@ func TestDimmableLightDefaultSetpointZeroSkipsInit(t *testing.T) {
 	}
 }
 
+func TestDimmableLightSetBrightnessClamps(t *testing.T) {
+	dl, aOut := newTestDimmableLight(t, 0, 100)
+
+	dl.SetBrightness(150)
+	if got, _ := aOut.GetState(); got != 100 {
+		t.Errorf("SetBrightness(150) should clamp to 100, got %d", got)
+	}
+
+	dl.SetBrightness(-20)
+	if got, _ := aOut.GetState(); got != 0 {
+		t.Errorf("SetBrightness(-20) should clamp to 0, got %d", got)
+	}
+}
+
+func TestDimmableImplementsDimmableCapability(t *testing.T) {
+	dl, _ := newTestDimmableLight(t, 0, 100)
+	if _, ok := Controllable(dl).(Dimmable); !ok {
+		t.Error("DimmableLight should satisfy Dimmable")
+	}
+
+	li := NewLight(LightConfig{Name: "L"}, drivers.NewMockOutput("l"), log.New(nil))
+	if _, ok := Controllable(li).(Dimmable); ok {
+		t.Error("Light should not satisfy Dimmable")
+	}
+
+	ou := NewOutlet(OutletConfig{Name: "O"}, drivers.NewMockOutput("o"), log.New(nil))
+	if _, ok := Controllable(ou).(Dimmable); ok {
+		t.Error("Outlet should not satisfy Dimmable")
+	}
+}
+
 func TestDimmableLightSyncWithoutHomekitIsNoop(t *testing.T) {
 	dl, _ := newTestDimmableLight(t, 0, 32767)
 	// hk is nil until InitHk; Sync must be a safe no-op.

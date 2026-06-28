@@ -107,6 +107,13 @@ type Controllable interface {
 	Name() string
 }
 
+// Dimmable is an optional capability for Controllable devices that support
+// brightness control. Call sites discover it via type assertion.
+type Dimmable interface {
+	// SetBrightness sets brightness as a HomeKit percentage (0-100).
+	SetBrightness(pct int)
+}
+
 func (sw *SwKit) getHkThings() (things []HkThing) {
 	for _, th := range sw.lights {
 		things = append(things, th)

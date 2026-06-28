@@ -543,7 +543,7 @@ func (p *SwKitProvider) SetDeviceBrightness(index int, pct int) app.ControlResul
 	if err != nil {
 		return app.ControlResult{Error: err}
 	}
-	dl, ok := device.(*DimmableLight)
+	dimmable, ok := device.(Dimmable)
 	if !ok {
 		return app.ControlResult{
 			DeviceName: deviceName,
@@ -552,17 +552,11 @@ func (p *SwKitProvider) SetDeviceBrightness(index int, pct int) app.ControlResul
 		}
 	}
 
-	if pct < 0 {
-		pct = 0
-	}
-	if pct > 100 {
-		pct = 100
-	}
-	dl.updateBrightness(pct)
+	dimmable.SetBrightness(pct)
 
 	newState := p.getDeviceState(device)
 	return app.ControlResult{
-		DeviceName: dl.Name(),
+		DeviceName: device.Name(),
 		Action:     "brightness",
 		NewState:   newState,
 	}
