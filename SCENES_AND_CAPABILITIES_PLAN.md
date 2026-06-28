@@ -256,6 +256,104 @@ Notes:
 
 ---
 
+## Stage 6: Scene config editor + timed-control exposure
+**Goal**: Make scenes fully editable in the TUI config editor, and make the
+Stage 2 timed controller (`SwKit.SetDeviceValueFor`) reachable by users. Two
+independent sub-stages; 6A and 6B can land in either order.
+
+Context: today scenes round-trip through the config provider and render in the
+status list, but there is no add/edit/delete *form* (unlike Lights/Outlets/
+Buttons), and `SetDeviceValueFor` has no caller. The config editor
+(`ui/tui/config_editor.go`) is a mode-per-screen state machine: `ConfigMode`
+enum, `configListItemType` list items, `addTypeChoices`, per-type
+`updateEditXxx` handlers + `rebuildItems()`, and a single-level ControlDevices
+sub-editor for buttons (`ctrlCursor`/`ctrlEditing`/`ctrlFieldCursor`) plus a
+control-by-relation wizard (`wizardOutputDevices`, `ConfigModeCtrlWizard*`).
+
+### Stage 6A: Scene config editor (TUI form)
+
+Scenes are **doubly nested** (scene → states → actions), deeper than any
+existing form. Model it as three screens reusing existing idioms:
+
+- New `ConfigMode`s: `ConfigModeEditScene` (scene name + state list),
+  `ConfigModeEditSceneState` (state name + action list), and an action editor
+  reusing the control-by-relation wizard pattern (device picker → action →
+  optional brightness/duration), producing a scene action string.
+- New `configItemScene` in `configListItemType`; add to `addTypeChoices`
+  (`IconScene`) and to `rebuildItems()`.
+- Editor state additions: scene index, state cursor/index, action cursor, and
+  action-builder fields (device name, action, brightness level).
+- Handlers: `updateEditScene`, `updateEditSceneState`, action add/edit/delete;
+  view/render funcs for the three lists.
+
+**Action string parse/format** — the TUI works with `app.SceneEditConfig` (raw
+action strings) and must parse them to populate the editor and format edits
+back. Introduce `app.ParseSceneAction(s) (action string, level int, dev string,
+err error)` and `app.FormatSceneAction(action string, level int, dev string)`
+in the `app` package, and have swkit's `parseSceneAction` (scene.go) delegate to
+the `app` parser to keep one grammar definition. (This is the small refactor the
+Stage 3 note anticipated.)
+
+- Action targets: reuse `wizardOutputDevices()` but also include
+  `DeviceTypeScene` (scenes may target scenes). Offer `brightness` only when the
+  selected target is `DeviceTypeDimmableLight`.
+
+**Success Criteria**:
+- Add a scene with ≥2 states and per-state actions via the TUI, save, reload —
+  round-trips with no loss; edit and delete work; back-navigation is consistent
+  with other forms.
+- `go build ./...` / `go test ./...` green.
+
+**Tests**:
+- `app.ParseSceneAction`/`FormatSceneAction` round-trip table test, and a test
+  that swkit's `parseSceneAction` still rejects the same invalid inputs.
+- Config-editor model test (driving `Update` with key msgs, as existing config
+  editor tests do) for add-scene → add-state → add-action → save, asserting the
+  resulting `EditableConfig.Scenes`.
+
+**Status**: Not Started
+
+### Stage 6B: Timed-control exposure
+
+Make `SetDeviceValueFor` usable. Primary path is provider + UI; scene timed
+actions are an optional follow-on.
+
+**Path 1 (recommended): provider + control server + TUI**
+- Add to `app.StateProvider` (or the control interface) a method
+  `SetDeviceValueFor(index int, state bool, seconds int) app.ControlResult`;
+  implement on `SwKitProvider` by resolving the controllable via
+  `getControllableByIndex` and calling `sw.SetDeviceValueFor`.
+- Control server (`server/control_server.go`): accept an optional duration
+  (e.g. `seconds` param) on the set action; when present, route to the timed
+  method. Surface `Controllable` devices only (scenes included).
+- TUI: a keybinding on a controllable device to "set on for N seconds" (prompt
+  for duration via the existing text input), calling the provider method.
+
+**Path 2 (optional): timed scene actions**
+- Extend the scene grammar with `on-for:<seconds>:<device>` /
+  `off-for:<seconds>:<device>` (and matching `app.ParseSceneAction`/format).
+- Requires threading the orchestrator into `Scene`: inject a
+  `timedSetter func(Controllable, bool, time.Duration)` into `NewScene` (from
+  `SwKit.Setup`, bound to `sw.SetDeviceValueFor`), and have `sceneAction.apply`
+  use it for timed actions. Keep non-timed scenes working with a nil setter.
+
+**Test seam**: `SwKit.timed` uses real `time.AfterFunc`; add a way to inject
+`afterFunc` (constructor option or setter) so provider/scene timed-action tests
+fire deterministically, as `timedController`'s own tests already do.
+
+**Success Criteria**:
+- A user can set a device on for N seconds via the control server and/or TUI and
+  observe it revert to its prior state.
+- (If Path 2) a scene `on-for:...` action sets and auto-reverts.
+
+**Tests**:
+- Provider `SetDeviceValueFor` delegates and reverts (injected `afterFunc`).
+- (If Path 2) scene timed action applies then reverts.
+
+**Status**: Not Started
+
+---
+
 ## Out of scope (future)
 - HomeKit representation for scenes (stateless switch vs. one Switch per state).
 - Scene drift enforcement on `Sync` (turning a scene into a persistent "mode").
