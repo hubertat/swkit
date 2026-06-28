@@ -112,10 +112,16 @@ type MockIoDriver struct {
 func (md *MockIoDriver) Setup(ctx context.Context, ios []string) (err error) {
 	md.logger = logging.NewLogger(logging.PrefixMock)
 
-	// For mock driver, treat all ios as both inputs and outputs for testing
+	// For mock driver, treat all ios as both inputs and outputs for testing.
+	// Store by the resolved name part (e.g. "1"), since lookups use the name
+	// returned by ResolveIoIdString, not the full "driver|type|name" id.
 	for _, io := range ios {
-		md.inputs = append(md.inputs, &MockInput{id: io})
-		md.outputs = append(md.outputs, &MockOutput{id: io})
+		_, _, name, resolveErr := ResolveIoIdString(io)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		md.inputs = append(md.inputs, &MockInput{id: name})
+		md.outputs = append(md.outputs, &MockOutput{id: name})
 	}
 	md.ready = true
 	md.logger.Debug("setup complete", "ioCount", len(ios))
