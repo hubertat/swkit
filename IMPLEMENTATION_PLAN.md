@@ -160,7 +160,16 @@ SwKit wiring yet.
 - `SetValue(false)` returns to state 0.
 - Partial failure: one bad action still applies the rest and returns joined err.
 
-**Status**: Not Started
+**Status**: Complete
+
+Notes:
+- The button grammar is event-prefixed and `ControlDevice` has no brightness
+  level, so scenes use a dedicated `parseSceneAction` + `sceneAction` type
+  rather than reusing `ParseControlDeviceString`/`ControlDevice`. Scene action
+  grammar: `on|off|toggle:<device>` and `brightness:<pct>:<device>`.
+- `Scene` satisfies `Controllable` (verified by `TestSceneControlsScene`,
+  scene-drives-scene). `GetUniqueId` added for future state/HK use.
+- Brightness actions apply via the `Dimmable` capability from Stage 1.
 
 ---
 
