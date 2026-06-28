@@ -25,6 +25,8 @@ const (
 	ConfigModeEditDimmableLight
 	ConfigModeEditOutlet
 	ConfigModeEditButton
+	ConfigModeEditScene        // edit a scene: name + list of states
+	ConfigModeEditSceneState   // edit one state of a scene: name + list of actions
 	ConfigModeAddSelector      // inline device type picker when pressing 'a'
 	ConfigModeIoPicker         // inline IO point browser for IO field assignment
 	ConfigModeCtrlWizardDevice // wizard step 1: pick target output device
@@ -63,6 +65,7 @@ const (
 	configItemDimmableLight
 	configItemOutlet
 	configItemButton
+	configItemScene
 )
 
 // configListItem is an entry in the flattened config list
@@ -83,6 +86,7 @@ var addableDeviceTypes = []addableDeviceType{
 	{label: IconLight + " Dimmable Light", itemType: configItemDimmableLight},
 	{label: IconOutlet + " Outlet", itemType: configItemOutlet},
 	{label: IconButton + " Button", itemType: configItemButton},
+	{label: IconScene + " Scene", itemType: configItemScene},
 }
 
 // ConfigSaveMsg is sent when config is saved
@@ -110,6 +114,11 @@ type ConfigEditor struct {
 	ctrlCursor      int
 	ctrlEditing     bool
 	ctrlFieldCursor int // 0=event, 1=action, 2=device
+
+	// Scene sub-editor (scene -> states -> actions)
+	sceneStateIndex    int  // which state of the current scene is being edited
+	sceneActionEditing bool // inline action editor active
+	sceneActionField   int  // 0=action, 1=device, 2=level
 
 	// Type selector state (ConfigModeAddSelector)
 	addTypeCursor int
@@ -282,6 +291,13 @@ func (ce *ConfigEditor) rebuildItems() {
 			name:     b.Name,
 		})
 	}
+	for i, s := range ce.config.Scenes {
+		ce.items = append(ce.items, configListItem{
+			itemType: configItemScene,
+			index:    i,
+			name:     s.Name,
+		})
+	}
 }
 
 // lightFieldCount returns the number of editable fields for a Light
@@ -309,6 +325,10 @@ func (ce *ConfigEditor) Update(msg tea.Msg) tea.Cmd {
 		return ce.updateEditOutlet(msg)
 	case ConfigModeEditButton:
 		return ce.updateEditButton(msg)
+	case ConfigModeEditScene:
+		return ce.updateEditScene(msg)
+	case ConfigModeEditSceneState:
+		return ce.updateEditSceneState(msg)
 	case ConfigModeAddSelector:
 		keyMsg, ok := msg.(tea.KeyMsg)
 		if !ok {
@@ -392,8 +412,11 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 				ce.mode = ConfigModeEditDimmableLight
 			case configItemOutlet:
 				ce.mode = ConfigModeEditOutlet
-			default:
+			case configItemButton:
 				ce.mode = ConfigModeEditButton
+			case configItemScene:
+				ce.sceneActionEditing = false
+				ce.mode = ConfigModeEditScene
 			}
 		}
 	case "a":
@@ -480,6 +503,13 @@ func (ce *ConfigEditor) addDeviceOfType(itemType configListItemType) tea.Cmd {
 		ce.setCursorToItem(configItemButton, len(ce.config.Buttons)-1)
 		ce.mode = ConfigModeEditButton
 		return ce.startEditingButtonField(&ce.config.Buttons[len(ce.config.Buttons)-1])
+	case configItemScene:
+		ce.config.Scenes = append(ce.config.Scenes, app.SceneEditConfig{})
+		ce.rebuildItems()
+		ce.setCursorToItem(configItemScene, len(ce.config.Scenes)-1)
+		ce.sceneActionEditing = false
+		ce.mode = ConfigModeEditScene
+		return ce.startEditingSceneField(&ce.config.Scenes[len(ce.config.Scenes)-1])
 	}
 	return nil
 }
@@ -520,6 +550,9 @@ func (ce *ConfigEditor) deleteItem() tea.Cmd {
 	case configItemOutlet:
 		ce.config.Outlets = append(ce.config.Outlets[:item.index], ce.config.Outlets[item.index+1:]...)
 		ce.refreshOutputDeviceNames()
+	case configItemScene:
+		ce.config.Scenes = append(ce.config.Scenes[:item.index], ce.config.Scenes[item.index+1:]...)
+		ce.refreshOutputDeviceNames()
 	default:
 		ce.config.Buttons = append(ce.config.Buttons[:item.index], ce.config.Buttons[item.index+1:]...)
 	}
@@ -543,6 +576,10 @@ func (ce *ConfigEditor) refreshOutputDeviceNames() {
 	}
 	for _, o := range ce.config.Outlets {
 		ce.config.OutputDeviceNames = append(ce.config.OutputDeviceNames, o.Name)
+	}
+	// Scenes are Controllable too, so they are valid control/action targets.
+	for _, s := range ce.config.Scenes {
+		ce.config.OutputDeviceNames = append(ce.config.OutputDeviceNames, s.Name)
 	}
 }
 
@@ -1472,6 +1509,10 @@ func (ce *ConfigEditor) View(theme Theme, height int) string {
 		return ce.viewEditOutlet(theme)
 	case ConfigModeEditButton:
 		return ce.viewEditButton(theme)
+	case ConfigModeEditScene:
+		return ce.viewEditScene(theme)
+	case ConfigModeEditSceneState:
+		return ce.viewEditSceneState(theme)
 	case ConfigModeAddSelector:
 		return ce.viewAddSelector(theme)
 	case ConfigModeIoPicker:
@@ -1622,6 +1663,29 @@ func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 			}
 
 			line := prefix + IconButton + " " + theme.Primary.Render(padRight(b.Name, 20)) + " " + ioText + hkText + ctrlCount
+			lines = append(lines, style.Render(line))
+		}
+	}
+
+	// Section: Scenes
+	if len(ce.config.Scenes) > 0 {
+		if len(ce.config.Lights) > 0 || len(ce.config.DimmableLights) > 0 || len(ce.config.Outlets) > 0 || len(ce.config.Buttons) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, theme.BoxTitle.Render("Scenes"))
+		base := len(ce.config.Lights) + len(ce.config.DimmableLights) + len(ce.config.Outlets) + len(ce.config.Buttons)
+		for i, s := range ce.config.Scenes {
+			listIdx := base + i
+			prefix := "   "
+			style := theme.ListItem
+			if listIdx == ce.cursor {
+				prefix = " ▶ "
+				style = theme.ListItemSelected
+				focusLine = len(lines)
+			}
+
+			stateCount := theme.Muted.Render(fmt.Sprintf(" [%d states]", len(s.States)))
+			line := prefix + IconScene + " " + theme.Primary.Render(padRight(s.Name, 20)) + stateCount
 			lines = append(lines, style.Render(line))
 		}
 	}
@@ -2214,6 +2278,37 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 				theme.HelpKey.Render("a")+" "+theme.HelpDesc.Render("add ctrl"),
 				theme.HelpKey.Render("d")+" "+theme.HelpDesc.Render("del ctrl"),
 			)
+		}
+		if ce.dirty {
+			parts = append(parts, theme.HelpKey.Render("ctrl+r")+" "+theme.HelpDesc.Render("save"))
+		}
+		return strings.Join(parts, "  ")
+	case ConfigModeEditScene:
+		parts := []string{
+			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("edit/open"),
+			theme.HelpKey.Render("a") + " " + theme.HelpDesc.Render("add state"),
+			theme.HelpKey.Render("d") + " " + theme.HelpDesc.Render("del state"),
+			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("back"),
+		}
+		if ce.dirty {
+			parts = append(parts, theme.HelpKey.Render("ctrl+r")+" "+theme.HelpDesc.Render("save"))
+		}
+		return strings.Join(parts, "  ")
+	case ConfigModeEditSceneState:
+		var parts []string
+		if ce.sceneActionEditing {
+			parts = []string{
+				theme.HelpKey.Render("↑↓") + " " + theme.HelpDesc.Render("field"),
+				theme.HelpKey.Render("←→") + " " + theme.HelpDesc.Render("change"),
+				theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("done"),
+			}
+		} else {
+			parts = []string{
+				theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("edit"),
+				theme.HelpKey.Render("a") + " " + theme.HelpDesc.Render("add action"),
+				theme.HelpKey.Render("d") + " " + theme.HelpDesc.Render("del action"),
+				theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("back"),
+			}
 		}
 		if ce.dirty {
 			parts = append(parts, theme.HelpKey.Render("ctrl+r")+" "+theme.HelpDesc.Render("save"))

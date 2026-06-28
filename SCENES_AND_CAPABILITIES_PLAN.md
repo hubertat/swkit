@@ -311,7 +311,18 @@ Stage 3 note anticipated.)
   editor tests do) for add-scene → add-state → add-action → save, asserting the
   resulting `EditableConfig.Scenes`.
 
-**Status**: Not Started
+**Status**: Complete
+
+Notes:
+- `app.ParseSceneAction`/`FormatSceneAction` added; swkit's `parseSceneAction`
+  delegates to the app parser (single grammar definition).
+- New editor modes `ConfigModeEditScene` and `ConfigModeEditSceneState` (with an
+  inline action editor cycling action/device/level). Scene editor code in
+  `ui/tui/config_editor_scene.go`; `config_editor.go` got the consts, struct
+  fields, and list/add/delete/route/help hooks. Scenes show in the list and in
+  `OutputDeviceNames`.
+- Brightness level cycles by 5, only for the `brightness` verb; the editor does
+  not yet restrict brightness to dimmable targets (runtime validates).
 
 ### Stage 6B: Timed-control exposure
 

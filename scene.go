@@ -4,11 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"strconv"
-	"strings"
 	"sync/atomic"
 
 	"github.com/charmbracelet/log"
+	"github.com/hubertat/swkit/app"
 )
 
 // SceneConfig configures a multi-state scene. A scene has N states; index 0 is
@@ -85,39 +84,10 @@ func NewScene(config SceneConfig, resolve func(name string) (Controllable, bool)
 }
 
 // parseSceneAction parses a scene action string into its action, brightness
-// level (0 when not applicable) and target device name.
+// level (0 when not applicable) and target device name. The grammar is defined
+// once in app.ParseSceneAction and shared with the config editor.
 func parseSceneAction(s string) (action string, level int, devName string, err error) {
-	if len(s) == 0 {
-		err = errors.New("empty scene action")
-		return
-	}
-
-	parts := strings.Split(s, ":")
-	action = strings.ToLower(parts[0])
-
-	switch action {
-	case "on", "off", "toggle":
-		if len(parts) != 2 {
-			err = fmt.Errorf("action %q expects format <action>:<device>", action)
-			return
-		}
-		devName = parts[1]
-	case "brightness":
-		if len(parts) != 3 {
-			err = errors.New("brightness expects format brightness:<pct>:<device>")
-			return
-		}
-		level, err = strconv.Atoi(parts[1])
-		if err != nil {
-			err = fmt.Errorf("invalid brightness level %q: %w", parts[1], err)
-			return
-		}
-		devName = parts[2]
-	default:
-		err = fmt.Errorf("unknown scene action %q", action)
-	}
-
-	return
+	return app.ParseSceneAction(s)
 }
 
 func (a sceneAction) apply() error {
