@@ -254,6 +254,16 @@ func (cs *ControlServer) handleDeviceAction(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		result = cs.provider.SetDeviceBrightness(index, body.Value)
+	case "set_for":
+		var body struct {
+			Value   bool `json:"value"`
+			Seconds int  `json:"seconds"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		result = cs.provider.SetDeviceValueFor(index, body.Value, body.Seconds)
 	default:
 		http.NotFound(w, r)
 		return

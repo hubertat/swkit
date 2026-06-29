@@ -361,7 +361,20 @@ fire deterministically, as `timedController`'s own tests already do.
 - Provider `SetDeviceValueFor` delegates and reverts (injected `afterFunc`).
 - (If Path 2) scene timed action applies then reverts.
 
-**Status**: Not Started
+**Status**: Path 1 Complete; Path 2 not done (deferred, optional)
+
+Notes:
+- `app.DeviceController` gained `SetDeviceValueFor(index, state, seconds)`;
+  implemented on `SwKitProvider` (resolves via `getControllableByIndex`,
+  rejects buttons and non-positive durations, delegates to
+  `SwKit.SetDeviceValueFor`).
+- Control server: new `set_for` action (`{value, seconds}`) on
+  `/api/devices/{index}/set_for`. Web UI (HTML/JS) button not added — API only.
+- TUI: `f` on the Devices tab opens an "on for N seconds" prompt (default 60),
+  mirroring the existing IO-naming input pattern; help footer updated.
+- Test seam: `timedController.afterFunc` is already injectable; provider tests
+  set it directly (same package) to fire reverts deterministically.
+- Mock controllers (`agent` test, new `server` test fake) gained the method.
 
 ---
 
@@ -370,3 +383,6 @@ fire deterministically, as `timedController`'s own tests already do.
 - Scene drift enforcement on `Sync` (turning a scene into a persistent "mode").
 - `Action`-as-data refactor (Option B) — only revisit if action serialization
   across the agent/API becomes a primary need.
+- Stage 6B Path 2 (timed scene actions like `on-for:<seconds>:<device>`) —
+  needs threading the orchestrator into `Scene`.
+- Control web UI button for timed control (the `set_for` API exists).

@@ -580,6 +580,39 @@ func (p *SwKitProvider) SetDeviceBrightness(index int, pct int) app.ControlResul
 	}
 }
 
+// SetDeviceValueFor sets the controllable device at the given index to state for
+// the given duration (seconds), then reverts to its prior state.
+func (p *SwKitProvider) SetDeviceValueFor(index int, state bool, seconds int) app.ControlResult {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	device, deviceName, _, err := p.getControllableByIndex(index)
+	if err != nil {
+		return app.ControlResult{Error: err}
+	}
+	if device == nil {
+		return app.ControlResult{
+			DeviceName: deviceName,
+			Action:     actionName(state),
+			Error:      fmt.Errorf("buttons cannot be controlled"),
+		}
+	}
+	if seconds <= 0 {
+		return app.ControlResult{
+			DeviceName: device.Name(),
+			Action:     actionName(state),
+			Error:      fmt.Errorf("duration must be positive"),
+		}
+	}
+
+	p.sw.SetDeviceValueFor(device, state, time.Duration(seconds)*time.Second)
+
+	return app.ControlResult{
+		DeviceName: device.Name(),
+		Action:     fmt.Sprintf("%s for %ds", actionName(state), seconds),
+		NewState:   state,
+	}
+}
+
 // getControllableByIndex returns the Controllable device at the given index
 // Device order matches GetState(): lights -> colorLights -> dimmableLights -> outlets -> buttons -> scenes
 // Returns nil Controllable for buttons since they don't implement the interface

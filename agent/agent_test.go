@@ -94,6 +94,18 @@ func (m *mockController) SetDeviceBrightness(index int, pct int) app.ControlResu
 	}
 }
 
+func (m *mockController) SetDeviceValueFor(index int, state bool, seconds int) app.ControlResult {
+	if index < 0 || index >= len(m.state.Devices) {
+		return app.ControlResult{Error: nil}
+	}
+	m.state.Devices[index].IsOn = state
+	return app.ControlResult{
+		DeviceName: m.state.Devices[index].Name,
+		Action:     "set_for",
+		NewState:   state,
+	}
+}
+
 func TestNewAgent_NoAPIKey(t *testing.T) {
 	cfg := Config{
 		APIKey: "",

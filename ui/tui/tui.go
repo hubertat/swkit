@@ -108,6 +108,9 @@ type Model struct {
 	ioExportMsg    string // transient status message after export
 	ioImporting    bool   // true when filename input is active for import
 	ioImportInput  textinput.Model
+	timedPrompt    bool // true when the "on for N seconds" duration input is active
+	timedInput     textinput.Model
+	timedTarget    int // device index being timed-controlled
 	ctx            context.Context
 	cancel         context.CancelFunc
 	chat           ChatView
@@ -167,6 +170,7 @@ func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigPr
 		ioStateChanged: make(map[string]time.Time),
 		ioNameInput:    newIoNameInput(),
 		ioImportInput:  newIoImportInput(),
+		timedInput:     newTimedInput(),
 		ctx:            ctx,
 		cancel:         cancel,
 		agent:          ag,
@@ -268,6 +272,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				var cmd tea.Cmd
 				m.ioNameInput, cmd = m.ioNameInput.Update(msg)
+				return m, cmd
+			}
+		}
+
+		// Handle timed-control duration prompt - intercept all keys
+		if m.timedPrompt {
+			switch msg.Type {
+			case tea.KeyEnter:
+				cmd := m.commitTimedPrompt()
+				m.timedPrompt = false
+				m.timedInput.Blur()
+				return m, cmd
+			case tea.KeyEsc:
+				m.timedPrompt = false
+				m.timedInput.Blur()
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.timedInput, cmd = m.timedInput.Update(msg)
 				return m, cmd
 			}
 		}
@@ -515,6 +538,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.stepSelectedDeviceBrightness(delta)
 			}
 
+		case msg.String() == "f":
+			if m.activeTab == TabDevices && m.cursor >= 0 && m.cursor < len(m.state.Devices) {
+				m.timedTarget = m.cursor
+				m.timedInput.SetValue("")
+				m.timedInput.Focus()
+				m.timedPrompt = true
+				return m, nil
+			}
+
 		case key.Matches(msg, m.keys.Enter):
 			if m.activeTab == TabDevices {
 				return m, m.toggleSelectedDevice()
@@ -611,6 +643,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// commitTimedPrompt sets the targeted device on for the entered number of
+// seconds (default 60 when empty/invalid), reverting afterwards.
+func (m Model) commitTimedPrompt() tea.Cmd {
+	controller, ok := m.provider.(app.DeviceController)
+	if !ok {
+		return nil
+	}
+	seconds := 60
+	if v, err := strconv.Atoi(strings.TrimSpace(m.timedInput.Value())); err == nil && v > 0 {
+		seconds = v
+	}
+	index := m.timedTarget
+	return func() tea.Msg {
+		return ControlResultMsg{Result: controller.SetDeviceValueFor(index, true, seconds)}
+	}
 }
 
 // toggleSelectedDevice sends a toggle command for the currently selected device
@@ -1065,7 +1114,15 @@ func (m Model) renderDevices(height int) string {
 	}
 	detailBox := m.theme.Box.Width(40).Render(detail)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, listBox, " ", detailBox)
+	result := lipgloss.JoinHorizontal(lipgloss.Top, listBox, " ", detailBox)
+	if m.timedPrompt {
+		name := ""
+		if m.timedTarget >= 0 && m.timedTarget < len(m.state.Devices) {
+			name = m.state.Devices[m.timedTarget].Name
+		}
+		result += "\n" + m.theme.Secondary.Render("Turn "+name+" on for (seconds): ") + m.timedInput.View()
+	}
+	return result
 }
 
 // renderDeviceList renders the device list for the left column
@@ -1469,6 +1526,10 @@ func (m Model) renderHelp() string {
 		m.state.Devices[m.cursor].Type == app.DeviceTypeDimmableLight {
 		parts = append(parts, m.theme.HelpKey.Render("+/-")+" "+m.theme.HelpDesc.Render("brightness"))
 	}
+	// Surface the timed-control key on the Devices tab.
+	if m.activeTab == TabDevices && len(m.state.Devices) > 0 {
+		parts = append(parts, m.theme.HelpKey.Render("f")+" "+m.theme.HelpDesc.Render("on for…"))
+	}
 	// Surface the page up/down keys on tabs that have a scrollable list.
 	if m.getMaxItems() > 0 {
 		parts = append(parts, m.theme.HelpKey.Render("ctrl+u/d")+" "+m.theme.HelpDesc.Render("page"))
@@ -1543,6 +1604,14 @@ func newIoImportInput() textinput.Model {
 	ti.SetValue("io_names.json")
 	ti.CharLimit = 120
 	ti.Width = 40
+	return ti
+}
+
+func newTimedInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "60"
+	ti.CharLimit = 6
+	ti.Width = 8
 	return ti
 }
 
