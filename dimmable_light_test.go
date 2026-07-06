@@ -113,6 +113,23 @@ func TestDimmableLightSetBrightnessClamps(t *testing.T) {
 	}
 }
 
+func TestDimmableLightGetBrightnessScalesFromNative(t *testing.T) {
+	dl, aOut := newTestDimmableLight(t, 0, 32767)
+
+	// Round-trip: SetBrightness scales to native, GetBrightness scales back.
+	for _, pct := range []int{0, 25, 50, 100} {
+		dl.SetBrightness(pct)
+		got, err := dl.GetBrightness()
+		if err != nil {
+			t.Fatalf("GetBrightness: %v", err)
+		}
+		if got < pct-1 || got > pct+1 { // allow rounding slack
+			t.Errorf("SetBrightness(%d) then GetBrightness = %d, want ~%d", pct, got, pct)
+		}
+	}
+	_ = aOut
+}
+
 func TestDimmableImplementsDimmableCapability(t *testing.T) {
 	dl, _ := newTestDimmableLight(t, 0, 100)
 	if _, ok := Controllable(dl).(Dimmable); !ok {

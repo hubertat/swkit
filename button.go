@@ -11,6 +11,7 @@ import (
 	"github.com/brutella/hap/characteristic"
 	"github.com/brutella/hap/service"
 	"github.com/charmbracelet/log"
+	"github.com/hubertat/swkit/app"
 	drivers "github.com/hubertat/swkit/drivers"
 )
 
@@ -44,23 +45,27 @@ type Button struct {
 }
 
 type ControlDevice struct {
-	dev    Controllable
-	e      drivers.PushEvent
-	action string
+	dev   Controllable
+	e     drivers.PushEvent
+	verb  string
+	level int
 }
 
-// ParseControlDeviceString parses a control device string and returns the event, action, and device name.
-// control device string is expected in one of two formats:
-// 1. <swkit_event>:<action>:<device_name>
-// 2. <swkit_event>:<device_name>
-func ParseControlDeviceString(s string) (e drivers.PushEvent, action string, devName string, err error) {
+// ParseControlDeviceString parses a control device string into its push event
+// and the action to apply. The grammar is "<event>:" followed by the shared
+// Action grammar (see app.ParseAction), i.e. one of:
+//
+//	<event>:<device>                       (defaults to toggle)
+//	<event>:<verb>:<device>                (on|off|toggle)
+//	<event>:<verb>:<level>:<device>        (brightness family)
+func ParseControlDeviceString(s string) (e drivers.PushEvent, act app.Action, err error) {
 	if len(s) == 0 {
 		err = fmt.Errorf("invalid control device string, it cannot be empty")
 		return
 	}
 
 	sSlice := strings.Split(s, ":")
-	if len(sSlice) < 2 || len(sSlice) > 3 {
+	if len(sSlice) < 2 || len(sSlice) > 4 {
 		err = fmt.Errorf("invalid control device string format %s", s)
 		return
 	}
@@ -79,12 +84,14 @@ func ParseControlDeviceString(s string) (e drivers.PushEvent, action string, dev
 		return
 	}
 
-	if len(sSlice) == 3 {
-		action = sSlice[1]
+	remainder := sSlice[1:]
+	if len(remainder) == 1 {
+		// <event>:<device> -> default to toggle.
+		act = app.Action{Verb: "toggle", Device: remainder[0]}
+		return
 	}
 
-	devName = sSlice[len(sSlice)-1]
-
+	act, err = app.ParseAction(strings.Join(remainder, ":"))
 	return
 }
 
@@ -147,18 +154,9 @@ func (bu *Button) HandlePushEvent(e drivers.PushEvent) {
 
 	for _, ctrl := range bu.controlThis {
 		if ctrl.e == e {
-			action := ctrl.action
-			if action == "" {
-				action = "toggle"
-			}
-			bu.logger.Debug("executing control action", "button", bu.name, "device", ctrl.dev.Name(), "action", action)
-			switch ctrl.action {
-			case "on":
-				ctrl.dev.SetValue(true)
-			case "off":
-				ctrl.dev.SetValue(false)
-			default:
-				ctrl.dev.Toggle()
+			bu.logger.Debug("executing control action", "button", bu.name, "device", ctrl.dev.Name(), "verb", ctrl.verb, "level", ctrl.level)
+			if err := applyVerb(ctrl.dev, ctrl.verb, ctrl.level); err != nil {
+				bu.logger.Error("control action failed", "button", bu.name, "device", ctrl.dev.Name(), "err", err)
 			}
 		}
 	}

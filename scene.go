@@ -20,10 +20,12 @@ type SceneConfig struct {
 }
 
 // SceneStateConfig is one state of a scene: a name and the actions applied when
-// the state is activated. Action grammar:
+// the state is activated. Action grammar (see app.ParseAction):
 //
 //	on:<device>          off:<device>          toggle:<device>
-//	brightness:<pct>:<device>   (device must support Dimmable)
+//	brightness:<pct>:<device>                  (absolute; device must be Dimmable)
+//	brightness_up:<step>:<device>              (relative; device must be Dimmable)
+//	brightness_down:<step>:<device>
 type SceneStateConfig struct {
 	Name    string
 	Actions []string
@@ -45,9 +47,9 @@ type sceneState struct {
 }
 
 type sceneAction struct {
-	dev    Controllable
-	action string // on | off | toggle | brightness
-	level  int    // brightness percentage (0-100); unused otherwise
+	dev   Controllable
+	verb  string // see app.AllActionVerbs()
+	level int    // brightness level/step; unused by non-brightness verbs
 }
 
 // Scene is itself Controllable, so buttons (and other scenes) can drive it
@@ -66,15 +68,15 @@ func NewScene(config SceneConfig, resolve func(name string) (Controllable, bool)
 	for _, stateConf := range config.States {
 		st := sceneState{name: stateConf.Name}
 		for _, actStr := range stateConf.Actions {
-			action, level, devName, err := parseSceneAction(actStr)
+			act, err := app.ParseAction(actStr)
 			if err != nil {
 				return nil, errors.Join(err, fmt.Errorf("scene %s: invalid action %q", config.Name, actStr))
 			}
-			dev, ok := resolve(devName)
+			dev, ok := resolve(act.Device)
 			if !ok {
-				return nil, fmt.Errorf("scene %s: action %q references unknown device %q", config.Name, actStr, devName)
+				return nil, fmt.Errorf("scene %s: action %q references unknown device %q", config.Name, actStr, act.Device)
 			}
-			st.actions = append(st.actions, sceneAction{dev: dev, action: action, level: level})
+			st.actions = append(st.actions, sceneAction{dev: dev, verb: act.Verb, level: act.Level})
 		}
 		sc.states = append(sc.states, st)
 	}
@@ -83,31 +85,8 @@ func NewScene(config SceneConfig, resolve func(name string) (Controllable, bool)
 	return sc, nil
 }
 
-// parseSceneAction parses a scene action string into its action, brightness
-// level (0 when not applicable) and target device name. The grammar is defined
-// once in app.ParseSceneAction and shared with the config editor.
-func parseSceneAction(s string) (action string, level int, devName string, err error) {
-	return app.ParseSceneAction(s)
-}
-
 func (a sceneAction) apply() error {
-	switch a.action {
-	case "on":
-		a.dev.SetValue(true)
-	case "off":
-		a.dev.SetValue(false)
-	case "toggle":
-		a.dev.Toggle()
-	case "brightness":
-		d, ok := a.dev.(Dimmable)
-		if !ok {
-			return fmt.Errorf("device %s does not support brightness", a.dev.Name())
-		}
-		d.SetBrightness(a.level)
-	default:
-		return fmt.Errorf("unknown action %q for device %s", a.action, a.dev.Name())
-	}
-	return nil
+	return applyVerb(a.dev, a.verb, a.level)
 }
 
 // Name returns the scene name.

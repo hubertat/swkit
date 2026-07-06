@@ -223,23 +223,35 @@ func (p *SwKitConfigProvider) backupConfig() error {
 	return err
 }
 
-// parseControlDeviceToEdit parses a control device config string into ControlDeviceEdit
+// parseControlDeviceToEdit parses a control device config string into
+// ControlDeviceEdit. The grammar is "<event>:" followed by the Action grammar
+// (see app.ParseAction).
 func parseControlDeviceToEdit(s string) app.ControlDeviceEdit {
 	parts := strings.Split(s, ":")
 	cd := app.ControlDeviceEdit{}
-
-	if len(parts) >= 2 {
-		cd.EventType = strings.ToLower(parts[0])
+	if len(parts) < 2 {
+		return cd
 	}
+	cd.EventType = strings.ToLower(parts[0])
 
-	if len(parts) == 3 {
-		cd.Action = parts[1]
-		cd.DeviceName = parts[2]
-	} else if len(parts) == 2 {
+	remainder := parts[1:]
+	if len(remainder) == 1 {
+		// <event>:<device> -> default to toggle.
 		cd.Action = "toggle"
-		cd.DeviceName = parts[1]
+		cd.DeviceName = remainder[0]
+		return cd
 	}
 
+	act, err := app.ParseAction(strings.Join(remainder, ":"))
+	if err != nil {
+		// Best-effort fallback for a malformed string.
+		cd.Action = remainder[0]
+		cd.DeviceName = remainder[len(remainder)-1]
+		return cd
+	}
+	cd.Action = act.Verb
+	cd.Level = act.Level
+	cd.DeviceName = act.Device
 	return cd
 }
 

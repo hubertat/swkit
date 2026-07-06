@@ -1046,7 +1046,7 @@ func (ce *ConfigEditor) updateCtrlDeviceEdit(msg tea.KeyMsg, button *app.ButtonE
 			ce.ctrlFieldCursor--
 		}
 	case "down", "j":
-		if ce.ctrlFieldCursor < 2 {
+		if ce.ctrlFieldCursor < 3 {
 			ce.ctrlFieldCursor++
 		}
 	case "left", "h":
@@ -1069,12 +1069,20 @@ func (ce *ConfigEditor) cycleCtrlField(ctrl *app.ControlDeviceEdit, direction in
 		events := app.AllEventTypes()
 		ctrl.EventType = cycleOption(events, ctrl.EventType, direction)
 	case 1: // Action
-		actions := app.AllActions()
-		ctrl.Action = cycleOption(actions, ctrl.Action, direction)
+		ctrl.Action = cycleOption(app.AllActionVerbs(), ctrl.Action, direction)
 	case 2: // DeviceName
 		devices := ce.config.OutputDeviceNames
 		if len(devices) > 0 {
 			ctrl.DeviceName = cycleOption(devices, ctrl.DeviceName, direction)
+		}
+	case 3: // Level/step (only meaningful for brightness-family verbs)
+		if app.IsBrightnessVerb(ctrl.Action) {
+			ctrl.Level += direction * 5
+			if ctrl.Level < 0 {
+				ctrl.Level = 0
+			} else if ctrl.Level > 100 {
+				ctrl.Level = 100
+			}
 		}
 	}
 }
@@ -1323,9 +1331,9 @@ func (ce *ConfigEditor) updateCtrlWizardEvent(msg tea.KeyMsg) tea.Cmd {
 			ce.wizardEventCursor++
 		}
 	case "left", "h":
-		ce.wizardTargetAction = cycleOption(app.AllActions(), ce.wizardTargetAction, -1)
+		ce.wizardTargetAction = cycleOption(app.AllActionVerbs(), ce.wizardTargetAction, -1)
 	case "right", "l":
-		ce.wizardTargetAction = cycleOption(app.AllActions(), ce.wizardTargetAction, 1)
+		ce.wizardTargetAction = cycleOption(app.AllActionVerbs(), ce.wizardTargetAction, 1)
 	case "enter":
 		return ce.confirmWizard(events)
 	case "esc":
@@ -1899,9 +1907,13 @@ func (ce *ConfigEditor) renderControlDevice(theme Theme, cd app.ControlDeviceEdi
 		deviceStr = theme.Muted.Render("[none]")
 	}
 
-	return prefix + "  " + eventStr + " " + lipgloss.NewStyle().Foreground(ColorMuted).Render("→") +
+	line := prefix + "  " + eventStr + " " + lipgloss.NewStyle().Foreground(ColorMuted).Render("→") +
 		" " + actionStr + " " + lipgloss.NewStyle().Foreground(ColorMuted).Render("→") +
 		" " + deviceStr
+	if app.IsBrightnessVerb(cd.Action) {
+		line += theme.Secondary.Render(" " + brightnessLevelLabel(cd.Action, cd.Level))
+	}
+	return line
 }
 
 // renderControlDeviceEditor renders the inline control device editor with cycle selectors
@@ -1934,6 +1946,19 @@ func (ce *ConfigEditor) renderControlDeviceEditor(theme Theme, cd app.ControlDev
 		devName = "[none]"
 	}
 	lines = append(lines, devicePrefix+theme.Secondary.Render("Device: ")+arrowL+theme.Primary.Render(devName)+arrowR)
+
+	// Level/step (only meaningful for brightness-family verbs)
+	levelPrefix := "    "
+	if ce.ctrlFieldCursor == 3 {
+		levelPrefix = "  ▶ "
+	}
+	var levelVal string
+	if app.IsBrightnessVerb(cd.Action) {
+		levelVal = theme.Primary.Render(brightnessLevelLabel(cd.Action, cd.Level))
+	} else {
+		levelVal = theme.Muted.Render("(brightness only)")
+	}
+	lines = append(lines, levelPrefix+theme.Secondary.Render("Level:  ")+arrowL+levelVal+arrowR)
 
 	return strings.Join(lines, "\n")
 }

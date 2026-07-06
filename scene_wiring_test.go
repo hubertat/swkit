@@ -146,7 +146,7 @@ func TestButtonDrivesScene(t *testing.T) {
 	}
 
 	emitter := &fakeEmitter{}
-	ctrl := []ControlDevice{{dev: scene, e: drivers.PushEventSinglePress, action: "toggle"}}
+	ctrl := []ControlDevice{{dev: scene, e: drivers.PushEventSinglePress, verb: "toggle"}}
 	NewButton(ButtonConfig{Name: "B", DisableHomekit: true}, emitter, ctrl, logger)
 
 	emitter.emit(drivers.PushEventSinglePress) // 0 -> 1

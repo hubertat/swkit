@@ -7,6 +7,9 @@ import (
 	"github.com/charmbracelet/log"
 )
 
+// Action-string grammar is tested in the app package (app.ParseAction). These
+// tests cover scene behaviour built on top of it.
+
 // resolverFrom builds a name->Controllable resolver from the given devices.
 func resolverFrom(devs ...Controllable) func(string) (Controllable, bool) {
 	m := map[string]Controllable{}
@@ -16,44 +19,6 @@ func resolverFrom(devs ...Controllable) func(string) (Controllable, bool) {
 	return func(name string) (Controllable, bool) {
 		d, ok := m[name]
 		return d, ok
-	}
-}
-
-func TestParseSceneAction(t *testing.T) {
-	cases := []struct {
-		in         string
-		wantAction string
-		wantLevel  int
-		wantDev    string
-		wantErr    bool
-	}{
-		{"on:Kitchen", "on", 0, "Kitchen", false},
-		{"off:Kitchen", "off", 0, "Kitchen", false},
-		{"toggle:Kitchen", "toggle", 0, "Kitchen", false},
-		{"brightness:50:Hallway", "brightness", 50, "Hallway", false},
-		{"", "", 0, "", true},
-		{"on", "", 0, "", true},
-		{"on:a:b", "", 0, "", true},
-		{"brightness:Hallway", "", 0, "", true},
-		{"brightness:notnum:Hallway", "", 0, "", true},
-		{"frobnicate:Kitchen", "", 0, "", true},
-	}
-	for _, c := range cases {
-		action, level, dev, err := parseSceneAction(c.in)
-		if c.wantErr {
-			if err == nil {
-				t.Errorf("parseSceneAction(%q): expected error", c.in)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("parseSceneAction(%q): unexpected error %v", c.in, err)
-			continue
-		}
-		if action != c.wantAction || level != c.wantLevel || dev != c.wantDev {
-			t.Errorf("parseSceneAction(%q) = (%q,%d,%q), want (%q,%d,%q)",
-				c.in, action, level, dev, c.wantAction, c.wantLevel, c.wantDev)
-		}
 	}
 }
 
@@ -151,6 +116,37 @@ func TestSceneBrightnessAction(t *testing.T) {
 	}
 	if got, _ := aOut.GetState(); got != 75 {
 		t.Errorf("brightness native = %d, want 75", got)
+	}
+}
+
+func TestSceneRelativeBrightnessAction(t *testing.T) {
+	dl, aOut := newTestDimmableLight(t, 0, 100) // identity range: native == pct
+	dl.SetBrightness(40)
+
+	sc, err := NewScene(SceneConfig{
+		Name: "Dim",
+		States: []SceneStateConfig{
+			{Name: "off", Actions: []string{"off:Test Dim"}},
+			{Name: "up", Actions: []string{"brightness_up:15:Test Dim"}},
+			{Name: "down", Actions: []string{"brightness_down:25:Test Dim"}},
+		},
+	}, resolverFrom(dl), log.New(nil))
+	if err != nil {
+		t.Fatalf("NewScene: %v", err)
+	}
+
+	if err := sc.Activate(1); err != nil { // 40 + 15
+		t.Fatalf("Activate up: %v", err)
+	}
+	if got, _ := aOut.GetState(); got != 55 {
+		t.Errorf("after brightness_up:15 from 40, native = %d, want 55", got)
+	}
+
+	if err := sc.Activate(2); err != nil { // 55 - 25
+		t.Fatalf("Activate down: %v", err)
+	}
+	if got, _ := aOut.GetState(); got != 30 {
+		t.Errorf("after brightness_down:25 from 55, native = %d, want 30", got)
 	}
 }
 

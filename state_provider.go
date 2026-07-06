@@ -448,13 +448,9 @@ func (p *SwKitProvider) buildButtonState(button *Button) app.DeviceState {
 
 	var relations []app.ButtonControlRelation
 	for _, ctrl := range button.controlThis {
-		action := ctrl.action
-		if action == "" {
-			action = "toggle"
-		}
 		relations = append(relations, app.ButtonControlRelation{
 			EventType:  ctrl.e.String(),
-			Action:     action,
+			Action:     ctrl.verb,
 			DeviceName: ctrl.dev.Name(),
 		})
 	}

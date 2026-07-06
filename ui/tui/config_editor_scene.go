@@ -171,7 +171,7 @@ func (ce *ConfigEditor) updateEditSceneState(msg tea.Msg) tea.Cmd {
 		ce.sceneActionField = 0
 		ce.sceneActionEditing = true
 	case "a":
-		state.Actions = append(state.Actions, app.FormatSceneAction("on", 0, ce.firstTargetDevice()))
+		state.Actions = append(state.Actions, app.Action{Verb: "on", Device: ce.firstTargetDevice()}.String())
 		ce.dirty = true
 		ce.fieldCursor = len(state.Actions) // last action row
 	case "d", "delete":
@@ -245,31 +245,31 @@ func (ce *ConfigEditor) updateSceneActionEdit(msg tea.KeyMsg, state *app.SceneSt
 // cycleSceneActionField mutates the action string at actIdx by cycling the
 // currently focused sub-field.
 func (ce *ConfigEditor) cycleSceneActionField(state *app.SceneStateEditConfig, actIdx, direction int) {
-	action, level, device, err := app.ParseSceneAction(state.Actions[actIdx])
+	act, err := app.ParseAction(state.Actions[actIdx])
 	if err != nil {
 		// Unparseable (e.g. legacy/hand-edited) — reset to a sane default.
-		action, level, device = "on", 0, ce.firstTargetDevice()
+		act = app.Action{Verb: "on", Device: ce.firstTargetDevice()}
 	}
 
 	switch ce.sceneActionField {
 	case 0: // action verb
-		action = cycleOption(app.AllSceneActions(), action, direction)
+		act.Verb = cycleOption(app.AllActionVerbs(), act.Verb, direction)
 	case 1: // device
 		if len(ce.config.OutputDeviceNames) > 0 {
-			device = cycleOption(ce.config.OutputDeviceNames, device, direction)
+			act.Device = cycleOption(ce.config.OutputDeviceNames, act.Device, direction)
 		}
-	case 2: // brightness level (only meaningful for brightness)
-		if action == "brightness" {
-			level += direction * 5
-			if level < 0 {
-				level = 0
-			} else if level > 100 {
-				level = 100
+	case 2: // brightness level/step (only meaningful for brightness-family verbs)
+		if app.IsBrightnessVerb(act.Verb) {
+			act.Level += direction * 5
+			if act.Level < 0 {
+				act.Level = 0
+			} else if act.Level > 100 {
+				act.Level = 100
 			}
 		}
 	}
 
-	state.Actions[actIdx] = app.FormatSceneAction(action, level, device)
+	state.Actions[actIdx] = act.String()
 }
 
 // ---- Views ----
@@ -350,25 +350,38 @@ func (ce *ConfigEditor) renderSceneAction(theme Theme, actionStr string, fieldId
 		prefix = "▶ "
 	}
 
-	action, level, device, err := app.ParseSceneAction(actionStr)
+	act, err := app.ParseAction(actionStr)
 	if err != nil {
 		return prefix + theme.Muted.Render(actionStr+" [invalid]")
 	}
-	devStr := theme.Primary.Render(device)
-	if device == "" {
+	devStr := theme.Primary.Render(act.Device)
+	if act.Device == "" {
 		devStr = theme.Muted.Render("[none]")
 	}
-	line := prefix + "  " + theme.On.Render(action) + " " + theme.Muted.Render("→") + " " + devStr
-	if action == "brightness" {
-		line += theme.Secondary.Render(fmt.Sprintf(" @ %d%%", level))
+	line := prefix + "  " + theme.On.Render(act.Verb) + " " + theme.Muted.Render("→") + " " + devStr
+	if app.IsBrightnessVerb(act.Verb) {
+		line += theme.Secondary.Render(" " + brightnessLevelLabel(act.Verb, act.Level))
 	}
 	return line
 }
 
+// brightnessLevelLabel renders a brightness verb's level: "@ N%" for the
+// absolute verb, "+N%"/"-N%" for the relative ones.
+func brightnessLevelLabel(verb string, level int) string {
+	switch verb {
+	case "brightness_up":
+		return fmt.Sprintf("+%d%%", level)
+	case "brightness_down":
+		return fmt.Sprintf("-%d%%", level)
+	default:
+		return fmt.Sprintf("@ %d%%", level)
+	}
+}
+
 func (ce *ConfigEditor) renderSceneActionEditor(theme Theme, actionStr string) string {
-	action, level, device, err := app.ParseSceneAction(actionStr)
+	act, err := app.ParseAction(actionStr)
 	if err != nil {
-		action, level, device = "on", 0, ""
+		act = app.Action{Verb: "on"}
 	}
 
 	arrowL := theme.Muted.Render("◀ ")
@@ -379,13 +392,13 @@ func (ce *ConfigEditor) renderSceneActionEditor(theme Theme, actionStr string) s
 	if ce.sceneActionField == 0 {
 		actionPrefix = "  ▶ "
 	}
-	lines = append(lines, actionPrefix+theme.Secondary.Render("Action: ")+arrowL+theme.On.Render(action)+arrowR)
+	lines = append(lines, actionPrefix+theme.Secondary.Render("Action: ")+arrowL+theme.On.Render(act.Verb)+arrowR)
 
 	devicePrefix := "    "
 	if ce.sceneActionField == 1 {
 		devicePrefix = "  ▶ "
 	}
-	devName := device
+	devName := act.Device
 	if devName == "" {
 		devName = "[none]"
 	}
@@ -395,11 +408,11 @@ func (ce *ConfigEditor) renderSceneActionEditor(theme Theme, actionStr string) s
 	if ce.sceneActionField == 2 {
 		levelPrefix = "  ▶ "
 	}
-	levelVal := fmt.Sprintf("%d%%", level)
-	if action != "brightness" {
-		levelVal = theme.Muted.Render("(brightness only)")
+	var levelVal string
+	if app.IsBrightnessVerb(act.Verb) {
+		levelVal = theme.Primary.Render(brightnessLevelLabel(act.Verb, act.Level))
 	} else {
-		levelVal = theme.Primary.Render(levelVal)
+		levelVal = theme.Muted.Render("(brightness only)")
 	}
 	lines = append(lines, levelPrefix+theme.Secondary.Render("Level:  ")+arrowL+levelVal+arrowR)
 

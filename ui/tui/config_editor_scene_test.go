@@ -112,3 +112,39 @@ func TestConfigEditorSceneBrightnessLevel(t *testing.T) {
 		t.Errorf("level after increase = %q, want brightness:55:Dim", got)
 	}
 }
+
+// TestConfigEditorSceneRelativeBrightnessVerb checks that the action verb cycles
+// to the relative brightness verbs and their step still cycles.
+func TestConfigEditorSceneRelativeBrightnessVerb(t *testing.T) {
+	ce := NewConfigEditor(nil, DefaultTheme())
+	ce.config = app.EditableConfig{
+		DimmableLights:    []app.DimmableLightEditConfig{{Name: "Dim"}},
+		OutputDeviceNames: []string{"Dim"},
+		Scenes: []app.SceneEditConfig{{
+			Name:   "S",
+			States: []app.SceneStateEditConfig{{Name: "on", Actions: []string{"brightness:50:Dim"}}},
+		}},
+	}
+	ce.rebuildItems()
+
+	ce.cursor = len(ce.items) - 1
+	ce.mode = ConfigModeEditScene
+	ce.fieldCursor = 1
+	ce.Update(tea.KeyMsg{Type: tea.KeyEnter}) // into state
+	ce.fieldCursor = 1
+	ce.Update(tea.KeyMsg{Type: tea.KeyEnter}) // into action edit
+
+	// On the action verb field, cycle right: brightness -> brightness_up.
+	ce.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := ce.config.Scenes[0].States[0].Actions[0]; got != "brightness_up:50:Dim" {
+		t.Fatalf("verb after cycle = %q, want brightness_up:50:Dim", got)
+	}
+
+	// Level still cycles for the relative verb.
+	ce.Update(tea.KeyMsg{Type: tea.KeyDown})
+	ce.Update(tea.KeyMsg{Type: tea.KeyDown})
+	ce.Update(tea.KeyMsg{Type: tea.KeyRight}) // 50 -> 55
+	if got := ce.config.Scenes[0].States[0].Actions[0]; got != "brightness_up:55:Dim" {
+		t.Errorf("step after increase = %q, want brightness_up:55:Dim", got)
+	}
+}

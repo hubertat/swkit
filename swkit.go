@@ -115,6 +115,9 @@ type Controllable interface {
 type Dimmable interface {
 	// SetBrightness sets brightness as a HomeKit percentage (0-100).
 	SetBrightness(pct int)
+	// GetBrightness reports the current brightness as a HomeKit percentage
+	// (0-100). Used by relative brightness actions (brightness_up/down).
+	GetBrightness() (int, error)
 }
 
 // Stateful is an optional capability for Controllable devices that can report
@@ -412,25 +415,26 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		ctrlDevs := []ControlDevice{}
 
 		for _, ctrlDevId := range button.ControlDevices {
-			e, action, devName, err := ParseControlDeviceString(ctrlDevId)
+			e, act, err := ParseControlDeviceString(ctrlDevId)
 			if err != nil {
 				return errors.Join(err, fmt.Errorf("failed to parse control device string for button %s", button.Name))
 			}
 
 			ctrlDevFound := false
 			for _, ctrlDev := range sw.getControllableDevices() {
-				if ctrlDev.Name() == devName {
+				if ctrlDev.Name() == act.Device {
 					ctrlDevs = append(ctrlDevs, ControlDevice{
-						dev:    ctrlDev,
-						e:      e,
-						action: action,
+						dev:   ctrlDev,
+						e:     e,
+						verb:  act.Verb,
+						level: act.Level,
 					})
 					ctrlDevFound = true
 					break
 				}
 			}
 			if !ctrlDevFound {
-				return fmt.Errorf("control device (%s) not found", devName)
+				return fmt.Errorf("control device (%s) not found", act.Device)
 			}
 		}
 

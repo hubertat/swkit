@@ -171,6 +171,17 @@ func (dl *DimmableLight) GetState() (bool, error) {
 	return dl.onOut.GetState()
 }
 
+// GetBrightness reports the current brightness as a HomeKit percentage (0-100),
+// scaling the analog output's native value the same way Sync does.
+func (dl *DimmableLight) GetBrightness() (int, error) {
+	native, err := dl.briOut.GetState()
+	if err != nil {
+		return 0, err
+	}
+	min, max := dl.briOut.GetMinMax()
+	return convertIntRange(native, min, max, 0, 100), nil
+}
+
 func (dl *DimmableLight) SetValue(state bool) {
 	dl.logger.Debug("setting dimmable light value", "dimmableLight", dl.name, "state", state)
 	if err := dl.onOut.Set(state); err != nil {

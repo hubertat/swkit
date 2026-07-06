@@ -69,24 +69,22 @@ type SceneStateEditConfig struct {
 // ControlDeviceEdit represents a parsed control device mapping
 type ControlDeviceEdit struct {
 	EventType  string // "single_press", "double_press", "triple_press", "long_press"
-	Action     string // "toggle", "on", "off"
+	Action     string // action verb, see AllActionVerbs()
+	Level      int    // brightness level/step; only used by brightness-family verbs
 	DeviceName string // name of target output device
 }
 
-// FormatControlDeviceString converts a ControlDeviceEdit to the config string format: event:action:device
+// FormatControlDeviceString converts a ControlDeviceEdit to the config string
+// format: event: followed by the Action grammar (event:verb:[level:]device).
 func (c ControlDeviceEdit) FormatControlDeviceString() string {
 	if c.Action == "" || c.Action == "toggle" {
 		return c.EventType + ":" + c.DeviceName
 	}
-	return c.EventType + ":" + c.Action + ":" + c.DeviceName
+	act := Action{Verb: c.Action, Level: c.Level, Device: c.DeviceName}
+	return c.EventType + ":" + act.String()
 }
 
 // AllEventTypes returns all available push event type strings
 func AllEventTypes() []string {
 	return []string{"single_press", "double_press", "triple_press", "long_press"}
-}
-
-// AllActions returns all available control actions
-func AllActions() []string {
-	return []string{"toggle", "on", "off"}
 }
