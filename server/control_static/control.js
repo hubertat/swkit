@@ -71,6 +71,28 @@ async function setBrightness(index, value) {
     }
 }
 
+// adjustBrightness nudges brightness by a relative delta (percentage points).
+async function adjustBrightness(index, delta) {
+    try {
+        const resp = await fetch(ENDPOINT + '/api/devices/' + index + '/adjust_brightness', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: delta }),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const dev = devices.find(d => d.index === index);
+        if (dev) {
+            dev.brightness = Math.max(0, Math.min(100, (dev.brightness || 0) + delta));
+            const sl = document.querySelector('.brightness-slider[data-index="' + index + '"]');
+            if (sl) sl.value = dev.brightness;
+            const lbl = document.getElementById('bri-val-' + index);
+            if (lbl) lbl.textContent = dev.brightness + '%';
+        }
+    } catch (e) {
+        console.error('adjust brightness failed', e);
+    }
+}
+
 // scheduleBrightness debounces rapid slider movements while dragging.
 function scheduleBrightness(index, value) {
     if (briTimers[index]) clearTimeout(briTimers[index]);
@@ -196,6 +218,15 @@ function renderDevices() {
             setBrightness(idx, val);
         });
     });
+
+    // Attach relative brightness step buttons
+    content.querySelectorAll('.bri-step[data-index]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = parseInt(btn.dataset.index, 10);
+            const delta = parseInt(btn.dataset.delta, 10);
+            adjustBrightness(idx, delta);
+        });
+    });
 }
 
 function renderCard(dev) {
@@ -239,7 +270,9 @@ function renderCard(dev) {
         const b = dev.brightness || 0;
         const disabled = !dev.is_healthy ? 'disabled' : '';
         brightnessHtml = `<div class="brightness-row">
+    <button class="bri-step" data-index="${dev.index}" data-delta="-10" ${disabled}>−</button>
     <input type="range" class="brightness-slider" data-index="${dev.index}" min="0" max="100" value="${b}" ${disabled}>
+    <button class="bri-step" data-index="${dev.index}" data-delta="10" ${disabled}>+</button>
     <span class="brightness-val" id="bri-val-${dev.index}">${b}%</span>
   </div>`;
     }

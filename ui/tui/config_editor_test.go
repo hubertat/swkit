@@ -420,3 +420,94 @@ func TestConfigEditorIoPickerToggleKey(t *testing.T) {
 		t.Error("expected nil cmd for input toggle")
 	}
 }
+
+// TestConfigEditorWizardBrightnessStep drives the control-by-relation wizard to
+// a brightness verb, sets a nonzero step with '+', and confirms the resulting
+// control mapping carries that step (not the zero default).
+func TestConfigEditorWizardBrightnessStep(t *testing.T) {
+	ce := NewConfigEditor(nil, DefaultTheme())
+	ce.config = app.EditableConfig{
+		Buttons:           []app.ButtonEditConfig{{Name: "Btn"}},
+		DimmableLights:    []app.DimmableLightEditConfig{{Name: "Dim"}},
+		OutputDeviceNames: []string{"Dim"},
+	}
+	ce.SetDeviceStates([]app.DeviceState{
+		{Name: "Dim", Type: app.DeviceTypeDimmableLight},
+		{Name: "Btn", Type: app.DeviceTypeButton, LastEventType: "single_press"},
+	})
+
+	// Enter wizard step 1 (pick device) and advance to step 2.
+	ce.mode = ConfigModeCtrlWizardDevice
+	ce.wizardTargetAction = "toggle"
+	ce.wizardTargetLevel = 0
+	ce.wizardDeviceCursor = 0
+	ce.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if ce.mode != ConfigModeCtrlWizardEvent {
+		t.Fatalf("expected wizard step 2, got mode %v", ce.mode)
+	}
+	if ce.wizardTargetDeviceName != "Dim" {
+		t.Fatalf("wizard device = %q, want Dim", ce.wizardTargetDeviceName)
+	}
+
+	// Cycle verb toggle -> brightness -> brightness_up.
+	ce.Update(tea.KeyMsg{Type: tea.KeyRight})
+	ce.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if ce.wizardTargetAction != "brightness_up" {
+		t.Fatalf("wizard verb = %q, want brightness_up", ce.wizardTargetAction)
+	}
+
+	// '+' twice -> step 10.
+	ce.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	ce.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	if ce.wizardTargetLevel != 10 {
+		t.Fatalf("wizard level = %d, want 10", ce.wizardTargetLevel)
+	}
+
+	// Confirm.
+	ce.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if len(ce.config.Buttons[0].ControlDevices) != 1 {
+		t.Fatalf("expected 1 control device, got %d", len(ce.config.Buttons[0].ControlDevices))
+	}
+	got := ce.config.Buttons[0].ControlDevices[0]
+	if got.Action != "brightness_up" || got.Level != 10 || got.DeviceName != "Dim" {
+		t.Errorf("control device = %+v, want {brightness_up, 10, Dim}", got)
+	}
+}
+
+// TestConfigEditorButtonInlineStepPlusMinus checks +/- adjust a button control's
+// brightness step in the inline editor.
+func TestConfigEditorButtonInlineStepPlusMinus(t *testing.T) {
+	ce := NewConfigEditor(nil, DefaultTheme())
+	ce.config = app.EditableConfig{
+		Buttons: []app.ButtonEditConfig{{
+			Name: "Btn",
+			ControlDevices: []app.ControlDeviceEdit{
+				{EventType: "single_press", Action: "brightness_up", Level: 50, DeviceName: "Dim"},
+			},
+		}},
+		DimmableLights:    []app.DimmableLightEditConfig{{Name: "Dim"}},
+		OutputDeviceNames: []string{"Dim"},
+	}
+	ce.rebuildItems()
+
+	for i, it := range ce.items {
+		if it.itemType == configItemButton {
+			ce.cursor = i
+		}
+	}
+	ce.mode = ConfigModeEditButton
+	ce.fieldCursor = buttonBaseFieldCount() // first control device row
+	ce.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !ce.ctrlEditing {
+		t.Fatal("expected inline control editing active")
+	}
+
+	ce.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	if got := ce.config.Buttons[0].ControlDevices[0].Level; got != 55 {
+		t.Errorf("level after '+' = %d, want 55", got)
+	}
+	ce.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
+	if got := ce.config.Buttons[0].ControlDevices[0].Level; got != 50 {
+		t.Errorf("level after '-' = %d, want 50", got)
+	}
+}

@@ -254,6 +254,15 @@ func (cs *ControlServer) handleDeviceAction(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		result = cs.provider.SetDeviceBrightness(index, body.Value)
+	case "adjust_brightness":
+		var body struct {
+			Value int `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		result = cs.provider.AdjustDeviceBrightness(index, body.Value)
 	case "set_for":
 		var body struct {
 			Value   bool `json:"value"`

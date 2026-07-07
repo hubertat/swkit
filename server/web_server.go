@@ -217,6 +217,7 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 			dev.ControlRelations = append(dev.ControlRelations, apiControlRelation{
 				EventType:  rel.EventType,
 				Action:     rel.Action,
+				Level:      rel.Level,
 				DeviceName: rel.DeviceName,
 			})
 		}
@@ -383,6 +384,7 @@ type apiDevice struct {
 type apiControlRelation struct {
 	EventType  string `json:"event_type"`
 	Action     string `json:"action"`
+	Level      int    `json:"level,omitempty"`
 	DeviceName string `json:"device_name"`
 }
 

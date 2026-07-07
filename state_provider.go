@@ -451,6 +451,7 @@ func (p *SwKitProvider) buildButtonState(button *Button) app.DeviceState {
 		relations = append(relations, app.ButtonControlRelation{
 			EventType:  ctrl.e.String(),
 			Action:     ctrl.verb,
+			Level:      ctrl.level,
 			DeviceName: ctrl.dev.Name(),
 		})
 	}
@@ -567,6 +568,43 @@ func (p *SwKitProvider) SetDeviceBrightness(index int, pct int) app.ControlResul
 	}
 
 	dimmable.SetBrightness(pct)
+
+	newState := p.getDeviceState(device)
+	return app.ControlResult{
+		DeviceName: device.Name(),
+		Action:     "brightness",
+		NewState:   newState,
+	}
+}
+
+// AdjustDeviceBrightness changes the brightness of the dimmable device at the
+// given index by delta (relative, may be negative), clamped to 0-100. Mirrors
+// the brightness_up/brightness_down logic in applyVerb.
+func (p *SwKitProvider) AdjustDeviceBrightness(index int, delta int) app.ControlResult {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	device, deviceName, _, err := p.getControllableByIndex(index)
+	if err != nil {
+		return app.ControlResult{Error: err}
+	}
+	dimmable, ok := device.(Dimmable)
+	if !ok {
+		return app.ControlResult{
+			DeviceName: deviceName,
+			Action:     "brightness",
+			Error:      fmt.Errorf("device does not support brightness"),
+		}
+	}
+
+	cur, err := dimmable.GetBrightness()
+	if err != nil {
+		return app.ControlResult{
+			DeviceName: device.Name(),
+			Action:     "brightness",
+			Error:      err,
+		}
+	}
+	dimmable.SetBrightness(cur + delta) // SetBrightness clamps to 0-100
 
 	newState := p.getDeviceState(device)
 	return app.ControlResult{

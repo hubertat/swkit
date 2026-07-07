@@ -350,3 +350,25 @@ body {
     font-variant-numeric: tabular-nums;
     font-size: 0.9rem;
 }
+
+.bri-step {
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.bri-step:hover:not(:disabled) {
+    border-color: var(--accent);
+}
+
+.bri-step:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

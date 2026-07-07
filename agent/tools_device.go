@@ -46,6 +46,25 @@ func registerDeviceTools(registry *ToolRegistry, controller app.DeviceController
 	})
 
 	registry.Register(Tool{
+		Name:        "adjust_brightness",
+		Description: "Change a dimmable light's brightness by a relative amount (percentage points). Use a positive delta to brighten, negative to dim. The result is clamped to 0-100.",
+		InputSchema: anthropic.ToolInputSchemaParam{
+			Properties: map[string]any{
+				"name": map[string]any{
+					"type":        "string",
+					"description": "The name of the dimmable light to adjust",
+				},
+				"delta": map[string]any{
+					"type":        "integer",
+					"description": "Relative change in percentage points, e.g. 10 to brighten by 10%, -20 to dim by 20%",
+				},
+			},
+			Required: []string{"name", "delta"},
+		},
+		Execute: makeAdjustBrightness(controller),
+	})
+
+	registry.Register(Tool{
 		Name:        "get_device_state",
 		Description: "Get the current state of a device including on/off status and health.",
 		InputSchema: anthropic.ToolInputSchemaParam{
@@ -68,6 +87,11 @@ type toggleInput struct {
 type setDeviceInput struct {
 	Name  string `json:"name"`
 	State bool   `json:"state"`
+}
+
+type adjustBrightnessInput struct {
+	Name  string `json:"name"`
+	Delta int    `json:"delta"`
 }
 
 type getDeviceInput struct {
@@ -128,6 +152,32 @@ func makeSetDevice(controller app.DeviceController) func(json.RawMessage) (strin
 	}
 }
 
+func makeAdjustBrightness(controller app.DeviceController) func(json.RawMessage) (string, error) {
+	return func(input json.RawMessage) (string, error) {
+		var in adjustBrightnessInput
+		if err := json.Unmarshal(input, &in); err != nil {
+			return "", fmt.Errorf("invalid input: %w", err)
+		}
+
+		idx, device, err := findDeviceByName(controller, in.Name)
+		if err != nil {
+			return "", err
+		}
+
+		result := controller.AdjustDeviceBrightness(idx, in.Delta)
+		if result.Error != nil {
+			return "", result.Error
+		}
+
+		// Re-read the device to report the resulting brightness.
+		brightness := device.Brightness
+		if _, updated, err := findDeviceByName(controller, in.Name); err == nil {
+			brightness = updated.Brightness
+		}
+		return fmt.Sprintf("%s (%s) brightness is now %d%%", device.Name, device.Type, brightness), nil
+	}
+}
+
 func makeGetDeviceState(controller app.DeviceController) func(json.RawMessage) (string, error) {
 	return func(input json.RawMessage) (string, error) {
 		var in getDeviceInput
@@ -148,6 +198,9 @@ func makeGetDeviceState(controller app.DeviceController) func(json.RawMessage) (
 			"is_healthy":      device.IsHealthy,
 			"is_faulty":       device.IsFaulty,
 			"homekit_enabled": device.HomeKitEnabled,
+		}
+		if device.Type == app.DeviceTypeDimmableLight {
+			state["brightness"] = device.Brightness
 		}
 
 		result, err := json.Marshal(state)

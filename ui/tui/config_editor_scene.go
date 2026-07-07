@@ -236,10 +236,29 @@ func (ce *ConfigEditor) updateSceneActionEdit(msg tea.KeyMsg, state *app.SceneSt
 	case "right", "l":
 		ce.cycleSceneActionField(state, actIdx, 1)
 		ce.dirty = true
+	case "+", "=":
+		ce.adjustSceneActionLevel(state, actIdx, 1)
+		ce.dirty = true
+	case "-", "_":
+		ce.adjustSceneActionLevel(state, actIdx, -1)
+		ce.dirty = true
 	case "enter", "esc":
 		ce.sceneActionEditing = false
 	}
 	return nil
+}
+
+// adjustSceneActionLevel nudges the brightness step of the action at actIdx,
+// a no-op for non-brightness verbs.
+func (ce *ConfigEditor) adjustSceneActionLevel(state *app.SceneStateEditConfig, actIdx, direction int) {
+	act, err := app.ParseAction(state.Actions[actIdx])
+	if err != nil {
+		return
+	}
+	if app.IsBrightnessVerb(act.Verb) {
+		act.Level = adjustBrightnessLevel(act.Level, direction)
+		state.Actions[actIdx] = act.String()
+	}
 }
 
 // cycleSceneActionField mutates the action string at actIdx by cycling the
@@ -260,12 +279,7 @@ func (ce *ConfigEditor) cycleSceneActionField(state *app.SceneStateEditConfig, a
 		}
 	case 2: // brightness level/step (only meaningful for brightness-family verbs)
 		if app.IsBrightnessVerb(act.Verb) {
-			act.Level += direction * 5
-			if act.Level < 0 {
-				act.Level = 0
-			} else if act.Level > 100 {
-				act.Level = 100
-			}
+			act.Level = adjustBrightnessLevel(act.Level, direction)
 		}
 	}
 
@@ -363,6 +377,19 @@ func (ce *ConfigEditor) renderSceneAction(theme Theme, actionStr string, fieldId
 		line += theme.Secondary.Render(" " + brightnessLevelLabel(act.Verb, act.Level))
 	}
 	return line
+}
+
+// adjustBrightnessLevel nudges a brightness step/target by direction*5,
+// clamped to 0-100. Shared by the wizard and both inline editors.
+func adjustBrightnessLevel(level, direction int) int {
+	level += direction * 5
+	if level < 0 {
+		return 0
+	}
+	if level > 100 {
+		return 100
+	}
+	return level
 }
 
 // brightnessLevelLabel renders a brightness verb's level: "@ N%" for the

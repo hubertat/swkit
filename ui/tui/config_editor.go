@@ -133,7 +133,8 @@ type ConfigEditor struct {
 
 	// Control-by-relation wizard (ConfigModeCtrlWizardDevice / ConfigModeCtrlWizardEvent)
 	wizardTargetDeviceName string
-	wizardTargetAction     string // "toggle", "on", "off"
+	wizardTargetAction     string // "toggle", "on", "off", "brightness_up", etc.
+	wizardTargetLevel      int    // brightness step/target for brightness verbs
 	wizardDeviceCursor     int
 	wizardEventCursor      int
 	deviceStates           []app.DeviceState // updated by SetDeviceStates()
@@ -429,6 +430,7 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		ce.wizardTargetAction = "toggle"
+		ce.wizardTargetLevel = 0
 		ce.wizardDeviceCursor = 0
 		// Pre-position cursor if selected list item is a controllable output device
 		if ce.cursor < len(ce.items) {
@@ -1055,6 +1057,16 @@ func (ce *ConfigEditor) updateCtrlDeviceEdit(msg tea.KeyMsg, button *app.ButtonE
 	case "right", "l":
 		ce.cycleCtrlField(ctrl, 1)
 		ce.dirty = true
+	case "+", "=":
+		if app.IsBrightnessVerb(ctrl.Action) {
+			ctrl.Level = adjustBrightnessLevel(ctrl.Level, 1)
+			ce.dirty = true
+		}
+	case "-", "_":
+		if app.IsBrightnessVerb(ctrl.Action) {
+			ctrl.Level = adjustBrightnessLevel(ctrl.Level, -1)
+			ce.dirty = true
+		}
 	case "enter", "esc":
 		ce.ctrlEditing = false
 	}
@@ -1077,12 +1089,7 @@ func (ce *ConfigEditor) cycleCtrlField(ctrl *app.ControlDeviceEdit, direction in
 		}
 	case 3: // Level/step (only meaningful for brightness-family verbs)
 		if app.IsBrightnessVerb(ctrl.Action) {
-			ctrl.Level += direction * 5
-			if ctrl.Level < 0 {
-				ctrl.Level = 0
-			} else if ctrl.Level > 100 {
-				ctrl.Level = 100
-			}
+			ctrl.Level = adjustBrightnessLevel(ctrl.Level, direction)
 		}
 	}
 }
@@ -1334,6 +1341,14 @@ func (ce *ConfigEditor) updateCtrlWizardEvent(msg tea.KeyMsg) tea.Cmd {
 		ce.wizardTargetAction = cycleOption(app.AllActionVerbs(), ce.wizardTargetAction, -1)
 	case "right", "l":
 		ce.wizardTargetAction = cycleOption(app.AllActionVerbs(), ce.wizardTargetAction, 1)
+	case "+", "=":
+		if app.IsBrightnessVerb(ce.wizardTargetAction) {
+			ce.wizardTargetLevel = adjustBrightnessLevel(ce.wizardTargetLevel, 1)
+		}
+	case "-", "_":
+		if app.IsBrightnessVerb(ce.wizardTargetAction) {
+			ce.wizardTargetLevel = adjustBrightnessLevel(ce.wizardTargetLevel, -1)
+		}
 	case "enter":
 		return ce.confirmWizard(events)
 	case "esc":
@@ -1373,11 +1388,12 @@ func (ce *ConfigEditor) confirmWizard(events []app.DeviceState) tea.Cmd {
 	newCtrl := app.ControlDeviceEdit{
 		EventType:  eventType,
 		Action:     ce.wizardTargetAction,
+		Level:      ce.wizardTargetLevel,
 		DeviceName: ce.wizardTargetDeviceName,
 	}
 	ce.config.Buttons[buttonIdx].ControlDevices = append(ce.config.Buttons[buttonIdx].ControlDevices, newCtrl)
 	ce.dirty = true
-	ce.statusMsg = fmt.Sprintf("Added: %s %s → %s → %s", selected.Name, eventType, ce.wizardTargetAction, ce.wizardTargetDeviceName)
+	ce.statusMsg = fmt.Sprintf("Added: %s %s → %s → %s", selected.Name, eventType, ce.wizardActionLabel(), ce.wizardTargetDeviceName)
 	ce.mode = ConfigModeList
 	return nil
 }
@@ -2126,12 +2142,21 @@ func (ce *ConfigEditor) viewCtrlWizardDevice(theme Theme) string {
 	return result
 }
 
+// wizardActionLabel describes the wizard's target action, including the
+// brightness step for brightness verbs (e.g. "brightness_up +10%").
+func (ce *ConfigEditor) wizardActionLabel() string {
+	if app.IsBrightnessVerb(ce.wizardTargetAction) {
+		return ce.wizardTargetAction + " " + brightnessLevelLabel(ce.wizardTargetAction, ce.wizardTargetLevel)
+	}
+	return ce.wizardTargetAction
+}
+
 // viewCtrlWizardEvent renders wizard step 2: button + event selection
 func (ce *ConfigEditor) viewCtrlWizardEvent(theme Theme) string {
 	events := ce.wizardEventList()
 
 	titleContent := theme.BoxTitle.Render("Add Control — Step 2/2: Button Event") +
-		"  " + theme.Muted.Render("[→ "+ce.wizardTargetAction+" → "+ce.wizardTargetDeviceName+"]")
+		"  " + theme.Muted.Render("[→ "+ce.wizardActionLabel()+" → "+ce.wizardTargetDeviceName+"]")
 
 	var lines []string
 	lines = append(lines, titleContent)
@@ -2182,11 +2207,17 @@ func (ce *ConfigEditor) viewCtrlWizardEvent(theme Theme) string {
 		lines = append(lines, style.Render(line))
 	}
 
+	stepHelp := ""
+	if app.IsBrightnessVerb(ce.wizardTargetAction) {
+		stepHelp = theme.HelpKey.Render("+/-") + " " + theme.HelpDesc.Render("step") + "  "
+	}
+
 	content := strings.Join(lines, "\n")
 	result := theme.Box.Render(content)
 	result += "\n" + theme.Help.Render(
 		theme.HelpKey.Render("↑↓")+" "+theme.HelpDesc.Render("select")+"  "+
-			theme.HelpKey.Render("←→")+" "+theme.HelpDesc.Render("action: "+ce.wizardTargetAction)+"  "+
+			theme.HelpKey.Render("←→")+" "+theme.HelpDesc.Render("action: "+ce.wizardActionLabel())+"  "+
+			stepHelp+
 			theme.HelpKey.Render("enter")+" "+theme.HelpDesc.Render("confirm")+"  "+
 			theme.HelpKey.Render("esc")+" "+theme.HelpDesc.Render("back"),
 	)
@@ -2352,8 +2383,13 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("next") + "  " +
 			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
 	case ConfigModeCtrlWizardEvent:
+		stepHelp := ""
+		if app.IsBrightnessVerb(ce.wizardTargetAction) {
+			stepHelp = theme.HelpKey.Render("+/-") + " " + theme.HelpDesc.Render("step") + "  "
+		}
 		return theme.HelpKey.Render("↑↓") + " " + theme.HelpDesc.Render("select") + "  " +
-			theme.HelpKey.Render("←→") + " " + theme.HelpDesc.Render("action: "+ce.wizardTargetAction) + "  " +
+			theme.HelpKey.Render("←→") + " " + theme.HelpDesc.Render("action: "+ce.wizardActionLabel()) + "  " +
+			stepHelp +
 			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("confirm") + "  " +
 			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("back")
 	case ConfigModeClearSelect:

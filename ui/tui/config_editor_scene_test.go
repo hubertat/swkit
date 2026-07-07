@@ -148,3 +148,36 @@ func TestConfigEditorSceneRelativeBrightnessVerb(t *testing.T) {
 		t.Errorf("step after increase = %q, want brightness_up:55:Dim", got)
 	}
 }
+
+// TestConfigEditorSceneStepPlusMinusKeys checks +/- adjust the brightness step
+// regardless of which sub-field is focused.
+func TestConfigEditorSceneStepPlusMinusKeys(t *testing.T) {
+	ce := NewConfigEditor(nil, DefaultTheme())
+	ce.config = app.EditableConfig{
+		DimmableLights:    []app.DimmableLightEditConfig{{Name: "Dim"}},
+		OutputDeviceNames: []string{"Dim"},
+		Scenes: []app.SceneEditConfig{{
+			Name:   "S",
+			States: []app.SceneStateEditConfig{{Name: "on", Actions: []string{"brightness_up:50:Dim"}}},
+		}},
+	}
+	ce.rebuildItems()
+
+	ce.cursor = len(ce.items) - 1
+	ce.mode = ConfigModeEditScene
+	ce.fieldCursor = 1
+	ce.Update(tea.KeyMsg{Type: tea.KeyEnter}) // into state
+	ce.fieldCursor = 1
+	ce.Update(tea.KeyMsg{Type: tea.KeyEnter}) // into action edit
+
+	// '+' brightens by 5 even while the verb field (0) is focused.
+	ce.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	if got := ce.config.Scenes[0].States[0].Actions[0]; got != "brightness_up:55:Dim" {
+		t.Errorf("after '+' = %q, want brightness_up:55:Dim", got)
+	}
+	// '-' dims by 5.
+	ce.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
+	if got := ce.config.Scenes[0].States[0].Actions[0]; got != "brightness_up:50:Dim" {
+		t.Errorf("after '-' = %q, want brightness_up:50:Dim", got)
+	}
+}

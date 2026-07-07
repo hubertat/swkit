@@ -61,6 +61,41 @@ func TestStateProviderDimmableLightIndexAndBrightness(t *testing.T) {
 	}
 }
 
+func TestStateProviderAdjustDeviceBrightness(t *testing.T) {
+	sw, dimBri := newDimmableTestSwKit(t)
+	p := NewStateProvider(sw)
+	dim := sw.dimmableLights[0]
+
+	// Start at 50%, then nudge up by 20. Round-trip scaling through the native
+	// range may read back 49%, so the result lands within a percent of 70%.
+	if res := p.SetDeviceBrightness(1, 50); res.Error != nil {
+		t.Fatalf("SetDeviceBrightness: %v", res.Error)
+	}
+	if res := p.AdjustDeviceBrightness(1, 20); res.Error != nil {
+		t.Fatalf("AdjustDeviceBrightness: %v", res.Error)
+	}
+	got, err := dim.GetBrightness()
+	if err != nil {
+		t.Fatalf("GetBrightness: %v", err)
+	}
+	if got < 68 || got > 71 {
+		t.Errorf("brightness = %d%%, want ~70%% after +20", got)
+	}
+
+	// Dimming past the floor clamps to 0.
+	if res := p.AdjustDeviceBrightness(1, -100); res.Error != nil {
+		t.Fatalf("AdjustDeviceBrightness: %v", res.Error)
+	}
+	if native, _ := dimBri.GetState(); native != 0 {
+		t.Errorf("brightness native = %d, want 0 after clamp", native)
+	}
+
+	// Relative brightness on a non-dimmable device (plain light at index 0) errors.
+	if res := p.AdjustDeviceBrightness(0, 10); res.Error == nil {
+		t.Error("expected error adjusting brightness on a plain light")
+	}
+}
+
 func TestStateProviderBuildsDimmableLightState(t *testing.T) {
 	sw, dimBri := newDimmableTestSwKit(t)
 	_ = dimBri

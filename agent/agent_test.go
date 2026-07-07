@@ -94,6 +94,24 @@ func (m *mockController) SetDeviceBrightness(index int, pct int) app.ControlResu
 	}
 }
 
+func (m *mockController) AdjustDeviceBrightness(index int, delta int) app.ControlResult {
+	if index < 0 || index >= len(m.state.Devices) {
+		return app.ControlResult{Error: nil}
+	}
+	pct := m.state.Devices[index].Brightness + delta
+	if pct < 0 {
+		pct = 0
+	} else if pct > 100 {
+		pct = 100
+	}
+	m.state.Devices[index].Brightness = pct
+	return app.ControlResult{
+		DeviceName: m.state.Devices[index].Name,
+		Action:     "brightness",
+		NewState:   m.state.Devices[index].IsOn,
+	}
+}
+
 func (m *mockController) SetDeviceValueFor(index int, state bool, seconds int) app.ControlResult {
 	if index < 0 || index >= len(m.state.Devices) {
 		return app.ControlResult{Error: nil}
@@ -202,7 +220,7 @@ func TestDeviceTools(t *testing.T) {
 
 	// Test list of registered tools
 	tools := registry.List()
-	expected := map[string]bool{"toggle_device": true, "set_device": true, "get_device_state": true}
+	expected := map[string]bool{"toggle_device": true, "set_device": true, "adjust_brightness": true, "get_device_state": true}
 	for _, name := range tools {
 		if !expected[name] {
 			t.Errorf("unexpected tool: %s", name)
@@ -229,6 +247,38 @@ func TestDeviceTools(t *testing.T) {
 	}
 	if state["is_on"] != true {
 		t.Errorf("expected is_on true, got %v", state["is_on"])
+	}
+
+	// Test adjust_brightness against a dimmable light.
+	ctrl.state.Devices = append(ctrl.state.Devices, app.DeviceState{
+		Name: "Desk Lamp", Type: app.DeviceTypeDimmableLight, IsOn: true, IsHealthy: true, Brightness: 40,
+	})
+	adjTool, _ := registry.Get("adjust_brightness")
+	if _, err := adjTool.Execute(json.RawMessage(`{"name": "Desk Lamp", "delta": 15}`)); err != nil {
+		t.Fatalf("adjust_brightness failed: %v", err)
+	}
+	if got := ctrl.state.Devices[len(ctrl.state.Devices)-1].Brightness; got != 55 {
+		t.Errorf("expected brightness 55 after +15, got %d", got)
+	}
+	// Clamp at 0 when dimming past the floor.
+	if _, err := adjTool.Execute(json.RawMessage(`{"name": "Desk Lamp", "delta": -100}`)); err != nil {
+		t.Fatalf("adjust_brightness failed: %v", err)
+	}
+	if got := ctrl.state.Devices[len(ctrl.state.Devices)-1].Brightness; got != 0 {
+		t.Errorf("expected brightness clamped to 0, got %d", got)
+	}
+
+	// get_device_state should include brightness for dimmable lights.
+	result, err = getTool.Execute(json.RawMessage(`{"name": "Desk Lamp"}`))
+	if err != nil {
+		t.Fatalf("get_device_state failed: %v", err)
+	}
+	state = nil
+	if err := json.Unmarshal([]byte(result), &state); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
+	if _, ok := state["brightness"]; !ok {
+		t.Errorf("expected brightness key for dimmable light, got %v", state)
 	}
 }
 

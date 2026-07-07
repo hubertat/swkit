@@ -24,6 +24,9 @@ type DeviceController interface {
 	SetDevice(index int, state bool) ControlResult
 	// SetDeviceBrightness sets the brightness (0-100) of the device at the given index
 	SetDeviceBrightness(index int, pct int) ControlResult
+	// AdjustDeviceBrightness changes the brightness of the device at the given index
+	// by delta (relative, may be negative), clamped to 0-100.
+	AdjustDeviceBrightness(index int, delta int) ControlResult
 	// SetDeviceValueFor sets the device on/off for the given duration (seconds),
 	// then reverts to its prior state.
 	SetDeviceValueFor(index int, state bool, seconds int) ControlResult

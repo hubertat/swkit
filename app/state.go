@@ -97,7 +97,8 @@ type DeviceState struct {
 // ButtonControlRelation describes a button's control mapping
 type ButtonControlRelation struct {
 	EventType  string // "single_press", "double_press", etc.
-	Action     string // "toggle", "on", "off"
+	Action     string // "toggle", "on", "off", "brightness_up", etc.
+	Level      int    // brightness step/target; unused for non-brightness verbs
 	DeviceName string
 }
 
