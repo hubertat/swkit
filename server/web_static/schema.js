@@ -370,6 +370,20 @@
         return color.replace(/[^a-zA-Z0-9]/g, '');
     }
 
+    // truncateLabel shortens a display string with an ellipsis so long device
+    // or IO names don't overflow their fixed-width node/pill rect. The full,
+    // untruncated name is always still available: via the native <title>
+    // tooltip appended alongside the truncated text, and in the click detail
+    // panel/edit form, which never truncate.
+    function truncateLabel(s, maxChars) {
+        s = s || '';
+        if (s.length <= maxChars) return s;
+        return s.slice(0, Math.max(0, maxChars - 1)) + '…';
+    }
+
+    const NODE_LABEL_MAX_CHARS = 22;
+    const IO_PILL_LABEL_MAX_CHARS = 20;
+
     function buildMarker(color) {
         const marker = svgEl('marker', {
             id: 'arrow-' + colorId(color),
@@ -404,7 +418,12 @@
 
         const icon = DEVICE_ICONS[n.device_type] || '•';
         const label = svgEl('text', { x: item.x + 14, y: item.y + NODE_H / 2 + 5, class: 'schema-node-label' });
-        label.textContent = icon + ' ' + (n.label || '');
+        label.textContent = icon + ' ' + truncateLabel(n.label || '', NODE_LABEL_MAX_CHARS);
+        if (n.label) {
+            const title = svgEl('title');
+            title.textContent = n.label;
+            label.appendChild(title);
+        }
         g.appendChild(label);
 
         let markerX = item.x + NODE_W - 14;
@@ -461,7 +480,10 @@
             }));
             const text = svgEl('text', { x: group.x + GROUP_PAD + 6, y: y + 15, class: 'schema-io-pill-label' });
             const label = io.custom_name ? (io.custom_name + ' [' + (io.io_type || '?') + ' ' + io.label + ']') : ((io.io_type || '?') + ' ' + (io.label || ''));
-            text.textContent = label;
+            text.textContent = truncateLabel(label, IO_PILL_LABEL_MAX_CHARS);
+            const title = svgEl('title');
+            title.textContent = label;
+            text.appendChild(title);
             pg.appendChild(text);
             g.appendChild(pg);
         });
@@ -793,9 +815,17 @@
             const menu = document.getElementById('schema-add-menu');
             if (menu) menu.style.display = (menu.style.display === 'none') ? '' : 'none';
         });
+        document.getElementById('schema-io-toggle').checked = S.showIo;
         buildAddMenu();
         updateEditButtonState();
         probeEditAvailability();
+        // Defensive: buildChrome always starts from the static toolbar HTML
+        // (edit-mode buttons hidden), so if S.editMode is already true when
+        // the chrome is (re)built - e.g. returning to /schema after
+        // navigating away without discarding edit mode - the toolbar must be
+        // brought back in sync with it rather than silently reverting to the
+        // read-only look while S.editMode still reports true underneath.
+        updateToolbarMode();
 
         if (!S.listenersBound) {
             S.listenersBound = true;
@@ -849,11 +879,19 @@
         const discardBtn = document.getElementById('schema-discard-btn');
         const addWrap = document.getElementById('schema-add-wrap');
         const unsavedBadge = document.getElementById('schema-unsaved-badge');
+        const refreshBtn = document.getElementById('schema-refresh-btn');
         if (editBtn) editBtn.textContent = S.editMode ? '✕ Exit edit' : '✏️ Edit';
         if (saveBtn) saveBtn.style.display = S.editMode ? '' : 'none';
         if (discardBtn) discardBtn.style.display = S.editMode ? '' : 'none';
         if (addWrap) addWrap.style.display = S.editMode ? '' : 'none';
         if (unsavedBadge) unsavedBadge.style.display = (S.editMode && S.dirty) ? '' : 'none';
+        // Refreshing mid-edit would overwrite S.data with the live server
+        // graph out from under the working copy (redrawEdit rebuilds S.data
+        // from S.working; a stray refresh would immediately clobber that).
+        if (refreshBtn) {
+            refreshBtn.disabled = S.editMode;
+            refreshBtn.title = S.editMode ? 'Refresh is disabled while editing' : '';
+        }
     }
 
     function toggleEditMode() {
@@ -936,6 +974,28 @@
     function redrawEdit() {
         S.data = buildEditGraph(S.working, S.editData && S.editData.meta, S.colorLightNodes);
         redraw();
+    }
+
+    // scheduleRedrawEdit defers a redrawEdit() to a macrotask (setTimeout 0)
+    // instead of running it synchronously. Field commits happen on "blur",
+    // which fires *before* the click that caused it (e.g. clicking a
+    // different field, a delete/add button, or another node) is dispatched.
+    // redrawEdit() replaces the entire panel/diagram DOM via
+    // renderEditPanel()/renderDiagram(), so an immediate synchronous redraw
+    // there destroys the very element the in-flight click is targeting - the
+    // click event never reaches it (the "two-click bug": the first click
+    // only commits+redraws, the second click is needed to actually hit the
+    // button). Deferring lets the current click finish dispatching against
+    // the still-live DOM first; the (possibly now-redundant) redraw runs
+    // right after on the next macrotask.
+    let redrawEditScheduled = false;
+    function scheduleRedrawEdit() {
+        if (redrawEditScheduled) return;
+        redrawEditScheduled = true;
+        setTimeout(function() {
+            redrawEditScheduled = false;
+            redrawEdit();
+        }, 0);
     }
 
     // ---- Working copy ----
@@ -1256,18 +1316,32 @@
         return wrap;
     }
 
+    // textInputEl commits on blur, but only calls onCommit when the value
+    // actually changed - a blur that leaves the value untouched (e.g. tab-out
+    // without editing) must not markDirty/redraw (see call sites, which do
+    // both inside onCommit).
     function textInputEl(value, onCommit) {
+        const initial = value || '';
         const input = mkEl('input', { type: 'text', class: 'edit-input' });
-        input.value = value || '';
-        input.addEventListener('blur', function() { onCommit(input.value); });
+        input.value = initial;
+        input.addEventListener('blur', function() {
+            if (input.value === initial) return; // unchanged: no-op
+            onCommit(input.value);
+        });
         input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
         return input;
     }
 
+    // numberInputEl: see textInputEl for the unchanged-value no-op rationale.
     function numberInputEl(value, min, max, onCommit) {
+        const initial = (value != null) ? value : 0;
         const input = mkEl('input', { type: 'number', class: 'edit-input', min: min, max: max });
-        input.value = (value != null) ? value : 0;
-        input.addEventListener('blur', function() { onCommit(parseInt(input.value, 10) || 0); });
+        input.value = initial;
+        input.addEventListener('blur', function() {
+            const parsed = parseInt(input.value, 10) || 0;
+            if (parsed === initial) return; // unchanged: no-op
+            onCommit(parsed);
+        });
         input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
         return input;
     }
@@ -1282,11 +1356,25 @@
         return wrap;
     }
 
+    // selectFieldEl builds a <select> from options. If value is set but not
+    // among options (e.g. a control-relation target that was renamed/deleted
+    // elsewhere in the working copy, or an event/verb the meta vocab doesn't
+    // list), a synthetic "(missing) <value>" entry is prepended and selected
+    // so the select's displayed state doesn't silently disagree with the
+    // working copy - the option's actual value is still the real (unchanged)
+    // value, so leaving it alone commits nothing new.
     function selectFieldEl(options, value, onChange) {
         const sel = mkEl('select', { class: 'edit-select' });
+        const hasValue = value !== undefined && value !== null && value !== '';
+        const missing = hasValue && options.indexOf(value) === -1;
+        if (missing) {
+            const missingOpt = mkEl('option', { value: value }, '(missing) ' + value);
+            missingOpt.selected = true;
+            sel.appendChild(missingOpt);
+        }
         options.forEach(function(opt) {
             const o = mkEl('option', { value: opt }, opt);
-            if (opt === value) o.selected = true;
+            if (!missing && opt === value) o.selected = true;
             sel.appendChild(o);
         });
         sel.addEventListener('change', function() { onChange(sel.value); });
@@ -1300,8 +1388,13 @@
         wrap.appendChild(mkEl('label', { class: 'edit-label' }, labelText));
         const listId = 'schema-io-list-' + (ioListSeq++);
         const input = mkEl('input', { type: 'text', class: 'edit-input mono', list: listId, placeholder: 'driver|type|name' });
-        input.value = value || '';
-        input.addEventListener('blur', function() { onCommit(input.value.trim()); });
+        const initial = value || '';
+        input.value = initial;
+        input.addEventListener('blur', function() {
+            const trimmed = input.value.trim();
+            if (trimmed === initial) return; // unchanged: no-op
+            onCommit(trimmed);
+        });
         input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
         wrap.appendChild(input);
 
@@ -1316,35 +1409,73 @@
         return wrap;
     }
 
+    // targetNameOptions lists the valid control-relation/scene-action target
+    // names. It must derive only from the live working copy (+ the
+    // color-light snapshot taken on entering edit mode) - never from
+    // S.editData.meta.output_device_names, which is a snapshot fixed at the
+    // moment edit mode was entered and goes stale the instant a device is
+    // renamed, added or deleted in the working copy.
     function targetNameOptions() {
         const set = new Set();
-        const metaNames = (S.editData && S.editData.meta && S.editData.meta.output_device_names) || [];
-        metaNames.forEach(function(n) { set.add(n); });
         ['Lights', 'DimmableLights', 'Outlets', 'Scenes'].forEach(function(key) {
             (S.working[key] || []).forEach(function(e) { set.add(e.Name); });
         });
+        (S.colorLightNodes || []).forEach(function(n) { set.add(n.label); });
         return Array.from(set).sort();
     }
 
+    // buildNameField builds its own input (rather than reusing textInputEl)
+    // so it can show an inline validation error without rebuilding the panel
+    // - a rename that fails validation (empty, or contains ':') must not
+    // trigger a redraw, both per the "no-op → no redraw" rule (finding 9) and
+    // so the offending text the user typed stays visible next to the error
+    // instead of silently reverting.
     function buildNameField(panel, entry, kind) {
-        panel.appendChild(labeledField('Name', textInputEl(entry.Name, function(v) {
-            v = v.trim();
-            if (!v || v === entry.Name) { redrawEdit(); return; }
-            const old = entry.Name;
-            entry.Name = v;
-            if (kind === 'light' || kind === 'dimmable_light' || kind === 'outlet' || kind === 'scene') {
-                propagateRename(old, v);
+        const wrap = mkEl('div', { class: 'edit-field' });
+        wrap.appendChild(mkEl('label', { class: 'edit-label' }, 'Name'));
+        const initial = entry.Name || '';
+        const input = mkEl('input', { type: 'text', class: 'edit-input' });
+        input.value = initial;
+        const errEl = mkEl('div', { class: 'edit-field-error' });
+        errEl.style.display = 'none';
+
+        input.addEventListener('blur', function() {
+            const trimmed = input.value.trim();
+            if (trimmed === initial) {
+                errEl.style.display = 'none';
+                return; // unchanged: no-op, no markDirty/no redraw
             }
-            S.selectedId = 'device:' + kind + ':' + v;
+            if (!trimmed) {
+                errEl.textContent = 'Name must not be empty';
+                errEl.style.display = '';
+                return;
+            }
+            if (trimmed.indexOf(':') !== -1) {
+                errEl.textContent = "Name must not contain ':' (colons delimit the control-relation/action grammar)";
+                errEl.style.display = '';
+                return;
+            }
+            errEl.style.display = 'none';
+            const old = entry.Name;
+            entry.Name = trimmed;
+            if (kind === 'light' || kind === 'dimmable_light' || kind === 'outlet' || kind === 'scene') {
+                propagateRename(old, trimmed);
+            }
+            S.selectedId = 'device:' + kind + ':' + trimmed;
             markDirty();
-            redrawEdit();
-        })));
+            scheduleRedrawEdit();
+        });
+        input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
+
+        wrap.appendChild(input);
+        wrap.appendChild(errEl);
+        panel.appendChild(wrap);
     }
 
     function buildLightForm(panel, entry) {
         buildNameField(panel, entry, 'light');
         panel.appendChild(ioFieldEl('Digital Out', entry.DigitalOutName, 'd_out', function(v) {
-            entry.DigitalOutName = v; markDirty(); redrawEdit();
+            entry.DigitalOutName = v; markDirty(); scheduleRedrawEdit();
         }));
         panel.appendChild(checkboxFieldEl('Disable HomeKit', entry.DisableHomekit, function(v) {
             entry.DisableHomekit = v; markDirty(); redrawEdit();
@@ -1354,7 +1485,7 @@
     function buildOutletForm(panel, entry) {
         buildNameField(panel, entry, 'outlet');
         panel.appendChild(ioFieldEl('Digital Out', entry.DigitalOutName, 'd_out', function(v) {
-            entry.DigitalOutName = v; markDirty(); redrawEdit();
+            entry.DigitalOutName = v; markDirty(); scheduleRedrawEdit();
         }));
         panel.appendChild(checkboxFieldEl('Disable HomeKit', entry.DisableHomekit, function(v) {
             entry.DisableHomekit = v; markDirty(); redrawEdit();
@@ -1364,13 +1495,13 @@
     function buildDimmableForm(panel, entry) {
         buildNameField(panel, entry, 'dimmable_light');
         panel.appendChild(ioFieldEl('Digital Out', entry.DigitalOutName, 'd_out', function(v) {
-            entry.DigitalOutName = v; markDirty(); redrawEdit();
+            entry.DigitalOutName = v; markDirty(); scheduleRedrawEdit();
         }));
         panel.appendChild(ioFieldEl('Analog Out', entry.AnalogOutName, 'a_out', function(v) {
-            entry.AnalogOutName = v; markDirty(); redrawEdit();
+            entry.AnalogOutName = v; markDirty(); scheduleRedrawEdit();
         }));
         panel.appendChild(labeledField('Default Setpoint (0-100)', numberInputEl(entry.DefaultSetpoint, 0, 100, function(v) {
-            entry.DefaultSetpoint = Math.max(0, Math.min(100, v)); markDirty(); redrawEdit();
+            entry.DefaultSetpoint = Math.max(0, Math.min(100, v)); markDirty(); scheduleRedrawEdit();
         })));
         panel.appendChild(checkboxFieldEl('Disable HomeKit', entry.DisableHomekit, function(v) {
             entry.DisableHomekit = v; markDirty(); redrawEdit();
@@ -1380,7 +1511,7 @@
     function buildButtonForm(panel, entry) {
         buildNameField(panel, entry, 'button');
         panel.appendChild(ioFieldEl('Event Input', entry.EventInputName, 'push_event', function(v) {
-            entry.EventInputName = v; markDirty(); redrawEdit();
+            entry.EventInputName = v; markDirty(); scheduleRedrawEdit();
         }));
         panel.appendChild(checkboxFieldEl('Disable HomeKit', entry.DisableHomekit, function(v) {
             entry.DisableHomekit = v; markDirty(); redrawEdit();
@@ -1413,7 +1544,7 @@
         row.appendChild(selectFieldEl(eventTypes, cd.EventType, function(v) { cd.EventType = v; markDirty(); redrawEdit(); }));
         row.appendChild(selectFieldEl(verbs, cd.Action, function(v) { cd.Action = v; markDirty(); redrawEdit(); }));
         if (isBrightnessVerb(cd.Action)) {
-            row.appendChild(numberInputEl(cd.Level, 0, 100, function(v) { cd.Level = Math.max(0, Math.min(100, v)); markDirty(); redrawEdit(); }));
+            row.appendChild(numberInputEl(cd.Level, 0, 100, function(v) { cd.Level = Math.max(0, Math.min(100, v)); markDirty(); scheduleRedrawEdit(); }));
         }
         row.appendChild(selectFieldEl(targetNameOptions(), cd.DeviceName, function(v) { cd.DeviceName = v; markDirty(); redrawEdit(); }));
         const rmBtn = mkEl('button', { class: 'io-filter-btn schema-row-remove' }, '✕');
@@ -1448,18 +1579,21 @@
     function buildSceneStateRow(scene, st, idx) {
         const wrap = mkEl('div', { class: 'edit-state-row' });
         wrap.appendChild(labeledField('State name', textInputEl(st.Name, function(v) {
-            v = v.trim();
-            if (v) st.Name = v;
+            const trimmed = v.trim();
+            if (!trimmed || trimmed === st.Name) return; // invalid or unchanged: no-op
+            st.Name = trimmed;
             markDirty();
-            redrawEdit();
+            scheduleRedrawEdit();
         })));
 
         const ta = mkEl('textarea', { class: 'edit-textarea', rows: 4 });
-        ta.value = (st.Actions || []).join('\n');
+        const initialActions = (st.Actions || []).join('\n');
+        ta.value = initialActions;
         ta.addEventListener('blur', function() {
+            if (ta.value === initialActions) return; // unchanged: no-op
             st.Actions = ta.value.split('\n').map(function(s) { return s.trim(); }).filter(function(s) { return s !== ''; });
             markDirty();
-            redrawEdit();
+            scheduleRedrawEdit();
         });
         wrap.appendChild(labeledField('Actions (one per line)', ta));
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hubertat/swkit/app"
@@ -14,6 +15,7 @@ import (
 
 // SwKitConfigProvider implements app.ConfigProvider for SwKit
 type SwKitConfigProvider struct {
+	mu         sync.RWMutex
 	sw         *SwKit
 	configPath string
 	reloadCh   chan struct{}
@@ -39,8 +41,21 @@ func (p *SwKitConfigProvider) TriggerReload() {
 	}
 }
 
+// Swap points the provider at a freshly-reloaded SwKit instance. Callers
+// (main.go's performReload) must call this right after the state provider is
+// reloaded, otherwise GetEditableConfig/SaveConfig keep reading/writing
+// through the old (torn-down) SwKit, and a web-triggered save after a reload
+// would silently revert any out-of-band config changes.
+func (p *SwKitConfigProvider) Swap(sk *SwKit) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sw = sk
+}
+
 // GetEditableConfig returns the current editable config snapshot
 func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	config := app.EditableConfig{}
 
 	for _, l := range p.sw.Lights {
@@ -115,6 +130,9 @@ func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 
 // SaveConfig persists the edited config, backing up the old file
 func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	// Backup existing config file
 	if err := p.backupConfig(); err != nil {
 		return fmt.Errorf("backup failed: %w", err)

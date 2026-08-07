@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -156,6 +157,7 @@ func TestConfigEdit_MethodNotAllowed(t *testing.T) {
 func doConfigEditPost(t *testing.T, ws *WebServer, body string) (int, apiConfigEditSaveResponse) {
 	t.Helper()
 	req := httptest.NewRequest("POST", "/api/config/edit", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	ws.handleApiConfigEdit(w, req)
 	var resp apiConfigEditSaveResponse
@@ -241,6 +243,7 @@ func TestConfigEdit_PostOversizedBody(t *testing.T) {
 	body := `{"config":{"Lights":[{"Name":"` + string(huge) + `"}]}}`
 
 	req := httptest.NewRequest("POST", "/api/config/edit", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	ws.handleApiConfigEdit(w, req)
 	if w.Code != 400 {
@@ -269,6 +272,9 @@ func postAndExpectErrors(t *testing.T, ws *WebServer, cfg app.EditableConfig, wa
 	}
 	if resp.Ok {
 		t.Fatalf("resp.Ok = true, want false")
+	}
+	if fp, ok := ws.opts.ConfigProvider.(*fakeSavingConfigProvider); ok && fp.saveCalls != 0 {
+		t.Errorf("SaveConfig called %d times on a validation failure, want 0 (a rejected config must never be persisted)", fp.saveCalls)
 	}
 	joined := strings.Join(resp.Errors, " | ")
 	for _, want := range wantSubstrings {
@@ -471,7 +477,7 @@ func TestConfigEdit_ValidationSceneActionParseFailure(t *testing.T) {
 			},
 		}},
 	}
-	postAndExpectErrors(t, ws, cfg, "Evening")
+	postAndExpectErrors(t, ws, cfg, `unknown action "not a valid action"`)
 }
 
 func TestConfigEdit_ValidationSceneActionDanglingTarget(t *testing.T) {
@@ -509,6 +515,360 @@ func TestConfigEdit_ValidationDefaultSetpointOutOfRange(t *testing.T) {
 		}},
 	}
 	postAndExpectErrors(t, ws, cfg, "DefaultSetpoint")
+}
+
+// ---- Colon-in-name rejection (finding 1) ----
+
+func TestConfigEdit_ValidationNameWithColonRejectedLight(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Lights: []app.LightEditConfig{{Name: "Kitchen: Main", DigitalOutName: "gpio|d_out|5"}},
+	}
+	postAndExpectErrors(t, ws, cfg, "must not contain ':'")
+}
+
+func TestConfigEdit_ValidationNameWithColonRejectedEveryList(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Lights:         []app.LightEditConfig{{Name: "L:1", DigitalOutName: "gpio|d_out|5"}},
+		DimmableLights: []app.DimmableLightEditConfig{{Name: "D:1", DigitalOutName: "gpio|d_out|6", AnalogOutName: "gpio|a_out|1"}},
+		Outlets:        []app.OutletEditConfig{{Name: "O:1", DigitalOutName: "gpio|d_out|7"}},
+		Buttons:        []app.ButtonEditConfig{{Name: "B:1", EventInputName: "shelly|push_event|dev123:0"}},
+		Scenes:         []app.SceneEditConfig{{Name: "S:1"}},
+	}
+	errs := postAndExpectErrors(t, ws, cfg, "must not contain ':'")
+	count := 0
+	for _, e := range errs {
+		if strings.Contains(e, "must not contain ':'") {
+			count++
+		}
+	}
+	if count != 5 {
+		t.Errorf("expected a colon-rejection error for all 5 lists, got %d: %v", count, errs)
+	}
+}
+
+// ---- Scene ordering: only earlier scenes are valid targets (finding 2) ----
+
+func TestConfigEdit_ValidationSceneActionSelfReference(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Scenes: []app.SceneEditConfig{{
+			Name: "Evening",
+			States: []app.SceneStateEditConfig{
+				{Name: "cozy", Actions: []string{"toggle:Evening"}},
+			},
+		}},
+	}
+	postAndExpectErrors(t, ws, cfg, "cannot target itself")
+}
+
+func TestConfigEdit_ValidationSceneActionForwardReference(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Scenes: []app.SceneEditConfig{
+			{
+				Name: "Evening",
+				States: []app.SceneStateEditConfig{
+					{Name: "cozy", Actions: []string{"toggle:Night"}},
+				},
+			},
+			{Name: "Night", States: []app.SceneStateEditConfig{{Name: "on", Actions: nil}}},
+		},
+	}
+	postAndExpectErrors(t, ws, cfg, "may only target earlier scenes")
+}
+
+func TestConfigEdit_ValidationSceneActionAllowsEarlierScene(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Scenes: []app.SceneEditConfig{
+			{Name: "Night", States: []app.SceneStateEditConfig{{Name: "on", Actions: nil}}},
+			{
+				Name: "Evening",
+				States: []app.SceneStateEditConfig{
+					{Name: "cozy", Actions: []string{"toggle:Night"}},
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+	code, resp := doConfigEditPost(t, ws, string(body))
+	if code != 200 {
+		t.Fatalf("status = %d, want 200 (targeting an earlier scene must be allowed), errors=%v", code, resp.Errors)
+	}
+}
+
+// ---- Scene state validation (finding 12) ----
+
+func TestConfigEdit_ValidationSceneStateEmptyName(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Scenes: []app.SceneEditConfig{{
+			Name:   "Evening",
+			States: []app.SceneStateEditConfig{{Name: "  ", Actions: nil}},
+		}},
+	}
+	postAndExpectErrors(t, ws, cfg, "state name must not be empty")
+}
+
+func TestConfigEdit_ValidationSceneStateDuplicateName(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Scenes: []app.SceneEditConfig{{
+			Name: "Evening",
+			States: []app.SceneStateEditConfig{
+				{Name: "cozy", Actions: nil},
+				{Name: "cozy", Actions: nil},
+			},
+		}},
+	}
+	postAndExpectErrors(t, ws, cfg, `duplicate state name "cozy"`)
+}
+
+// ---- Brightness targeting a non-Dimmable device (finding 13) ----
+
+func TestConfigEdit_ValidationControlRelationBrightnessOnPlainLight(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Lights: []app.LightEditConfig{{Name: "Kitchen", DigitalOutName: "gpio|d_out|5"}},
+		Buttons: []app.ButtonEditConfig{{
+			Name:           "Btn1",
+			EventInputName: "shelly|push_event|dev123:0",
+			ControlDevices: []app.ControlDeviceEdit{
+				{EventType: "single_press", Action: "brightness", Level: 50, DeviceName: "Kitchen"},
+			},
+		}},
+	}
+	postAndExpectErrors(t, ws, cfg, `"Kitchen" does not support brightness (target type: light)`)
+}
+
+func TestConfigEdit_ValidationSceneActionBrightnessOnOutlet(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Outlets: []app.OutletEditConfig{{Name: "Fan", DigitalOutName: "gpio|d_out|5"}},
+		Scenes: []app.SceneEditConfig{{
+			Name: "Evening",
+			States: []app.SceneStateEditConfig{
+				{Name: "cozy", Actions: []string{"brightness:50:Fan"}},
+			},
+		}},
+	}
+	postAndExpectErrors(t, ws, cfg, `"Fan" does not support brightness (target type: outlet)`)
+}
+
+func TestConfigEdit_ValidationSceneActionBrightnessOnScene(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Scenes: []app.SceneEditConfig{
+			{Name: "Night", States: []app.SceneStateEditConfig{{Name: "on", Actions: nil}}},
+			{
+				Name: "Evening",
+				States: []app.SceneStateEditConfig{
+					{Name: "cozy", Actions: []string{"brightness:50:Night"}},
+				},
+			},
+		},
+	}
+	postAndExpectErrors(t, ws, cfg, `"Night" does not support brightness (target type: scene)`)
+}
+
+func TestConfigEdit_ValidationBrightnessOnDimmableLightStillAllowed(t *testing.T) {
+	// Sanity check: the dimmable-target check must not regress the existing
+	// (already-passing) dimmable light case.
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		DimmableLights: []app.DimmableLightEditConfig{{Name: "Hall", DigitalOutName: "gpio|d_out|5", AnalogOutName: "gpio|a_out|1"}},
+		Buttons: []app.ButtonEditConfig{{
+			Name:           "Btn1",
+			EventInputName: "shelly|push_event|dev123:0",
+			ControlDevices: []app.ControlDeviceEdit{
+				{EventType: "single_press", Action: "brightness", Level: 50, DeviceName: "Hall"},
+			},
+		}},
+	}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+	code, resp := doConfigEditPost(t, ws, string(body))
+	if code != 200 {
+		t.Fatalf("status = %d, want 200 (dimmable light must be a valid brightness target), errors=%v", code, resp.Errors)
+	}
+}
+
+// ---- CSRF / transport hardening (finding 3) ----
+
+func TestConfigEdit_PostWrongContentTypeRejected(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	cfg := app.EditableConfig{Lights: []app.LightEditConfig{{Name: "Kitchen", DigitalOutName: "gpio|d_out|5"}}}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+
+	req := httptest.NewRequest("POST", "/api/config/edit", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "text/plain")
+	w := httptest.NewRecorder()
+	ws.handleApiConfigEdit(w, req)
+
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want 415", w.Code)
+	}
+	if provider.saveCalls != 0 {
+		t.Errorf("SaveConfig called on a text/plain POST, want 0 calls")
+	}
+}
+
+func TestConfigEdit_PostCrossSiteSecFetchRejected(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	cfg := app.EditableConfig{Lights: []app.LightEditConfig{{Name: "Kitchen", DigitalOutName: "gpio|d_out|5"}}}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+
+	req := httptest.NewRequest("POST", "/api/config/edit", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	w := httptest.NewRecorder()
+	ws.handleApiConfigEdit(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+	if provider.saveCalls != 0 {
+		t.Errorf("SaveConfig called on a cross-site POST, want 0 calls")
+	}
+}
+
+func TestConfigEdit_PostCrossOriginRejected(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	cfg := app.EditableConfig{Lights: []app.LightEditConfig{{Name: "Kitchen", DigitalOutName: "gpio|d_out|5"}}}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+
+	req := httptest.NewRequest("POST", "/api/config/edit", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://evil.example.com")
+	req.Host = "swkit.local"
+	w := httptest.NewRecorder()
+	ws.handleApiConfigEdit(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+	if provider.saveCalls != 0 {
+		t.Errorf("SaveConfig called on a cross-origin POST, want 0 calls")
+	}
+}
+
+func TestConfigEdit_PostSameOriginAllowed(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	cfg := app.EditableConfig{Lights: []app.LightEditConfig{{Name: "Kitchen", DigitalOutName: "gpio|d_out|5"}}}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+
+	req := httptest.NewRequest("POST", "/api/config/edit", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "swkit.local"
+	req.Header.Set("Origin", "http://swkit.local")
+	w := httptest.NewRecorder()
+	ws.handleApiConfigEdit(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200 (same-origin Origin header must be allowed), body=%s", w.Code, w.Body.String())
+	}
+	if provider.saveCalls != 1 {
+		t.Errorf("SaveConfig called %d times, want 1", provider.saveCalls)
+	}
+}
+
+// ---- Unknown-field rejection (finding 15d) ----
+
+func TestConfigEdit_PostUnknownFieldRejected(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	body := `{"config":{"Lights":[{"Name":"Kitchen","DigitalOutName":"gpio|d_out|5","DisbaleHomekit":true}]}}`
+	code, resp := doConfigEditPost(t, ws, body)
+	if code != 400 {
+		t.Fatalf("status = %d, want 400, resp=%+v", code, resp)
+	}
+	if resp.Ok {
+		t.Errorf("resp.Ok = true, want false for a typo'd field")
+	}
+	joined := strings.Join(resp.Errors, " | ")
+	if !strings.Contains(joined, "DisbaleHomekit") {
+		t.Errorf("errors = %v, want a message naming the unknown field DisbaleHomekit", resp.Errors)
+	}
+	if provider.saveCalls != 0 {
+		t.Errorf("SaveConfig called on a request with an unknown field, want 0 calls")
+	}
+}
+
+// ---- Success-path round trip: no lossy re-formatting (finding 14) ----
+
+func TestConfigEdit_PostSuccessRoundTripsControlRelationsAndSceneActionsByteIdentical(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	cfg := app.EditableConfig{
+		Lights:  []app.LightEditConfig{{Name: "Living Room", DigitalOutName: "gpio|d_out|5"}},
+		Outlets: []app.OutletEditConfig{{Name: "Fan", DigitalOutName: "gpio|d_out|6"}},
+		DimmableLights: []app.DimmableLightEditConfig{
+			{Name: "Hall", DigitalOutName: "gpio|d_out|7", AnalogOutName: "gpio|a_out|1"},
+		},
+		Buttons: []app.ButtonEditConfig{{
+			Name:           "Wall Switch",
+			EventInputName: "shelly|push_event|dev123:0",
+			ControlDevices: []app.ControlDeviceEdit{
+				{EventType: "single_press", Action: "toggle", DeviceName: "Living Room"},
+				{EventType: "double_press", Action: "brightness", Level: 40, DeviceName: "Hall"},
+				{EventType: "long_press", Action: "off", DeviceName: "Fan"},
+			},
+		}},
+		Scenes: []app.SceneEditConfig{{
+			Name: "Evening",
+			States: []app.SceneStateEditConfig{
+				{Name: "cozy", Actions: []string{"brightness:40:Hall", "on:Fan", "toggle:Living Room"}},
+			},
+		}},
+	}
+
+	body, err := json.Marshal(apiConfigEditPostBody{Config: cfg})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	code, resp := doConfigEditPost(t, ws, string(body))
+	if code != 200 {
+		t.Fatalf("status = %d, want 200, errors=%v", code, resp.Errors)
+	}
+	if provider.saved == nil {
+		t.Fatal("SaveConfig was not called")
+	}
+
+	saved := *provider.saved
+	if len(saved.Buttons) != 1 || len(saved.Buttons[0].ControlDevices) != len(cfg.Buttons[0].ControlDevices) {
+		t.Fatalf("saved buttons = %+v, want control relations preserved", saved.Buttons)
+	}
+	for i, want := range cfg.Buttons[0].ControlDevices {
+		got := saved.Buttons[0].ControlDevices[i]
+		if got != want {
+			t.Errorf("control relation #%d = %+v, want byte-identical %+v", i, got, want)
+		}
+	}
+
+	if len(saved.Scenes) != 1 || len(saved.Scenes[0].States) != 1 {
+		t.Fatalf("saved scenes = %+v, want one scene with one state", saved.Scenes)
+	}
+	gotActions := saved.Scenes[0].States[0].Actions
+	wantActions := cfg.Scenes[0].States[0].Actions
+	if len(gotActions) != len(wantActions) {
+		t.Fatalf("saved scene actions = %v, want %v", gotActions, wantActions)
+	}
+	for i := range wantActions {
+		if gotActions[i] != wantActions[i] {
+			t.Errorf("scene action #%d = %q, want byte-identical %q", i, gotActions[i], wantActions[i])
+		}
+	}
 }
 
 func TestConfigEdit_ValidationCollectsAllErrorsAtOnce(t *testing.T) {

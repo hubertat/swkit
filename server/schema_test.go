@@ -364,6 +364,54 @@ func TestHandleApiSchema_FullGraph(t *testing.T) {
 	}
 }
 
+func TestHandleApiSchema_MethodNotAllowed(t *testing.T) {
+	ws := newTestWebServer(t, fullFixtureState(), nil)
+	req := httptest.NewRequest("POST", "/api/schema", nil)
+	w := httptest.NewRecorder()
+	ws.handleApiSchema(w, req)
+	if w.Code != 405 {
+		t.Fatalf("status = %d, want 405", w.Code)
+	}
+}
+
+func TestBuildSchemaGraph_CustomNameIndexMatchesConfigIoId(t *testing.T) {
+	// The custom-name index must be keyed by the same config-grammar id the
+	// devices themselves carry (built via app.IoPointToId/IoPointToIdWithType),
+	// not the old "<driver>|<type>|<index>" formula, which almost never
+	// matched (push_event ids never matched at all, and shelly/wago names
+	// aren't index-shaped).
+	state := app.AppState{
+		IoDebug: []app.IoPointDebugState{
+			{DriverName: "gpio", Index: 5, Name: "5", Type: "output", CustomName: "relay 1"},
+			{DriverName: "shelly", Index: 0, Name: "dev123:input0", Type: "input", CustomName: "wall switch"},
+		},
+		Devices: []app.DeviceState{
+			{Name: "Living Room", Type: app.DeviceTypeLight, OutputIoId: "gpio|d_out|5"},
+			{
+				Name: "Wall", Type: app.DeviceTypeButton,
+				EventInputId: "shelly|push_event|dev123:0",
+			},
+		},
+	}
+	resp := buildSchemaGraph(state, nil)
+
+	outNode, ok := findNode(resp.Nodes, "io:gpio|d_out|5")
+	if !ok {
+		t.Fatal("expected io node for gpio|d_out|5")
+	}
+	if outNode.CustomName != "relay 1" {
+		t.Errorf("output io custom_name = %q, want %q", outNode.CustomName, "relay 1")
+	}
+
+	pushNode, ok := findNode(resp.Nodes, "io:shelly|push_event|dev123:0")
+	if !ok {
+		t.Fatal("expected io node for shelly|push_event|dev123:0")
+	}
+	if pushNode.CustomName != "wall switch" {
+		t.Errorf("push_event io custom_name = %q, want %q", pushNode.CustomName, "wall switch")
+	}
+}
+
 func TestHandleApiSchema_NilConfigProvider(t *testing.T) {
 	ws := newTestWebServer(t, fullFixtureState(), nil)
 

@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -53,14 +55,39 @@ func (ws *WebServer) handleConfigEditGet(w http.ResponseWriter, r *http.Request)
 // handleConfigEditPost validates and, on success, persists a full
 // EditableConfig replacement via ConfigProvider.SaveConfig.
 func (ws *WebServer) handleConfigEditPost(w http.ResponseWriter, r *http.Request) {
+	// ---- CSRF hardening ----
+	// A real cross-site attacker can point a <form> at this endpoint, but a
+	// browser form submission can only carry one of the CORS-safelisted
+	// Content-Types (text/plain, application/x-www-form-urlencoded,
+	// multipart/form-data) - never application/json - so requiring the JSON
+	// type alone defeats the classic "text/plain body that happens to decode
+	// as JSON anyway" attack (json.Decoder ignores trailing garbage). The
+	// Sec-Fetch-Site/Origin checks are defense in depth for browsers/proxies
+	// that don't enforce the Content-Type restriction.
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(ct), "application/json") {
+		writeConfigEditErrors(w, http.StatusUnsupportedMediaType, []string{"Content-Type must be application/json"})
+		return
+	}
+	if err := checkSameOriginPost(r); err != nil {
+		writeConfigEditErrors(w, http.StatusForbidden, []string{err.Error()})
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxConfigEditBodyBytes)
 
 	var body apiConfigEditPostBody
 	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
 		writeConfigEditErrors(w, http.StatusBadRequest, []string{"invalid request body: " + err.Error()})
 		return
 	}
+
+	// Trim whitespace once, up front, so validation (which checks for
+	// emptiness/duplicates/targeting) and persistence (SaveConfig, which
+	// writes exactly what was validated) always agree - see
+	// normalizeEditableConfig.
+	normalizeEditableConfig(&body.Config)
 
 	state := ws.provider.GetState()
 	errs := validateEditableConfig(body.Config, state)
@@ -76,6 +103,66 @@ func (ws *WebServer) handleConfigEditPost(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(apiConfigEditSaveResponse{Ok: true, Reload: true})
+}
+
+// checkSameOriginPost applies a best-effort CSRF check to a state-changing
+// POST: reject an explicit cross-site fetch (Sec-Fetch-Site, sent by modern
+// browsers), and reject a present-but-mismatched Origin header. Requests with
+// neither header (older browsers, curl, same-origin fetches that omit
+// Origin) are allowed through - the Content-Type check above is the primary
+// defense.
+func checkSameOriginPost(r *http.Request) error {
+	if site := r.Header.Get("Sec-Fetch-Site"); site == "cross-site" {
+		return errors.New("cross-site request rejected (Sec-Fetch-Site: cross-site)")
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return nil
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || u.Host != r.Host {
+		return errors.New("cross-origin request rejected (Origin does not match request host)")
+	}
+	return nil
+}
+
+// normalizeEditableConfig trims whitespace from every user-facing string in
+// cfg in place: device/scene/state names, io id strings, control-relation
+// target names, and scene action strings. Mutating the config once, before
+// both validateEditableConfig and SaveConfig see it, is what keeps validation
+// (which rejects empty/duplicate/dangling names) and persistence (which
+// writes whatever was validated) from disagreeing about a name that only
+// differs by leading/trailing whitespace.
+func normalizeEditableConfig(cfg *app.EditableConfig) {
+	for i := range cfg.Lights {
+		cfg.Lights[i].Name = strings.TrimSpace(cfg.Lights[i].Name)
+		cfg.Lights[i].DigitalOutName = strings.TrimSpace(cfg.Lights[i].DigitalOutName)
+	}
+	for i := range cfg.Outlets {
+		cfg.Outlets[i].Name = strings.TrimSpace(cfg.Outlets[i].Name)
+		cfg.Outlets[i].DigitalOutName = strings.TrimSpace(cfg.Outlets[i].DigitalOutName)
+	}
+	for i := range cfg.DimmableLights {
+		cfg.DimmableLights[i].Name = strings.TrimSpace(cfg.DimmableLights[i].Name)
+		cfg.DimmableLights[i].DigitalOutName = strings.TrimSpace(cfg.DimmableLights[i].DigitalOutName)
+		cfg.DimmableLights[i].AnalogOutName = strings.TrimSpace(cfg.DimmableLights[i].AnalogOutName)
+	}
+	for i := range cfg.Buttons {
+		cfg.Buttons[i].Name = strings.TrimSpace(cfg.Buttons[i].Name)
+		cfg.Buttons[i].EventInputName = strings.TrimSpace(cfg.Buttons[i].EventInputName)
+		for j := range cfg.Buttons[i].ControlDevices {
+			cfg.Buttons[i].ControlDevices[j].DeviceName = strings.TrimSpace(cfg.Buttons[i].ControlDevices[j].DeviceName)
+		}
+	}
+	for i := range cfg.Scenes {
+		cfg.Scenes[i].Name = strings.TrimSpace(cfg.Scenes[i].Name)
+		for j := range cfg.Scenes[i].States {
+			cfg.Scenes[i].States[j].Name = strings.TrimSpace(cfg.Scenes[i].States[j].Name)
+			for k := range cfg.Scenes[i].States[j].Actions {
+				cfg.Scenes[i].States[j].Actions[k] = strings.TrimSpace(cfg.Scenes[i].States[j].Actions[k])
+			}
+		}
+	}
 }
 
 // writeConfigEditErrors writes the standard {"ok":false,"errors":[...]} error
@@ -169,24 +256,50 @@ func validateEditableConfig(cfg app.EditableConfig, state app.AppState) []string
 	// plus color lights from current state (they're Controllable at runtime
 	// but are not part of EditableConfig, so they'd otherwise be invisible
 	// here - see controllableTargetTypes in schema.go for the same rule).
+	// targetType additionally records each target's device type, used below
+	// to reject brightness actions/relations aimed at a non-Dimmable device
+	// (see dimmableTargetTypes) and to enforce scene-ordering (see sceneIndex).
 	validTargets := make(map[string]bool)
+	targetType := make(map[string]string)
 	for _, l := range cfg.Lights {
 		validTargets[l.Name] = true
+		targetType[l.Name] = "light"
 	}
 	for _, dl := range cfg.DimmableLights {
 		validTargets[dl.Name] = true
+		targetType[dl.Name] = "dimmable_light"
 	}
 	for _, o := range cfg.Outlets {
 		validTargets[o.Name] = true
+		targetType[o.Name] = "outlet"
 	}
 	for _, s := range cfg.Scenes {
 		validTargets[s.Name] = true
+		targetType[s.Name] = "scene"
 	}
 	for _, d := range state.Devices {
 		if d.Type == app.DeviceTypeColorLight {
 			validTargets[d.Name] = true
+			targetType[d.Name] = "color_light"
 		}
 	}
+
+	// sceneIndex maps scene name -> its position in cfg.Scenes. SwKit.Setup
+	// builds scenes sequentially and resolves each action's target via
+	// resolveControllable, which only sees scenes already appended - so a
+	// scene may target an earlier scene, never itself or a later one (see
+	// swkit.go resolveControllable's doc comment). Checked below in the scene
+	// action loop.
+	sceneIndex := make(map[string]int, len(cfg.Scenes))
+	for i, s := range cfg.Scenes {
+		sceneIndex[s.Name] = i
+	}
+
+	// dimmableTargetTypes are the target types that implement app.Dimmable at
+	// runtime (see swkit.go: DimmableLight is the only one - ColorLight and
+	// Scene do not implement SetBrightness). Brightness-family actions
+	// targeting anything else fail at Setup/apply time, so reject them here.
+	dimmableTargetTypes := map[string]bool{"dimmable_light": true}
 
 	// ---- Names: non-empty, unique within each list, unique globally ----
 	nameCount := make(map[string]int)
@@ -195,6 +308,14 @@ func validateEditableConfig(cfg app.EditableConfig, state app.AppState) []string
 		if trimmed == "" {
 			errs = append(errs, fmt.Sprintf("%s: name must not be empty", list))
 			return
+		}
+		// Control-device strings and scene action strings are colon-delimited
+		// ("<event>:<verb>:<device>"); a colon in a device name is silently
+		// accepted here but corrupts that grammar on the next reload (see
+		// parseControlDeviceToEdit/app.ParseAction), so it must be rejected
+		// up front instead.
+		if strings.Contains(trimmed, ":") {
+			errs = append(errs, fmt.Sprintf("%s: name %q must not contain ':' (colons delimit the control-relation/action grammar)", list, trimmed))
 		}
 		nameCount[trimmed]++
 	}
@@ -353,14 +474,27 @@ func validateEditableConfig(cfg app.EditableConfig, state app.AppState) []string
 				errs = append(errs, fmt.Sprintf("%s: target device name must not be empty", relLabel))
 			} else if !validTargets[cd.DeviceName] {
 				errs = append(errs, fmt.Sprintf("%s: target device %q does not exist", relLabel, cd.DeviceName))
+			} else if app.IsBrightnessVerb(cd.Action) && !dimmableTargetTypes[targetType[cd.DeviceName]] {
+				errs = append(errs, fmt.Sprintf("%s: brightness action target %q does not support brightness (target type: %s)", relLabel, cd.DeviceName, targetType[cd.DeviceName]))
 			}
 		}
 	}
 
 	// ---- Scene actions ----
-	for _, s := range cfg.Scenes {
+	for i, s := range cfg.Scenes {
 		sceneLabel := deviceLabel("scene", s.Name)
+
+		seenStates := make(map[string]bool, len(s.States))
 		for _, st := range s.States {
+			stName := strings.TrimSpace(st.Name)
+			if stName == "" {
+				errs = append(errs, fmt.Sprintf("%s: state name must not be empty", sceneLabel))
+			} else if seenStates[stName] {
+				errs = append(errs, fmt.Sprintf("%s: duplicate state name %q", sceneLabel, stName))
+			} else {
+				seenStates[stName] = true
+			}
+
 			for j, actionStr := range st.Actions {
 				actLabel := fmt.Sprintf("%s state %q action #%d (%q)", sceneLabel, st.Name, j+1, actionStr)
 				act, err := app.ParseAction(actionStr)
@@ -373,6 +507,22 @@ func validateEditableConfig(cfg app.EditableConfig, state app.AppState) []string
 				}
 				if !validTargets[act.Device] {
 					errs = append(errs, fmt.Sprintf("%s: target device %q does not exist", actLabel, act.Device))
+					continue
+				}
+				// SwKit.Setup builds scenes sequentially: a scene action may
+				// only target a scene defined earlier in the list (see
+				// sceneIndex above and swkit.go resolveControllable). A
+				// forward reference or self-reference builds fine here but
+				// fails at reload.
+				if targetIdx, isScene := sceneIndex[act.Device]; isScene && targetIdx >= i {
+					if targetIdx == i {
+						errs = append(errs, fmt.Sprintf("%s: scene %q cannot target itself", actLabel, act.Device))
+					} else {
+						errs = append(errs, fmt.Sprintf("%s: target scene %q is defined later than this scene; a scene may only target earlier scenes", actLabel, act.Device))
+					}
+				}
+				if app.IsBrightnessVerb(act.Verb) && !dimmableTargetTypes[targetType[act.Device]] {
+					errs = append(errs, fmt.Sprintf("%s: brightness action target %q does not support brightness (target type: %s)", actLabel, act.Device, targetType[act.Device]))
 				}
 			}
 		}

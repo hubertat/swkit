@@ -27,6 +27,12 @@ var controllableTargetTypes = map[app.DeviceType]bool{
 // current state (and editable config, if a ConfigProvider is wired) on every
 // request - there is no caching.
 func (ws *WebServer) handleApiSchema(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	state := ws.provider.GetState()
 
 	var cfg *app.EditableConfig
@@ -76,23 +82,22 @@ func buildSchemaGraph(state app.AppState, cfg *app.EditableConfig) apiSchemaResp
 		})
 	}
 
-	// Best-effort custom-name lookup for IO ids, matched against IoDebug
-	// entries using the same "<driver>|<type>|<index>" formula state_provider.go
-	// uses to annotate ConfiguredAs. Only drivers implementing IoDebugProvider
-	// (Wago, Shelly) populate state.IoDebug, so this only resolves for those.
+	// Best-effort custom-name lookup for IO ids, keyed by the same
+	// config-grammar id the devices themselves use (built via the shared
+	// app.IoPointToId/IoPointToIdWithType converters - the same logic the TUI
+	// IO picker and the config-edit IO suggestions use). Input points are
+	// indexed twice: once as their natural id (d_in) and once as push_event,
+	// since button EventInputName fields are push_event-typed while the debug
+	// point itself is reported as "input".
 	ioCustomNames := make(map[string]string)
 	for _, pt := range state.IoDebug {
 		if pt.CustomName == "" {
 			continue
 		}
-		ioTypeStr := "d_in"
-		switch pt.Type {
-		case "output":
-			ioTypeStr = "d_out"
-		case "analog_output":
-			ioTypeStr = "a_out"
+		ioCustomNames[app.IoPointToId(pt)] = pt.CustomName
+		if pt.Type == "input" {
+			ioCustomNames[app.IoPointToIdWithType(pt, "push_event")] = pt.CustomName
 		}
-		ioCustomNames[fmt.Sprintf("%s|%s|%d", pt.DriverName, ioTypeStr, pt.Index)] = pt.CustomName
 	}
 
 	// ---- Target index: device name -> node id, for control/scene targets ----

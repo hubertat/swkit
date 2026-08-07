@@ -1143,6 +1143,12 @@ td.mono {
     resize: vertical;
 }
 
+.edit-field-error {
+    color: var(--error);
+    font-size: 0.72rem;
+    margin-top: 4px;
+}
+
 .edit-checkbox-label {
     display: flex;
     align-items: center;
@@ -1212,7 +1218,8 @@ td.mono {
     transform: translateX(-50%) translateY(0);
 }
 
-#schema-edit-btn:disabled {
+#schema-edit-btn:disabled,
+#schema-refresh-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
 }
