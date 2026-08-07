@@ -121,7 +121,7 @@ func checkSameOriginPost(r *http.Request) error {
 	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" || u.Host != r.Host {
-		return errors.New("cross-origin request rejected (Origin does not match request host)")
+		return fmt.Errorf("cross-origin request rejected (Origin %q does not match request host %q; if behind a reverse proxy, preserve the Host header)", origin, r.Host)
 	}
 	return nil
 }

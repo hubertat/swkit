@@ -377,8 +377,12 @@
     // panel/edit form, which never truncate.
     function truncateLabel(s, maxChars) {
         s = s || '';
-        if (s.length <= maxChars) return s;
-        return s.slice(0, Math.max(0, maxChars - 1)) + '…';
+        // Iterate by code point (not UTF-16 code unit) so multi-unit
+        // characters - e.g. emoji using surrogate pairs - are never split in
+        // the middle, which would otherwise render as a broken glyph.
+        var cps = Array.from(s);
+        if (cps.length <= maxChars) return s;
+        return cps.slice(0, Math.max(0, maxChars - 1)).join('') + '…';
     }
 
     const NODE_LABEL_MAX_CHARS = 22;
@@ -971,30 +975,76 @@
     // redrawEdit rebuilds the client-side graph from the working copy and
     // re-runs the normal (pure) layout/render pipeline against it, so hover
     // adjacency, tooltips and the detail panel all keep working unmodified.
+    // Used for structural, click-driven commits (add/remove relation rows,
+    // add/remove states, delete device, checkbox/select commits) where the
+    // panel genuinely needs to be rebuilt and there is no in-flight blur to
+    // race against. The guard defends against exitEditMode()/discardSilently()
+    // having torn down edit mode (nulled S.working) by the time this runs.
     function redrawEdit() {
+        if (!S.editMode || !S.working) return;
         S.data = buildEditGraph(S.working, S.editData && S.editData.meta, S.colorLightNodes);
         redraw();
     }
 
-    // scheduleRedrawEdit defers a redrawEdit() to a macrotask (setTimeout 0)
-    // instead of running it synchronously. Field commits happen on "blur",
-    // which fires *before* the click that caused it (e.g. clicking a
-    // different field, a delete/add button, or another node) is dispatched.
-    // redrawEdit() replaces the entire panel/diagram DOM via
-    // renderEditPanel()/renderDiagram(), so an immediate synchronous redraw
-    // there destroys the very element the in-flight click is targeting - the
-    // click event never reaches it (the "two-click bug": the first click
-    // only commits+redraws, the second click is needed to actually hit the
-    // button). Deferring lets the current click finish dispatching against
-    // the still-live DOM first; the (possibly now-redundant) redraw runs
-    // right after on the next macrotask.
+    // redrawEditDiagramOnly rebuilds S.data from the working copy (so
+    // subsequent clicks/hover see committed values) and re-renders only the
+    // SVG diagram - it deliberately leaves the edit panel untouched. See
+    // scheduleRedrawEdit() below for why this matters for blur-triggered
+    // commits.
+    function redrawEditDiagramOnly() {
+        if (!S.editMode || !S.working) return;
+        S.data = buildEditGraph(S.working, S.editData && S.editData.meta, S.colorLightNodes);
+        const diagramEl = document.getElementById('schema-diagram');
+        const emptyEl = document.getElementById('schema-empty');
+        if (!diagramEl || !S.data) return;
+        const deviceCount = (S.data.nodes || []).filter(function(n) { return n.kind === 'device'; }).length;
+        if (deviceCount === 0) {
+            diagramEl.style.display = 'none';
+            if (emptyEl) emptyEl.style.display = '';
+            return;
+        }
+        diagramEl.style.display = '';
+        if (emptyEl) emptyEl.style.display = 'none';
+        const layout = buildLayout(S.data, S.showIo);
+        renderDiagram(diagramEl, S.data, layout);
+    }
+
+    // scheduleRedrawEdit defers a diagram-only redraw to a macrotask
+    // (setTimeout 0) for blur-triggered field commits (name, IO fields,
+    // DefaultSetpoint, relation Level, scene state name, scene actions
+    // textarea). Two things make this tricky:
+    //
+    //   1. blur fires *before* the click that caused it (e.g. clicking a
+    //      different field, a delete/add button, or another node) is
+    //      dispatched, and in fact fires during mousedown - well before the
+    //      matching mouseup/click - so even a same-tick synchronous redraw
+    //      does not reliably outlast the physical click that is still in
+    //      flight.
+    //   2. by the time the deferred callback runs, the user may have left
+    //      edit mode entirely (exitEditMode()/discardSilently() null out
+    //      S.working), so the callback must re-check before touching
+    //      anything - hence the guard below (also duplicated defensively
+    //      inside redrawEditDiagramOnly itself).
+    //
+    // Crucially, the deferred work here is diagram-only, NOT a full
+    // redrawEdit(). Rebuilding the edit panel would replace
+    // #schema-detail-panel's entire subtree (renderEditPanel() does
+    // `panel.textContent = ''` then rebuilds from scratch), detaching
+    // whatever the in-flight click is targeting before it is dispatched -
+    // reintroducing the two-click bug - and, if the click landed on a
+    // different field, destroying the very input the user just focused. The
+    // panel's own inputs already display the value that was just committed
+    // (the user typed it), so nothing there needs rebuilding; only the
+    // diagram (labels, colors, edges) can be stale. Do NOT change this back
+    // to a full redrawEdit() without re-solving that DOM-detachment problem.
     let redrawEditScheduled = false;
     function scheduleRedrawEdit() {
         if (redrawEditScheduled) return;
         redrawEditScheduled = true;
         setTimeout(function() {
             redrawEditScheduled = false;
-            redrawEdit();
+            if (!S.editMode || !S.working) return;
+            redrawEditDiagramOnly();
         }, 0);
     }
 
@@ -1338,9 +1388,14 @@
         const input = mkEl('input', { type: 'number', class: 'edit-input', min: min, max: max });
         input.value = initial;
         input.addEventListener('blur', function() {
-            const parsed = parseInt(input.value, 10) || 0;
-            if (parsed === initial) return; // unchanged: no-op
-            onCommit(parsed);
+            const raw = parseInt(input.value, 10);
+            const clamped = isNaN(raw) ? initial : Math.max(min, Math.min(max, raw));
+            if (clamped === initial) {
+                input.value = initial; // invalid/out-of-range/no-op: revert the displayed value, no markDirty/no redraw
+                return;
+            }
+            input.value = clamped;
+            onCommit(clamped);
         });
         input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
         return input;
@@ -1759,6 +1814,7 @@
             S.working = null;
             S.dirty = false;
             S.selectedEdit = null;
+            S.selectedId = null;
             S.saveErrors = null;
         },
     };
