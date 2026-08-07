@@ -36,10 +36,11 @@ type ServicesConfig struct {
 
 // WebServerOptions holds optional configuration for the web server.
 type WebServerOptions struct {
-	GetRawConfig func() json.RawMessage
-	Version      string
-	Services     ServicesConfig
-	Broadcaster  *logging.Broadcaster
+	GetRawConfig   func() json.RawMessage
+	Version        string
+	Services       ServicesConfig
+	Broadcaster    *logging.Broadcaster
+	ConfigProvider app.ConfigProvider // optional; nil disables scene-action edges in /api/schema
 }
 
 // WebServer serves the diagnostic web UI
@@ -89,10 +90,12 @@ func NewWebServerWithConfig(provider app.StateProvider, port int, logger *log.Lo
 	mux.HandleFunc("/io-debug", ws.handlePage)
 	mux.HandleFunc("/config", ws.handlePage)
 	mux.HandleFunc("/logs", ws.handlePage)
+	mux.HandleFunc("/schema", ws.handlePage)
 
 	// API
 	mux.HandleFunc("/api/state", ws.handleApiState)
 	mux.HandleFunc("/api/logs/stream", ws.handleLogsStream)
+	mux.HandleFunc("/api/schema", ws.handleApiSchema)
 
 	ws.mux = mux
 	ws.server = &http.Server{
@@ -320,6 +323,8 @@ func pageTab(path string) string {
 		return "config"
 	case "/logs":
 		return "logs"
+	case "/schema":
+		return "schema"
 	default:
 		return "dashboard"
 	}

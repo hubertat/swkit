@@ -272,10 +272,11 @@ func main() {
 			services.AgentModel = agentCfg.Model
 		}
 		webSrv, err = server.NewWebServerWithConfig(provider, sk.WebServer.Port, logger, server.WebServerOptions{
-			GetRawConfig: getRawConfig,
-			Version:      Version,
-			Services:     services,
-			Broadcaster:  logging.GetBroadcaster(),
+			GetRawConfig:   getRawConfig,
+			Version:        Version,
+			Services:       services,
+			Broadcaster:    logging.GetBroadcaster(),
+			ConfigProvider: configProvider,
 		})
 		if err != nil {
 			logger.Error("failed to create web server", "err", err)

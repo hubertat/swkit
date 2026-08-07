@@ -631,6 +631,7 @@
         if (path === '/drivers') return 'drivers';
         if (path === '/config') return 'config';
         if (path === '/logs') return 'logs';
+        if (path === '/schema') return 'schema';
         return 'dashboard';
     }
 
@@ -662,6 +663,7 @@
             case 'io-debug': renderIoDebug(state); break;
             case 'config': renderConfig(state); break;
             case 'logs': renderLogs(); return; // Logs doesn't need state polling
+            case 'schema': if (window.swkitSchema) window.swkitSchema.render(); return; // no re-render on poll
         }
     }
 
@@ -711,12 +713,12 @@
             refresh();
         });
 
-        // Keyboard tab navigation: 1-5 switches tabs
+        // Keyboard tab navigation: 1-7 switches tabs
         document.addEventListener('keydown', function(e) {
             if (document.activeElement && document.activeElement !== document.body) return;
-            const tabs = ['/', '/drivers', '/devices', '/io-debug', '/config', '/logs'];
+            const tabs = ['/', '/drivers', '/devices', '/io-debug', '/config', '/logs', '/schema'];
             const n = parseInt(e.key);
-            if (n >= 1 && n <= 6) { e.preventDefault(); navigate(tabs[n - 1]); }
+            if (n >= 1 && n <= 7) { e.preventDefault(); navigate(tabs[n - 1]); }
         });
 
         startRefresh();
