@@ -32,6 +32,7 @@
     const RECENCY_MEDIUM_MS = 30000;
     const RECENCY_FADE_MS = 90000;
     const EVENT_FLASH_MS = 2000;
+    const OVERLAY_GAP_RESEED_MS = 3000;
 
     const EVENT_COLORS = {
         single_press: 'var(--accent)',
@@ -84,6 +85,8 @@
         // poll via render(state). Overlay-only - never touched by/touches
         // layout or node creation. Skipped entirely while S.editMode.
         liveTrack: new Map(), // nodeId -> {sig, changedAt}; recency bookkeeping across polls
+        lastOverlayAt: 0,     // Date.now() of the last applied tick; detects overlay gaps (tab backgrounding, edit sessions)
+        pendingReseed: false, // set on leaving edit mode; forces the next tick to re-seed instead of glowing
     };
 
     let editIdSeq = 1;
@@ -267,8 +270,17 @@
             // barycenter order, writing pill positions into the shared ioPos
             // map, and returns the built groups plus the column's height.
             function layoutSide(entries, incomingMap, x) {
-                const ordered = entries.map((e, i) => ({ e, avg: groupAvgY(e.rawPills, incomingMap, i) }));
-                ordered.sort((a, b) => a.avg - b.avg);
+                // Finding 11: index tiebreaker to match the deterministic
+                // (stable, config-order-preserving) sort used by
+                // deviceKey.sort and orderPills above - without it, two
+                // driver boxes with an equal (or both-fallback) avg y could
+                // swap order between renders/engines since Array#sort's
+                // stability isn't guaranteed to be visited in insertion order
+                // for equal keys pre-ES2019, and even where it is, relying on
+                // that implicitly here would be inconsistent with its
+                // siblings.
+                const ordered = entries.map((e, i) => ({ e, avg: groupAvgY(e.rawPills, incomingMap, i), i }));
+                ordered.sort((a, b) => a.avg - b.avg || a.i - b.i);
                 const built = [];
                 let gy = MARGIN;
                 ordered.forEach(({ e }) => {
@@ -286,6 +298,10 @@
                         name: e.name,
                         x: x, y: boxY, w: IO_COL_W, h: boxH,
                         pills: keyed.map(k => k.n),
+                        // Finding 5: carried through so buildDriverGroup can
+                        // tell a dual-side box (one of a matched left/right
+                        // pair for the same driver) from a single-box driver.
+                        dual: !!e.dual,
                     });
                     gy += boxH + GROUP_GAP;
                 });
@@ -298,13 +314,13 @@
                 // A driver with pills on both sides gets a box on each side,
                 // same name+icon, disambiguated with an "(in)"/"(out)" suffix.
                 const dual = group.left.length > 0 && group.right.length > 0;
-                if (group.left.length) leftEntries.push({ name: dual ? driverName + ' (in)' : driverName, driverNode: group.driverNode, rawPills: group.left });
-                if (group.right.length) rightEntries.push({ name: dual ? driverName + ' (out)' : driverName, driverNode: group.driverNode, rawPills: group.right });
+                if (group.left.length) leftEntries.push({ name: dual ? driverName + ' (in)' : driverName, driverNode: group.driverNode, rawPills: group.left, dual: dual });
+                if (group.right.length) rightEntries.push({ name: dual ? driverName + ' (out)' : driverName, driverNode: group.driverNode, rawPills: group.right, dual: dual });
                 if (!group.left.length && !group.right.length && group.driverNode) {
                     // A known driver with nothing currently wired to it: keep
                     // it visible (readiness/IO-count still useful) on the
                     // right - the same default side as unknown/invalid ids.
-                    rightEntries.push({ name: driverName, driverNode: group.driverNode, rawPills: [] });
+                    rightEntries.push({ name: driverName, driverNode: group.driverNode, rawPills: [], dual: false });
                 }
             });
 
@@ -627,7 +643,15 @@
                 class: ready ? 'schema-ready-dot-on' : 'schema-ready-dot-off',
             }));
             const count = svgEl('text', { x: group.x + group.w - 8, y: group.y + 16, class: 'schema-group-count', 'text-anchor': 'end' });
-            count.textContent = (group.driverNode && group.driverNode.io_total != null ? group.driverNode.io_total : group.pills.length) + ' IOs';
+            // Finding 5: a driver split across two boxes (one per side) used
+            // to show the same driver-wide io_total on both, reading as if
+            // there were twice as many IOs as actually configured. A
+            // dual-side box shows only what's wired into *this* box instead;
+            // io_total (the driver-wide count, independent of what's wired)
+            // stays reserved for the single-box case.
+            count.textContent = group.dual
+                ? group.pills.length + ' wired'
+                : (group.driverNode && group.driverNode.io_total != null ? group.driverNode.io_total : group.pills.length) + ' IOs';
             headerG.appendChild(count);
         }
         g.appendChild(headerG);
@@ -823,18 +847,62 @@
         return 'off';
     }
 
+    // sceneStateListItemText/buildSceneStateNamesList (finding 9): the
+    // configured state names for a scene used to be visible nowhere
+    // read-only once round-2's docked panel replaced the old vertical list -
+    // only the single active-state name showed. Lists all configured states
+    // with the active one marked, alongside the existing "Active state" row;
+    // shared by the initial render (here) and the live-poll refresh
+    // (updateDetailDockLive) via the 'scene_state_list' data-live hook so it
+    // stays correct if the active state changes while the dock is open.
+    function sceneStateListItemText(name, idx, activeIdx) {
+        return name + (idx === activeIdx ? ' ✓' : '');
+    }
+
+    function buildSceneStateNamesList(stateNames, activeIdx) {
+        const names = stateNames || [];
+        if (!names.length) return '';
+        let list = '<ul class="schema-panel-list" data-live="scene_state_list">';
+        names.forEach(function(name, idx) {
+            const cls = idx === activeIdx ? ' class="text-success"' : '';
+            list += '<li' + cls + '>' + escHtml(sceneStateListItemText(name, idx, activeIdx)) + '</li>';
+        });
+        list += '</ul>';
+        return list;
+    }
+
+    // closeDock/closeModal (finding 2): the detail dock and the edit modal
+    // must be mutually exclusive - at most one of them ever carries the
+    // 'open' class at a time. renderActivePanel calls whichever of these
+    // corresponds to the panel it is NOT about to (re)render, before
+    // rendering the other, so a stale dock/modal from a previous selection
+    // can never linger alongside (or block the close button of) the one the
+    // user is now interacting with. Both are also safe/cheap to call when
+    // already closed.
+    function closeDock() {
+        const panel = document.getElementById('schema-detail-dock');
+        if (!panel) return;
+        panel.classList.remove('open');
+        panel.innerHTML = '';
+    }
+
+    function closeModal() {
+        const backdrop = document.getElementById('schema-edit-backdrop');
+        const panel = document.getElementById('schema-edit-modal');
+        if (backdrop) backdrop.classList.remove('open');
+        if (panel) panel.textContent = '';
+    }
+
     function renderDetailPanel() {
         const panel = document.getElementById('schema-detail-dock');
         if (!panel) return;
         if (!S.selectedId || !S.data) {
-            panel.classList.remove('open');
-            panel.innerHTML = '';
+            closeDock();
             return;
         }
         const node = S.data.nodes.find(n => n.id === S.selectedId);
         if (!node) {
-            panel.classList.remove('open');
-            panel.innerHTML = '';
+            closeDock();
             return;
         }
 
@@ -901,7 +969,9 @@
                 if (node.device_type === 'button') {
                     stateRows += factRow('Last event', escHtml(formatEventFact(detail.last_event_type, detail.last_event_time, Date.now())), { live: 'last_event' });
                 } else if (node.device_type === 'scene') {
-                    stateRows += factRow('Active state', escHtml(formatSceneFact(detail.state_index || 0, detail.state_names)), { live: 'scene_state' });
+                    const activeIdx = detail.state_index || 0;
+                    stateRows += factRow('Active state', escHtml(formatSceneFact(activeIdx, detail.state_names)), { live: 'scene_state' });
+                    stateRows += buildSceneStateNamesList(detail.state_names, activeIdx);
                 } else {
                     stateRows += factRow('State', node.is_on ? 'on' : 'off', { live: 'is_on' });
                     if (node.device_type === 'dimmable_light') {
@@ -971,19 +1041,29 @@
     // renderActivePanel picks the right side-panel renderer for the current
     // mode: the stage 1 read-only detail panel outside edit mode (or for
     // driver/io nodes even inside edit mode, since those aren't editable),
-    // and the stage 2 edit form otherwise.
+    // and the stage 2 edit form otherwise. Finding 2: the dock and the modal
+    // must be mutually exclusive, so whichever one this call is NOT about to
+    // render is explicitly closed first - this is what makes the dock's own
+    // close button work while in edit mode (it routes through selectNode(null)
+    // -> here -> the renderEditPanel branch below, which used to leave the
+    // dock's stale 'open' markup untouched) and stops a driver/io dock left
+    // open from a click before entering edit mode, or before switching to a
+    // device selection within edit mode, from lingering alongside the modal.
     function renderActivePanel() {
         if (!S.editMode) {
+            closeModal();
             renderDetailPanel();
             return;
         }
         if (!S.selectedEdit && S.selectedId && S.data) {
             const node = S.data.nodes.find(function(n) { return n.id === S.selectedId; });
             if (node && (node.kind === 'driver' || node.kind === 'io')) {
+                closeModal();
                 renderDetailPanel();
                 return;
             }
         }
+        closeDock();
         renderEditPanel();
     }
 
@@ -1008,6 +1088,44 @@
     function setStatus(text) {
         const el = document.getElementById('schema-status');
         if (el) el.textContent = text;
+    }
+
+    // renderErrorBanner/clearErrorBanner (finding 1): save-validation errors
+    // must be visible independent of the edit modal's open/closed state - the
+    // modal backdrop covers the toolbar, so Save is only reachable with the
+    // modal already closed, and a rejected save must not go silent just
+    // because renderEditPanel() (called from the same failure path, for the
+    // case the modal happens to be open) tears down the modal's own content
+    // when S.selectedEdit is null. Lives in the card's normal document flow,
+    // directly under the toolbar - never covered by the backdrop (z-index 70)
+    // and unaffected by whether the modal is open or closed. Built via
+    // createElement/textContent only, same as buildErrorsBlock, since save
+    // error strings can embed user-controlled text (device/io names).
+    function renderErrorBanner(errors) {
+        const banner = document.getElementById('schema-error-banner');
+        if (!banner) return;
+        if (!errors || !errors.length) {
+            clearErrorBanner();
+            return;
+        }
+        banner.textContent = '';
+        const closeBtn = mkEl('button', { class: 'schema-panel-close', 'aria-label': 'Dismiss' }, '✕');
+        closeBtn.addEventListener('click', clearErrorBanner);
+        banner.appendChild(closeBtn);
+        const count = errors.length;
+        banner.appendChild(mkEl('div', { class: 'schema-panel-section text-error' },
+            'Save failed — ' + count + ' error' + (count === 1 ? '' : 's')));
+        const ul = mkEl('ul', { class: 'schema-panel-list' });
+        errors.forEach(function(e) { ul.appendChild(mkEl('li', { class: 'text-error' }, e)); });
+        banner.appendChild(ul);
+        banner.style.display = '';
+    }
+
+    function clearErrorBanner() {
+        const banner = document.getElementById('schema-error-banner');
+        if (!banner) return;
+        banner.style.display = 'none';
+        banner.textContent = '';
     }
 
     function buildLegend() {
@@ -1052,6 +1170,7 @@
                 '</div>' +
                 buildLegend() +
             '</div>' +
+            '<div id="schema-error-banner" class="schema-error-banner" style="display:none"></div>' +
             '<div class="schema-diagram-wrap"><div id="schema-diagram"></div></div>' +
             '<div id="schema-empty" class="empty-state" style="display:none">No devices configured</div>' +
             '<div id="schema-detail-dock" class="schema-detail-dock"></div>' +
@@ -1084,10 +1203,27 @@
         // button/Esc - selectNode(null), which only clears the selection;
         // any focused field's blur-commit has already run (blur fires before
         // this click, since it fires on mousedown) so nothing is lost.
+        //
+        // Finding 10: ev.target === backdrop alone is not enough - the click
+        // event's target is computed from the mousedown/mouseup pair (the
+        // nearest common ancestor of the two, per the UI Events spec, since
+        // mousedown fires on whatever was pressed and mouseup on whatever the
+        // pointer is over on release), not from where the press originated.
+        // So starting a text-selection drag inside the modal (mousedown on
+        // an input/label inside .schema-modal) and releasing over the
+        // backdrop (mouseup outside the dialog) yields a click whose target
+        // resolves to the backdrop - indistinguishable, by target alone, from
+        // an actual click on the empty backdrop - and would wrongly discard
+        // the in-progress edit. Track where the mousedown itself landed and
+        // only close when *that* was the backdrop too.
         const backdrop = document.getElementById('schema-edit-backdrop');
         if (backdrop) {
+            let mousedownOnBackdrop = false;
+            backdrop.addEventListener('mousedown', function(ev) {
+                mousedownOnBackdrop = (ev.target === backdrop);
+            });
             backdrop.addEventListener('click', function(ev) {
-                if (ev.target === backdrop) selectNode(null);
+                if (ev.target === backdrop && mousedownOnBackdrop) selectNode(null);
             });
         }
         // Defensive: buildChrome always starts from the static toolbar HTML
@@ -1201,6 +1337,7 @@
             S.selectedEdit = null;
             S.selectedId = null;
             S.saveErrors = null;
+            clearErrorBanner();
             setStatus('');
             updateToolbarMode();
             redrawEdit();
@@ -1217,8 +1354,21 @@
         S.editMode = false;
         S.working = null;
         S.selectedEdit = null;
+        // Clear the stale selection too: leaving edit mode with a device
+        // still "selected" (e.g. via the modal's own close button, which only
+        // clears S.selectedEdit through selectNode) would otherwise make the
+        // read-only detail dock spontaneously reopen on that same node the
+        // instant renderActivePanel next runs, even though the user never
+        // clicked anything in read-only mode.
+        S.selectedId = null;
         S.saveErrors = null;
+        clearErrorBanner();
         S.dirty = false;
+        // Finding 3: an edit session (of any length) is exactly the kind of
+        // overlay gap applyLiveOverlay must not mistake for real, simultaneous
+        // device changes - force the next tick to re-seed silently rather
+        // than glow, regardless of how long the session lasted.
+        S.pendingReseed = true;
         updateToolbarMode();
         if (opts.refetch !== false) loadAndDraw();
     }
@@ -1230,6 +1380,7 @@
         S.dirty = false;
         S.selectedEdit = null;
         S.saveErrors = null;
+        clearErrorBanner();
         updateToolbarMode();
         redrawEdit();
     }
@@ -2047,17 +2198,30 @@
             }
             if (!resp.ok || !data.ok) {
                 S.saveErrors = (data.errors && data.errors.length) ? data.errors : ['save failed (HTTP ' + resp.status + ')'];
-                setStatus('');
+                // Finding 1: setStatus('') here used to silently wipe
+                // 'Saving…' with nothing to replace it, and the errors below
+                // only ever reached the modal - which is necessarily closed
+                // right now (the backdrop covers the toolbar, so this click
+                // could only have fired while it was shut). The banner is the
+                // only feedback guaranteed visible at this exact moment;
+                // still also populate the modal's own error block (via
+                // renderEditPanel) for the case a *different* selection is
+                // open when the response comes back.
+                setStatus('Save failed — ' + S.saveErrors.length + ' error' + (S.saveErrors.length === 1 ? '' : 's'));
+                renderErrorBanner(S.saveErrors);
                 renderEditPanel();
                 return;
             }
             S.saveErrors = null;
+            clearErrorBanner();
             setStatus('');
             showToast('Saved — config reload triggered');
             exitEditMode({ refetch: false });
             setTimeout(loadAndDraw, 1500);
         } catch (e) {
             S.saveErrors = ['network error: ' + (e && e.message || e)];
+            setStatus('Save failed — network error');
+            renderErrorBanner(S.saveErrors);
             renderEditPanel();
         } finally {
             if (saveBtn) saveBtn.disabled = false;
@@ -2121,6 +2285,21 @@
 
         const now = Date.now();
 
+        // Finding 3: overlay ticks stop entirely while the tab is
+        // backgrounded (app.js's stopRefresh) and for the whole duration of
+        // an edit session (this function bails out above while S.editMode).
+        // On resume, any device whose signature changed during that gap
+        // would otherwise be stamped changedAt=now right below, producing a
+        // false "just changed" strongest-glow burst across every node that
+        // happened to change while nobody was polling. A tick following a
+        // >3s gap, or the first tick right after leaving edit mode
+        // (S.pendingReseed, set by exitEditMode - a short edit session might
+        // not clear the 3s gap check on its own), is treated as a silent
+        // re-seed instead: updateDeviceOverlay stamps changedAt=0 for any
+        // signature change this tick, exactly like a never-before-seen node.
+        const reseed = S.pendingReseed || (S.lastOverlayAt !== 0 && (now - S.lastOverlayAt) > OVERLAY_GAP_RESEED_MS);
+        S.pendingReseed = false;
+
         // Build id->element maps once per tick by walking the DOM directly,
         // rather than one querySelector('[data-node-id="..."]') per device -
         // both for performance and because device/io names are arbitrary
@@ -2139,9 +2318,12 @@
             const id = 'device:' + d.type + ':' + d.name;
             const g = deviceEls.get(id);
             if (!g) return; // not in the current diagram (renamed/removed elsewhere) - skip silently
-            updateDeviceOverlay(g, id, d, now);
+            updateDeviceOverlay(g, id, d, now, reseed);
         });
 
+        // Finding 7: built once here and threaded through to
+        // updateDetailDockLive below, instead of each rebuilding its own
+        // copy from the same state.io_debug every tick.
         const ioStateById = buildIoStateIndex(state.io_debug);
         pillEls.forEach(function(g, nodeId) {
             const ioId = nodeId.indexOf('io:') === 0 ? nodeId.slice(3) : null;
@@ -2153,7 +2335,9 @@
             rect.classList.toggle('schema-io-off', !pt.state);
         });
 
-        updateDetailDockLive(state, now);
+        updateDetailDockLive(state, now, ioStateById);
+
+        S.lastOverlayAt = now;
     }
 
     // updateDeviceOverlay updates one device node's recency-ring class (on
@@ -2161,7 +2345,7 @@
     // setDotState) from one polled device entry. Never creates or removes
     // SVG elements - only classes and text on what buildDeviceNode already
     // built.
-    function updateDeviceOverlay(g, id, d, now) {
+    function updateDeviceOverlay(g, id, d, now, reseed) {
         const sig = liveSignature(d);
         let track = S.liveTrack.get(id);
         if (!track) {
@@ -2173,7 +2357,11 @@
             S.liveTrack.set(id, track);
         } else if (track.sig !== sig) {
             track.sig = sig;
-            track.changedAt = now;
+            // Finding 3: a re-seed tick (overlay gap, or just having left
+            // edit mode) must not treat a signature change accumulated
+            // during the gap as "just happened" - stamp 0 (no glow), same as
+            // a brand-new track entry above.
+            track.changedAt = reseed ? 0 : now;
         }
         const age = track.changedAt ? (now - track.changedAt) : Infinity;
         g.classList.remove('schema-recency-strong', 'schema-recency-medium', 'schema-recency-faint');
@@ -2186,8 +2374,19 @@
         const extra = g.querySelector('.schema-state-extra');
 
         if (d.type === 'button') {
-            const evAge = d.last_event_time ? now - new Date(d.last_event_time).getTime() : Infinity;
-            if (evAge >= 0 && evAge < EVENT_FLASH_MS) {
+            // Finding 4: driven off the signature-change bookkeeping above
+            // (liveSignature includes last_event_time for buttons) instead
+            // of comparing d.last_event_time to the browser's Date.now() -
+            // clock skew between this client and the server (easily >2s on
+            // an unsynced Pi) used to kill the flash outright. track.changedAt
+            // is stamped from the same clock (now, this function's own
+            // Date.now() from applyLiveOverlay) that age is compared against
+            // below, so they can never disagree. changedAt===0 still means
+            // "no real recent change" (a brand-new track, or a re-seeded one -
+            // see updateDeviceOverlay/applyLiveOverlay above) so a stale
+            // event already on the schema at page load correctly never
+            // flashes, same as before.
+            if (track.changedAt !== 0 && (now - track.changedAt) < EVENT_FLASH_MS) {
                 setDotState(dot, extra, 'event-flash', shortEventLabel(d.last_event_type));
             } else {
                 setDotState(dot, extra, 'off', '');
@@ -2206,8 +2405,9 @@
     // updateDetailDockLive refreshes the docked detail panel's live "State"
     // facts (textContent only - see the data-live hooks written by
     // renderDetailPanel) when the currently open dock is showing a node this
-    // poll has fresh data for.
-    function updateDetailDockLive(state, now) {
+    // poll has fresh data for. ioStateById is built once per tick by the
+    // caller (finding 7) and passed in rather than rebuilt here.
+    function updateDetailDockLive(state, now, ioStateById) {
         if (!S.selectedId) return;
         const dock = document.getElementById('schema-detail-dock');
         if (!dock || !dock.classList.contains('open')) return;
@@ -2216,7 +2416,7 @@
             const ioEl = dock.querySelector('[data-live="io_state"]');
             if (!ioEl) return;
             const ioId = S.selectedId.slice(3);
-            const pt = buildIoStateIndex(state.io_debug).get(ioId);
+            const pt = ioStateById.get(ioId);
             ioEl.textContent = pt ? (pt.state ? 'on' : 'off') : '—';
             return;
         }
@@ -2235,6 +2435,17 @@
 
         const sceneEl = dock.querySelector('[data-live="scene_state"]');
         if (sceneEl) sceneEl.textContent = formatSceneFact(d.scene_state_index || 0, d.scene_state_names);
+
+        // Finding 9 (live half): keep the state-names list's active marker in
+        // sync while the dock stays open across a scene state change.
+        const listEl = dock.querySelector('[data-live="scene_state_list"]');
+        if (listEl && d.scene_state_names) {
+            const activeIdx = d.scene_state_index || 0;
+            Array.prototype.forEach.call(listEl.children, function(li, idx) {
+                li.classList.toggle('text-success', idx === activeIdx);
+                li.textContent = sceneStateListItemText(d.scene_state_names[idx] || '', idx, activeIdx);
+            });
+        }
     }
 
     // ---- Public entry point ----

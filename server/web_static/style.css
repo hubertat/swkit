@@ -778,6 +778,32 @@ td.mono {
     border-radius: 2px;
 }
 
+/* schema-error-banner (finding 1): save-validation feedback that must stay
+   visible regardless of the edit modal's open/closed state - lives in the
+   card's normal document flow, directly under the toolbar/legend and above
+   the diagram, so the backdrop (z-index 70, fixed) can never cover it and it
+   never depends on the modal being open to be seen. */
+.schema-error-banner {
+    background: rgba(247, 118, 142, 0.1);
+    border: 1px solid var(--error);
+    border-radius: var(--radius-lg);
+    padding: 10px 16px;
+    margin-bottom: 16px;
+}
+
+.schema-error-banner .schema-panel-close {
+    float: right;
+}
+
+.schema-error-banner .schema-panel-section {
+    margin-top: 0;
+}
+
+.schema-error-banner .schema-panel-list li {
+    border-bottom: none;
+    padding: 2px 0;
+}
+
 .schema-diagram-wrap {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
@@ -950,8 +976,14 @@ td.mono {
     stroke-width: 1.5;
 }
 
+/* Finding 8: previously stroke: var(--border), identical to the unstyled
+   .schema-io-pill-rect default - a pill with confirmed-off live data was
+   visually indistinguishable from one with no live data at all. Give it a
+   dimmed fill (a faint --off tint) plus the --off stroke so "known off" reads
+   as its own state rather than "no live data yet". */
 .schema-io-pill-rect.schema-io-off {
-    stroke: var(--border);
+    stroke: var(--off);
+    fill: rgba(86, 95, 137, 0.18);
 }
 
 .schema-edge {
@@ -1005,17 +1037,25 @@ td.mono {
     max-height: 0;
     overflow: hidden;
     background: var(--bg-surface);
-    border: 1px solid var(--border);
+    /* Finding 6: border-width and margin are zeroed here (not just
+       max-height) so a closed dock leaves no visible trace at all - with a
+       standing 1px border and 16px margin-bottom, "collapsed" still drew a
+       flat bordered strip under the diagram even though its content area
+       was zero height. Both are restored in .open below. */
+    border: 0 solid var(--border);
     border-radius: var(--radius-lg);
-    margin-bottom: 16px;
+    margin-bottom: 0;
     padding: 0 18px;
-    transition: max-height var(--transition), padding var(--transition);
+    transition: max-height var(--transition), padding var(--transition),
+        border-width var(--transition), margin-bottom var(--transition);
 }
 
 .schema-detail-dock.open {
     max-height: 360px;
     overflow-y: auto;
     padding: 14px 18px 16px;
+    border-width: 1px;
+    margin-bottom: 16px;
 }
 
 .schema-dock-header {
