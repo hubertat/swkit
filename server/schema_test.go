@@ -482,6 +482,100 @@ func TestHandleApiSchema_MissingTargetFirstMatchWins(t *testing.T) {
 	}
 }
 
+func TestBuildSchemaGraph_PrefersConfigIoIdOverAdHocStateString(t *testing.T) {
+	// Shelly/Grenton/Mock drivers' underlying IO objects return ad-hoc debug
+	// strings from String() (e.g. "mock_output:1") that do not parse via
+	// drivers.ResolveIoIdString. When a ConfigProvider is available, the
+	// canonical config-grammar io id should be used instead for any device
+	// present in EditableConfig.
+	state := app.AppState{
+		Devices: []app.DeviceState{
+			{Name: "Living Room", Type: app.DeviceTypeLight, OutputIoId: "mock_output:1"},
+			{Name: "Fan", Type: app.DeviceTypeOutlet, OutputIoId: "mock_output:2"},
+			{Name: "Hallway", Type: app.DeviceTypeDimmableLight, OutputIoId: "mock_output:3", AnalogIoId: "mock_analog:1"},
+			{Name: "Wall", Type: app.DeviceTypeButton, EventInputId: "shelly:dev123:input0"},
+			// Mood is a color light: not present in EditableConfig, so its
+			// state-provided (ad-hoc) io id must be kept as-is.
+			{Name: "Mood", Type: app.DeviceTypeColorLight, OutputIoId: "mock_output:9", RgbwIoId: "mock_rgbw:1"},
+		},
+	}
+	cfg := app.EditableConfig{
+		Lights:  []app.LightEditConfig{{Name: "Living Room", DigitalOutName: "mock_driver|d_out|1"}},
+		Outlets: []app.OutletEditConfig{{Name: "Fan", DigitalOutName: "mock_driver|d_out|2"}},
+		DimmableLights: []app.DimmableLightEditConfig{
+			{Name: "Hallway", DigitalOutName: "mock_driver|d_out|3", AnalogOutName: "mock_driver|a_out|1"},
+		},
+		Buttons: []app.ButtonEditConfig{{Name: "Wall", EventInputName: "shelly|push_event|dev123:0"}},
+	}
+	resp := buildSchemaGraph(state, &cfg)
+
+	// Living Room: output io node should be the canonical, parseable id, not
+	// the ad-hoc "mock_output:1" debug string, and must not be flagged invalid.
+	if _, ok := findNode(resp.Nodes, "io:mock_output:1"); ok {
+		t.Errorf("stale ad-hoc io node io:mock_output:1 should not appear once config override applies")
+	}
+	ioNode, ok := findNode(resp.Nodes, "io:mock_driver|d_out|1")
+	if !ok {
+		t.Fatal("expected canonical io node io:mock_driver|d_out|1 from config override")
+	}
+	if ioNode.Invalid {
+		t.Errorf("canonical io node should parse cleanly, got invalid=true: %+v", ioNode)
+	}
+	if countEdges(resp.Edges, "io", "device:light:Living Room", "io:mock_driver|d_out|1") != 1 {
+		t.Errorf("expected output io edge from Living Room to the canonical io node")
+	}
+	living := nodeByID(t, resp.Nodes, "device:light:Living Room")
+	if living.Detail == nil || living.Detail["output_io_id"] != "mock_driver|d_out|1" {
+		t.Errorf("device detail should also reflect the config-overridden io id, got %+v", living.Detail)
+	}
+
+	// Outlet
+	if countEdges(resp.Edges, "io", "device:outlet:Fan", "io:mock_driver|d_out|2") != 1 {
+		t.Errorf("expected outlet output io edge to use config-overridden id")
+	}
+
+	// DimmableLight: both output and analog overridden.
+	if countEdges(resp.Edges, "io", "device:dimmable_light:Hallway", "io:mock_driver|d_out|3") != 1 {
+		t.Errorf("expected dimmable light output io edge to use config-overridden id")
+	}
+	if countEdges(resp.Edges, "io", "device:dimmable_light:Hallway", "io:mock_driver|a_out|1") != 1 {
+		t.Errorf("expected dimmable light analog io edge to use config-overridden id")
+	}
+
+	// Button event input overridden.
+	if countEdges(resp.Edges, "io", "device:button:Wall", "io:shelly|push_event|dev123:0") != 1 {
+		t.Errorf("expected button event_input io edge to use config-overridden id")
+	}
+
+	// Color light: not in EditableConfig, so the ad-hoc state ids are kept.
+	if countEdges(resp.Edges, "io", "device:color_light:Mood", "io:mock_output:9") != 1 {
+		t.Errorf("expected color light output io edge to keep the state-provided id (not in EditableConfig)")
+	}
+	moodOutNode, ok := findNode(resp.Nodes, "io:mock_output:9")
+	if !ok || !moodOutNode.Invalid {
+		t.Errorf("expected color light's unresolvable state io id to be flagged invalid, got %+v (found=%v)", moodOutNode, ok)
+	}
+}
+
+func TestBuildSchemaGraph_ConfigOverrideFallsBackOnEmptyConfigString(t *testing.T) {
+	// A device present in EditableConfig but with an empty DigitalOutName
+	// (not yet wired) must fall back to the state-provided id rather than
+	// clobbering it with an empty string.
+	state := app.AppState{
+		Devices: []app.DeviceState{
+			{Name: "Attic", Type: app.DeviceTypeLight, OutputIoId: "mock_output:7"},
+		},
+	}
+	cfg := app.EditableConfig{
+		Lights: []app.LightEditConfig{{Name: "Attic", DigitalOutName: ""}},
+	}
+	resp := buildSchemaGraph(state, &cfg)
+
+	if countEdges(resp.Edges, "io", "device:light:Attic", "io:mock_output:7") != 1 {
+		t.Errorf("expected fallback to state-provided io id when config string is empty")
+	}
+}
+
 func TestHandleApiSchema_MethodAndRoute(t *testing.T) {
 	ws := newTestWebServer(t, fullFixtureState(), nil)
 	req := httptest.NewRequest("GET", "/api/schema", nil)

@@ -74,7 +74,7 @@ func TestIoPointToIdShellyInputUsesNumericPort(t *testing.T) {
 		Name:       "shellyi4g3-e4b063d3f118:input1",
 	}
 
-	got := ioPointToId(pt)
+	got := app.IoPointToId(pt)
 	want := "shelly|d_in|shellyi4g3-e4b063d3f118:1"
 	if got != want {
 		t.Fatalf("unexpected io id: got %q, want %q", got, want)
@@ -88,7 +88,7 @@ func TestIoPointToIdShellyOutputUsesNumericPort(t *testing.T) {
 		Name:       "shelly1pm-ABCDEF123456:switch0",
 	}
 
-	got := ioPointToId(pt)
+	got := app.IoPointToId(pt)
 	want := "shelly|d_out|shelly1pm-ABCDEF123456:0"
 	if got != want {
 		t.Fatalf("unexpected io id: got %q, want %q", got, want)
@@ -103,7 +103,7 @@ func TestIoPointToIdWagoUsesGlobalIndex(t *testing.T) {
 		Name:       "M2:DI1",
 	}
 
-	got := ioPointToId(pt)
+	got := app.IoPointToId(pt)
 	want := "wago|d_in|5"
 	if got != want {
 		t.Fatalf("unexpected io id: got %q, want %q", got, want)

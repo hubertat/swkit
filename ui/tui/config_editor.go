@@ -1133,50 +1133,6 @@ func (ce *ConfigEditor) filteredIoPoints() []app.IoPointDebugState {
 	return pts
 }
 
-// ioPointToId converts an IO point debug state to an IO ID string
-func ioPointToId(pt app.IoPointDebugState) string {
-	typeStr := "d_in"
-	switch pt.Type {
-	case "output":
-		typeStr = "d_out"
-	case "analog_output":
-		typeStr = "a_out"
-	}
-	return ioPointToIdWithType(pt, typeStr)
-}
-
-func ioPointToIdWithType(pt app.IoPointDebugState, typeStr string) string {
-	return pt.DriverName + "|" + typeStr + "|" + ioPointNameForConfig(pt)
-}
-
-// ioPointNameForConfig converts debug display name into a driver-compatible IO name.
-func ioPointNameForConfig(pt app.IoPointDebugState) string {
-	switch pt.DriverName {
-	case "shelly":
-		parts := strings.SplitN(pt.Name, ":", 2)
-		if len(parts) != 2 {
-			return pt.Name
-		}
-		// Lights are addressed explicitly as "<device>:light:<index>".
-		if lightPort := strings.TrimPrefix(parts[1], "light"); lightPort != parts[1] {
-			if _, err := strconv.Atoi(lightPort); err == nil {
-				return parts[0] + ":light:" + lightPort
-			}
-		}
-		portPart := strings.TrimPrefix(parts[1], "input")
-		portPart = strings.TrimPrefix(portPart, "switch")
-		if _, err := strconv.Atoi(portPart); err == nil {
-			return parts[0] + ":" + portPart
-		}
-		return pt.Name
-	case "wago":
-		// Wago accepts global index format and pt.Index is stable for this.
-		return strconv.Itoa(pt.Index)
-	default:
-		return pt.Name
-	}
-}
-
 // ioPointDisplayKey returns the key format used for session IO names.
 func ioPointDisplayKey(pt app.IoPointDebugState) string {
 	return pt.DriverName + "|" + pt.Type + "|" + strconv.Itoa(pt.Index)
@@ -1231,26 +1187,26 @@ func (ce *ConfigEditor) ioPointToIdForCurrentField(pt app.IoPointDebugState) str
 		switch item.itemType {
 		case configItemLight:
 			if ce.ioPickerField == 1 {
-				return ioPointToIdWithType(pt, "d_out")
+				return app.IoPointToIdWithType(pt, "d_out")
 			}
 		case configItemDimmableLight:
 			switch ce.ioPickerField {
 			case 1:
-				return ioPointToIdWithType(pt, "d_out")
+				return app.IoPointToIdWithType(pt, "d_out")
 			case 2:
-				return ioPointToIdWithType(pt, "a_out")
+				return app.IoPointToIdWithType(pt, "a_out")
 			}
 		case configItemOutlet:
 			if ce.ioPickerField == 1 {
-				return ioPointToIdWithType(pt, "d_out")
+				return app.IoPointToIdWithType(pt, "d_out")
 			}
 		case configItemButton:
 			if ce.ioPickerField == 1 {
-				return ioPointToIdWithType(pt, "push_event")
+				return app.IoPointToIdWithType(pt, "push_event")
 			}
 		}
 	}
-	return ioPointToId(pt)
+	return app.IoPointToId(pt)
 }
 
 // updateIoPicker handles keys in IO picker mode

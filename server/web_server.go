@@ -96,6 +96,7 @@ func NewWebServerWithConfig(provider app.StateProvider, port int, logger *log.Lo
 	mux.HandleFunc("/api/state", ws.handleApiState)
 	mux.HandleFunc("/api/logs/stream", ws.handleLogsStream)
 	mux.HandleFunc("/api/schema", ws.handleApiSchema)
+	mux.HandleFunc("/api/config/edit", ws.handleApiConfigEdit)
 
 	ws.mux = mux
 	ws.server = &http.Server{

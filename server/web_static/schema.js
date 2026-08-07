@@ -55,19 +55,49 @@
     // ---- Module state (single object; stage 2 edit-mode fields go here too) ----
 
     const S = {
-        data: null,       // last /api/schema response
+        data: null,       // last /api/schema response (or, in edit mode, the client-built edit graph)
         showIo: true,     // "driver I/O" toolbar toggle
         selectedId: null, // clicked node id, drives the detail panel
         loading: false,
         error: null,
         listenersBound: false,
+
+        // ---- Stage 2: edit mode ----
+        editAvailable: null, // null = not probed yet; true/false once known (503 -> false)
+        editMode: false,     // whether the edit UI is currently active
+        editData: null,      // last GET /api/config/edit response ({config, meta})
+        working: null,       // deep working copy of editData.config, being edited
+        dirty: false,        // true once the working copy diverges from editData.config
+        selectedEdit: null,  // {kind, editId} for an editable device, or {kind:'color_light', label} - drives the edit form
+        saveErrors: null,    // string[] from the last failed POST /api/config/edit
+        colorLightNodes: [], // color light nodes snapshotted from the live graph on entering edit mode (read-only in the edit graph)
     };
+
+    let editIdSeq = 1;
+    function nextEditId() { return 'e' + (editIdSeq++); }
 
     // ---- Helpers ----
 
     function escHtml(s) {
         if (!s) return '';
         return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // mkEl creates a plain HTML element with attrs and (safe, textContent-only)
+    // text. Used throughout the edit-mode forms so user-controlled strings
+    // (device names, io ids, action text) are never passed through innerHTML.
+    // Named mkEl (not el) to avoid shadowing buildChrome's "el" container param.
+    function mkEl(tag, attrs, text) {
+        const e = document.createElement(tag);
+        if (attrs) {
+            for (const k in attrs) {
+                if (!Object.prototype.hasOwnProperty.call(attrs, k)) continue;
+                if (k === 'class') e.className = attrs[k];
+                else e.setAttribute(k, attrs[k]);
+            }
+        }
+        if (text !== undefined && text !== null) e.textContent = text;
+        return e;
     }
 
     function svgEl(tag, attrs) {
@@ -387,6 +417,9 @@
         if (n.faulty) {
             g.appendChild(svgEl('circle', { cx: item.x + NODE_W - 8, cy: item.y + 8, r: 4, class: 'schema-fault-dot' }));
         }
+        if (n.unsaved) {
+            g.appendChild(svgEl('circle', { cx: item.x + 8, cy: item.y + NODE_H - 8, r: 4, class: 'schema-unsaved-dot' }));
+        }
 
         return g;
     }
@@ -517,7 +550,30 @@
         if (svg) {
             if (id) applyAdjacency(svg, id); else clearAllDim(svg);
         }
-        renderDetailPanel();
+        if (S.editMode) {
+            S.selectedEdit = id ? nodeIdToEditSelection(id) : null;
+        }
+        renderActivePanel();
+    }
+
+    // nodeIdToEditSelection maps a clicked "device:<kind>:<name>" node id to
+    // an edit-panel selection. Returns null for driver/io nodes (not
+    // editable), missing placeholders (nothing to edit), and names that no
+    // longer resolve to a working-copy entry.
+    function nodeIdToEditSelection(id) {
+        if (!id || id.indexOf('device:') !== 0) return null;
+        const rest = id.slice('device:'.length);
+        const sep = rest.indexOf(':');
+        if (sep < 0) return null;
+        const kind = rest.slice(0, sep);
+        const name = rest.slice(sep + 1);
+        if (kind === 'missing') return null;
+        if (kind === 'color_light') return { kind: 'color_light', label: name };
+        const list = workingListFor(kind);
+        if (!list) return null;
+        const entry = list.find(function(e) { return e.Name === name; });
+        if (!entry) return null;
+        return { kind: kind, editId: entry._editId };
     }
 
     function clearAllDim(svg) {
@@ -624,6 +680,7 @@
         if (deviceCount === 0) {
             diagramEl.style.display = 'none';
             if (emptyEl) emptyEl.style.display = '';
+            renderActivePanel();
             return;
         }
         diagramEl.style.display = '';
@@ -631,7 +688,26 @@
 
         const layout = buildLayout(S.data, S.showIo);
         renderDiagram(diagramEl, S.data, layout);
-        renderDetailPanel();
+        renderActivePanel();
+    }
+
+    // renderActivePanel picks the right side-panel renderer for the current
+    // mode: the stage 1 read-only detail panel outside edit mode (or for
+    // driver/io nodes even inside edit mode, since those aren't editable),
+    // and the stage 2 edit form otherwise.
+    function renderActivePanel() {
+        if (!S.editMode) {
+            renderDetailPanel();
+            return;
+        }
+        if (!S.selectedEdit && S.selectedId && S.data) {
+            const node = S.data.nodes.find(function(n) { return n.id === S.selectedId; });
+            if (node && (node.kind === 'driver' || node.kind === 'io')) {
+                renderDetailPanel();
+                return;
+            }
+        }
+        renderEditPanel();
     }
 
     async function loadAndDraw() {
@@ -686,6 +762,14 @@
                 '<div class="schema-toolbar">' +
                     '<label class="schema-toggle"><input type="checkbox" id="schema-io-toggle" checked> ⚡ driver I/O</label>' +
                     '<button class="io-filter-btn" id="schema-refresh-btn">⟳ Refresh</button>' +
+                    '<button class="io-filter-btn" id="schema-edit-btn">✏️ Edit</button>' +
+                    '<div class="schema-add-wrap" id="schema-add-wrap" style="display:none">' +
+                        '<button class="io-filter-btn" id="schema-add-btn">+ Add ▾</button>' +
+                        '<div class="schema-add-menu" id="schema-add-menu" style="display:none"></div>' +
+                    '</div>' +
+                    '<button class="io-filter-btn" id="schema-save-btn" style="display:none">💾 Save</button>' +
+                    '<button class="io-filter-btn" id="schema-discard-btn" style="display:none">↩ Discard</button>' +
+                    '<span id="schema-unsaved-badge" class="badge badge-not-ready" style="display:none">unsaved changes</span>' +
                     '<span id="schema-status" class="text-muted"></span>' +
                 '</div>' +
                 buildLegend() +
@@ -701,12 +785,819 @@
         document.getElementById('schema-refresh-btn').addEventListener('click', function() {
             loadAndDraw();
         });
+        document.getElementById('schema-edit-btn').addEventListener('click', toggleEditMode);
+        document.getElementById('schema-save-btn').addEventListener('click', saveChanges);
+        document.getElementById('schema-discard-btn').addEventListener('click', discardChanges);
+        document.getElementById('schema-add-btn').addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            const menu = document.getElementById('schema-add-menu');
+            if (menu) menu.style.display = (menu.style.display === 'none') ? '' : 'none';
+        });
+        buildAddMenu();
+        updateEditButtonState();
+        probeEditAvailability();
 
         if (!S.listenersBound) {
             S.listenersBound = true;
             document.addEventListener('keydown', function(e) {
-                if (e.key === 'Escape' && S.selectedId) selectNode(null);
+                if (e.key === 'Escape' && (S.selectedId || S.selectedEdit)) selectNode(null);
             });
+            document.addEventListener('click', function() {
+                const menu = document.getElementById('schema-add-menu');
+                if (menu) menu.style.display = 'none';
+            });
+            window.addEventListener('beforeunload', function(e) {
+                if (S.editMode && S.dirty) {
+                    e.preventDefault();
+                    e.returnValue = '';
+                }
+            });
+        }
+    }
+
+    // ==================================================================
+    // Stage 2: edit mode
+    // ==================================================================
+
+    // ---- Availability probing / mode switching ----
+
+    async function probeEditAvailability() {
+        try {
+            const resp = await fetch('/api/config/edit');
+            S.editAvailable = resp.status !== 503;
+        } catch (e) {
+            S.editAvailable = false;
+        }
+        updateEditButtonState();
+    }
+
+    function updateEditButtonState() {
+        const btn = document.getElementById('schema-edit-btn');
+        if (!btn) return;
+        if (S.editAvailable === false) {
+            btn.disabled = true;
+            btn.title = 'Config editing is not available (no config provider configured on the server)';
+        } else {
+            btn.disabled = false;
+            btn.title = '';
+        }
+    }
+
+    function updateToolbarMode() {
+        const editBtn = document.getElementById('schema-edit-btn');
+        const saveBtn = document.getElementById('schema-save-btn');
+        const discardBtn = document.getElementById('schema-discard-btn');
+        const addWrap = document.getElementById('schema-add-wrap');
+        const unsavedBadge = document.getElementById('schema-unsaved-badge');
+        if (editBtn) editBtn.textContent = S.editMode ? '✕ Exit edit' : '✏️ Edit';
+        if (saveBtn) saveBtn.style.display = S.editMode ? '' : 'none';
+        if (discardBtn) discardBtn.style.display = S.editMode ? '' : 'none';
+        if (addWrap) addWrap.style.display = S.editMode ? '' : 'none';
+        if (unsavedBadge) unsavedBadge.style.display = (S.editMode && S.dirty) ? '' : 'none';
+    }
+
+    function toggleEditMode() {
+        if (S.editMode) {
+            if (S.dirty && !confirm('Discard unsaved changes and exit edit mode?')) return;
+            exitEditMode({ refetch: true });
+        } else {
+            enterEditMode();
+        }
+    }
+
+    async function enterEditMode() {
+        setStatus('Loading config…');
+        try {
+            const resp = await fetch('/api/config/edit');
+            if (resp.status === 503) {
+                S.editAvailable = false;
+                updateEditButtonState();
+                setStatus('Config editing not available');
+                return;
+            }
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            S.editData = await resp.json();
+            S.editAvailable = true;
+            // Color lights aren't part of EditableConfig, so the working copy
+            // has no notion of them; snapshot them from the live graph (still
+            // in S.data at this point) so the edit-mode diagram can still
+            // show them as read-only targets instead of bogus "missing"
+            // placeholders when a control relation or scene action names one.
+            S.colorLightNodes = (S.data && S.data.nodes || []).filter(function(n) {
+                return n.kind === 'device' && n.device_type === 'color_light';
+            });
+            S.working = buildWorkingCopy(S.editData.config);
+            S.dirty = false;
+            S.editMode = true;
+            S.selectedEdit = null;
+            S.selectedId = null;
+            S.saveErrors = null;
+            setStatus('');
+            updateToolbarMode();
+            redrawEdit();
+        } catch (e) {
+            setStatus('Failed to load config for editing: ' + (e && e.message || e));
+        }
+    }
+
+    // exitEditMode leaves edit mode. opts.refetch (default true) controls
+    // whether the live /api/schema view is reloaded immediately - saveChanges
+    // passes false so it can show a toast first and delay the refetch itself.
+    function exitEditMode(opts) {
+        opts = opts || {};
+        S.editMode = false;
+        S.working = null;
+        S.selectedEdit = null;
+        S.saveErrors = null;
+        S.dirty = false;
+        updateToolbarMode();
+        if (opts.refetch !== false) loadAndDraw();
+    }
+
+    function discardChanges() {
+        if (!S.dirty) return;
+        if (!confirm('Discard all unsaved changes?')) return;
+        S.working = buildWorkingCopy(S.editData.config);
+        S.dirty = false;
+        S.selectedEdit = null;
+        S.saveErrors = null;
+        updateToolbarMode();
+        redrawEdit();
+    }
+
+    function markDirty() {
+        S.dirty = true;
+        updateToolbarMode();
+    }
+
+    // redrawEdit rebuilds the client-side graph from the working copy and
+    // re-runs the normal (pure) layout/render pipeline against it, so hover
+    // adjacency, tooltips and the detail panel all keep working unmodified.
+    function redrawEdit() {
+        S.data = buildEditGraph(S.working, S.editData && S.editData.meta, S.colorLightNodes);
+        redraw();
+    }
+
+    // ---- Working copy ----
+
+    function withEditId(obj) {
+        obj._editId = nextEditId();
+        return obj;
+    }
+
+    function buildWorkingCopy(cfg) {
+        cfg = cfg || {};
+        return {
+            Lights: (cfg.Lights || []).map(function(l) { return withEditId(Object.assign({}, l)); }),
+            DimmableLights: (cfg.DimmableLights || []).map(function(d) { return withEditId(Object.assign({}, d)); }),
+            Outlets: (cfg.Outlets || []).map(function(o) { return withEditId(Object.assign({}, o)); }),
+            Buttons: (cfg.Buttons || []).map(function(b) {
+                return withEditId(Object.assign({}, b, {
+                    ControlDevices: (b.ControlDevices || []).map(function(cd) { return Object.assign({}, cd); }),
+                }));
+            }),
+            Scenes: (cfg.Scenes || []).map(function(s) {
+                return withEditId(Object.assign({}, s, {
+                    States: (s.States || []).map(function(st) {
+                        return Object.assign({}, st, { Actions: (st.Actions || []).slice() });
+                    }),
+                }));
+            }),
+        };
+    }
+
+    function workingListFor(kind) {
+        switch (kind) {
+            case 'light': return S.working.Lights;
+            case 'dimmable_light': return S.working.DimmableLights;
+            case 'outlet': return S.working.Outlets;
+            case 'button': return S.working.Buttons;
+            case 'scene': return S.working.Scenes;
+            default: return null;
+        }
+    }
+
+    function findWorkingEntry(kind, editId) {
+        const list = workingListFor(kind);
+        if (!list) return null;
+        return list.find(function(e) { return e._editId === editId; }) || null;
+    }
+
+    function deleteWorkingEntry(kind, editId) {
+        const list = workingListFor(kind);
+        if (!list) return;
+        const idx = list.findIndex(function(e) { return e._editId === editId; });
+        if (idx >= 0) list.splice(idx, 1);
+    }
+
+    function allWorkingNames() {
+        const names = new Set();
+        ['Lights', 'DimmableLights', 'Outlets', 'Buttons', 'Scenes'].forEach(function(key) {
+            (S.working[key] || []).forEach(function(e) { names.add(e.Name); });
+        });
+        return names;
+    }
+
+    function kindLabel(kind) {
+        switch (kind) {
+            case 'light': return 'Light';
+            case 'dimmable_light': return 'Dimmable Light';
+            case 'outlet': return 'Outlet';
+            case 'button': return 'Button';
+            case 'scene': return 'Scene';
+            case 'color_light': return 'Color Light';
+            default: return kind;
+        }
+    }
+
+    function uniquePlaceholderName(base) {
+        const names = allWorkingNames();
+        let candidate = 'New ' + base;
+        let n = 1;
+        while (names.has(candidate)) {
+            n++;
+            candidate = 'New ' + base + ' ' + n;
+        }
+        return candidate;
+    }
+
+    // propagateRename rewrites every reference to oldName in the working copy
+    // (button control-relation targets, scene action device names) to
+    // newName. Called once, at rename commit (blur), for controllable kinds.
+    function propagateRename(oldName, newName) {
+        (S.working.Buttons || []).forEach(function(b) {
+            (b.ControlDevices || []).forEach(function(cd) {
+                if (cd.DeviceName === oldName) cd.DeviceName = newName;
+            });
+        });
+        (S.working.Scenes || []).forEach(function(s) {
+            (s.States || []).forEach(function(st) {
+                st.Actions = (st.Actions || []).map(function(actionStr) {
+                    const parsed = parseActionString(actionStr);
+                    if (parsed && parsed.device === oldName) {
+                        parsed.device = newName;
+                        return formatActionString(parsed);
+                    }
+                    return actionStr;
+                });
+            });
+        });
+    }
+
+    function isBrightnessVerb(verb) {
+        return verb === 'brightness' || verb === 'brightness_up' || verb === 'brightness_down';
+    }
+
+    // parseActionString / formatActionString mirror app.ParseAction / Action.String
+    // (action.go): "<verb>:<device>" for on/off/toggle, "<verb>:<level>:<device>"
+    // for the brightness family. Used client-side for rename propagation and
+    // for building the live edit-mode diagram's scene_action edges.
+    function parseActionString(s) {
+        if (!s) return null;
+        const parts = String(s).split(':');
+        const verb = (parts[0] || '').toLowerCase();
+        if (verb === 'on' || verb === 'off' || verb === 'toggle') {
+            if (parts.length !== 2) return null;
+            return { verb: verb, level: 0, device: parts[1] };
+        }
+        if (isBrightnessVerb(verb)) {
+            if (parts.length !== 3) return null;
+            const level = parseInt(parts[1], 10);
+            if (isNaN(level)) return null;
+            return { verb: verb, level: level, device: parts[2] };
+        }
+        return null;
+    }
+
+    function formatActionString(a) {
+        if (isBrightnessVerb(a.verb)) return a.verb + ':' + a.level + ':' + a.device;
+        return a.verb + ':' + a.device;
+    }
+
+    // sanitizeWorkingCopy strips the internal-only _editId/_isNew bookkeeping
+    // fields before the working copy is sent to the server.
+    function sanitizeWorkingCopy(working) {
+        return JSON.parse(JSON.stringify(working, function(key, value) {
+            if (key.indexOf('_') === 0) return undefined;
+            return value;
+        }));
+    }
+
+    // ---- Add / delete devices ----
+
+    function buildAddMenu() {
+        const menu = document.getElementById('schema-add-menu');
+        if (!menu) return;
+        menu.textContent = '';
+        [
+            { kind: 'light', icon: '\u{1F4A1}' },
+            { kind: 'dimmable_light', icon: '\u{1F506}' },
+            { kind: 'outlet', icon: '\u{1F50C}' },
+            { kind: 'button', icon: '\u{1F446}' },
+            { kind: 'scene', icon: '\u{1F3AC}' },
+        ].forEach(function(it) {
+            const btn = mkEl('button', { class: 'schema-add-menu-item' }, it.icon + ' ' + kindLabel(it.kind));
+            btn.addEventListener('click', function() {
+                addDevice(it.kind);
+                menu.style.display = 'none';
+            });
+            menu.appendChild(btn);
+        });
+    }
+
+    function addDevice(kind) {
+        if (!S.working) return;
+        const name = uniquePlaceholderName(kindLabel(kind));
+        let entry;
+        switch (kind) {
+            case 'light':
+                entry = withEditId({ Name: name, DigitalOutName: '', DisableHomekit: false });
+                S.working.Lights.push(entry);
+                break;
+            case 'dimmable_light':
+                entry = withEditId({ Name: name, DigitalOutName: '', AnalogOutName: '', DefaultSetpoint: 0, DisableHomekit: false });
+                S.working.DimmableLights.push(entry);
+                break;
+            case 'outlet':
+                entry = withEditId({ Name: name, DigitalOutName: '', DisableHomekit: false });
+                S.working.Outlets.push(entry);
+                break;
+            case 'button':
+                entry = withEditId({ Name: name, EventInputName: '', DisableHomekit: false, ControlDevices: [] });
+                S.working.Buttons.push(entry);
+                break;
+            case 'scene':
+                entry = withEditId({ Name: name, States: [] });
+                S.working.Scenes.push(entry);
+                break;
+            default:
+                return;
+        }
+        entry._isNew = true;
+        S.selectedEdit = { kind: kind, editId: entry._editId };
+        S.selectedId = 'device:' + kind + ':' + name;
+        markDirty();
+        redrawEdit();
+    }
+
+    // ---- Client-side edit graph (mirrors buildSchemaGraph/schema.go's shape) ----
+
+    function buildEditGraph(working, meta, colorLights) {
+        const nodes = [];
+        const edges = [];
+        const targetIndex = new Map();  // controllable device name -> node id
+        const missingNodes = new Map(); // dangling target name -> placeholder node id
+        const ioNodesSeen = new Set();
+        const driverNodesSeen = new Set();
+        const knownDrivers = new Set((meta && meta.drivers) || []);
+
+        // Color lights aren't part of EditableConfig (read-only, see
+        // buildColorLightReadOnly/renderEditPanel); include them verbatim
+        // from the live snapshot so they resolve as valid targets instead of
+        // dangling-target placeholders.
+        (colorLights || []).forEach(function(n) {
+            nodes.push(n);
+            targetIndex.set(n.label, n.id);
+        });
+
+        function addDeviceNode(kind, entry, detail) {
+            const id = 'device:' + kind + ':' + entry.Name;
+            nodes.push({
+                id: id, kind: 'device', device_type: kind, label: entry.Name,
+                homekit: kind === 'scene' ? false : !entry.DisableHomekit,
+                healthy: true, faulty: false, is_on: false,
+                unsaved: !!entry._isNew,
+                detail: detail || null,
+            });
+            if (kind !== 'button') targetIndex.set(entry.Name, id);
+            return id;
+        }
+
+        function addIoEdge(fromId, ioId, role) {
+            if (!ioId) return;
+            const nodeId = 'io:' + ioId;
+            if (!ioNodesSeen.has(nodeId)) {
+                ioNodesSeen.add(nodeId);
+                const parts = String(ioId).split('|');
+                if (parts.length !== 3) {
+                    nodes.push({ id: nodeId, kind: 'io', label: ioId, invalid: true });
+                } else {
+                    const driver = parts[0], ioType = parts[1], name = parts[2];
+                    nodes.push({ id: nodeId, kind: 'io', driver: driver, io_type: ioType, label: name });
+                    if (!driverNodesSeen.has(driver)) {
+                        driverNodesSeen.add(driver);
+                        const known = knownDrivers.has(driver);
+                        nodes.push({ id: 'driver:' + driver, kind: 'driver', label: driver, ready: known, missing: !known });
+                    }
+                }
+            }
+            edges.push({ kind: 'io', from: fromId, to: nodeId, role: role });
+        }
+
+        function resolveTarget(name) {
+            if (targetIndex.has(name)) return targetIndex.get(name);
+            if (missingNodes.has(name)) return missingNodes.get(name);
+            const id = 'device:missing:' + name;
+            missingNodes.set(name, id);
+            nodes.push({ id: id, kind: 'device', device_type: 'missing', label: name, missing: true });
+            return id;
+        }
+
+        (working.Lights || []).forEach(function(l) {
+            const id = addDeviceNode('light', l, { output_io_id: l.DigitalOutName });
+            addIoEdge(id, l.DigitalOutName, 'output');
+        });
+        (working.Outlets || []).forEach(function(o) {
+            const id = addDeviceNode('outlet', o, { output_io_id: o.DigitalOutName });
+            addIoEdge(id, o.DigitalOutName, 'output');
+        });
+        (working.DimmableLights || []).forEach(function(dl) {
+            const id = addDeviceNode('dimmable_light', dl, { output_io_id: dl.DigitalOutName, analog_io_id: dl.AnalogOutName });
+            addIoEdge(id, dl.DigitalOutName, 'output');
+            addIoEdge(id, dl.AnalogOutName, 'analog');
+        });
+        (working.Scenes || []).forEach(function(s) {
+            addDeviceNode('scene', s, { state_names: (s.States || []).map(function(st) { return st.Name; }) });
+        });
+        (working.Buttons || []).forEach(function(b) {
+            const id = addDeviceNode('button', b, { event_input_id: b.EventInputName });
+            addIoEdge(id, b.EventInputName, 'event_input');
+        });
+
+        (working.Buttons || []).forEach(function(b) {
+            const fromId = 'device:button:' + b.Name;
+            (b.ControlDevices || []).forEach(function(cd) {
+                if (!cd.DeviceName) return;
+                const toId = resolveTarget(cd.DeviceName);
+                edges.push({ kind: 'control', from: fromId, to: toId, event: cd.EventType, action: cd.Action, level: cd.Level || 0 });
+            });
+        });
+        (working.Scenes || []).forEach(function(s) {
+            const fromId = 'device:scene:' + s.Name;
+            (s.States || []).forEach(function(st) {
+                (st.Actions || []).forEach(function(actionStr) {
+                    const parsed = parseActionString(actionStr);
+                    if (!parsed) return;
+                    const toId = resolveTarget(parsed.device);
+                    edges.push({ kind: 'scene_action', from: fromId, to: toId, state: st.Name, action: parsed.verb, level: parsed.level || 0 });
+                });
+            });
+        });
+
+        return { nodes: nodes, edges: edges };
+    }
+
+    // ---- Form field builders ----
+
+    function labeledField(labelText, inputEl) {
+        const wrap = mkEl('div', { class: 'edit-field' });
+        wrap.appendChild(mkEl('label', { class: 'edit-label' }, labelText));
+        wrap.appendChild(inputEl);
+        return wrap;
+    }
+
+    function textInputEl(value, onCommit) {
+        const input = mkEl('input', { type: 'text', class: 'edit-input' });
+        input.value = value || '';
+        input.addEventListener('blur', function() { onCommit(input.value); });
+        input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
+        return input;
+    }
+
+    function numberInputEl(value, min, max, onCommit) {
+        const input = mkEl('input', { type: 'number', class: 'edit-input', min: min, max: max });
+        input.value = (value != null) ? value : 0;
+        input.addEventListener('blur', function() { onCommit(parseInt(input.value, 10) || 0); });
+        input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
+        return input;
+    }
+
+    function checkboxFieldEl(labelText, checked, onChange) {
+        const wrap = mkEl('label', { class: 'edit-checkbox-label' });
+        const cb = mkEl('input', { type: 'checkbox' });
+        cb.checked = !!checked;
+        cb.addEventListener('change', function() { onChange(cb.checked); });
+        wrap.appendChild(cb);
+        wrap.appendChild(document.createTextNode(' ' + labelText));
+        return wrap;
+    }
+
+    function selectFieldEl(options, value, onChange) {
+        const sel = mkEl('select', { class: 'edit-select' });
+        options.forEach(function(opt) {
+            const o = mkEl('option', { value: opt }, opt);
+            if (opt === value) o.selected = true;
+            sel.appendChild(o);
+        });
+        sel.addEventListener('change', function() { onChange(sel.value); });
+        return sel;
+    }
+
+    let ioListSeq = 0;
+
+    function ioFieldEl(labelText, value, ioType, onCommit) {
+        const wrap = mkEl('div', { class: 'edit-field' });
+        wrap.appendChild(mkEl('label', { class: 'edit-label' }, labelText));
+        const listId = 'schema-io-list-' + (ioListSeq++);
+        const input = mkEl('input', { type: 'text', class: 'edit-input mono', list: listId, placeholder: 'driver|type|name' });
+        input.value = value || '';
+        input.addEventListener('blur', function() { onCommit(input.value.trim()); });
+        input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
+        wrap.appendChild(input);
+
+        const datalist = mkEl('datalist', { id: listId });
+        const suggestions = (S.editData && S.editData.meta && S.editData.meta.io_suggestions && S.editData.meta.io_suggestions[ioType]) || [];
+        suggestions.forEach(function(s) {
+            const opt = mkEl('option', { value: s.id });
+            opt.textContent = s.configured_as ? (s.label + ' (taken: ' + s.configured_as + ')') : s.label;
+            datalist.appendChild(opt);
+        });
+        wrap.appendChild(datalist);
+        return wrap;
+    }
+
+    function targetNameOptions() {
+        const set = new Set();
+        const metaNames = (S.editData && S.editData.meta && S.editData.meta.output_device_names) || [];
+        metaNames.forEach(function(n) { set.add(n); });
+        ['Lights', 'DimmableLights', 'Outlets', 'Scenes'].forEach(function(key) {
+            (S.working[key] || []).forEach(function(e) { set.add(e.Name); });
+        });
+        return Array.from(set).sort();
+    }
+
+    function buildNameField(panel, entry, kind) {
+        panel.appendChild(labeledField('Name', textInputEl(entry.Name, function(v) {
+            v = v.trim();
+            if (!v || v === entry.Name) { redrawEdit(); return; }
+            const old = entry.Name;
+            entry.Name = v;
+            if (kind === 'light' || kind === 'dimmable_light' || kind === 'outlet' || kind === 'scene') {
+                propagateRename(old, v);
+            }
+            S.selectedId = 'device:' + kind + ':' + v;
+            markDirty();
+            redrawEdit();
+        })));
+    }
+
+    function buildLightForm(panel, entry) {
+        buildNameField(panel, entry, 'light');
+        panel.appendChild(ioFieldEl('Digital Out', entry.DigitalOutName, 'd_out', function(v) {
+            entry.DigitalOutName = v; markDirty(); redrawEdit();
+        }));
+        panel.appendChild(checkboxFieldEl('Disable HomeKit', entry.DisableHomekit, function(v) {
+            entry.DisableHomekit = v; markDirty(); redrawEdit();
+        }));
+    }
+
+    function buildOutletForm(panel, entry) {
+        buildNameField(panel, entry, 'outlet');
+        panel.appendChild(ioFieldEl('Digital Out', entry.DigitalOutName, 'd_out', function(v) {
+            entry.DigitalOutName = v; markDirty(); redrawEdit();
+        }));
+        panel.appendChild(checkboxFieldEl('Disable HomeKit', entry.DisableHomekit, function(v) {
+            entry.DisableHomekit = v; markDirty(); redrawEdit();
+        }));
+    }
+
+    function buildDimmableForm(panel, entry) {
+        buildNameField(panel, entry, 'dimmable_light');
+        panel.appendChild(ioFieldEl('Digital Out', entry.DigitalOutName, 'd_out', function(v) {
+            entry.DigitalOutName = v; markDirty(); redrawEdit();
+        }));
+        panel.appendChild(ioFieldEl('Analog Out', entry.AnalogOutName, 'a_out', function(v) {
+            entry.AnalogOutName = v; markDirty(); redrawEdit();
+        }));
+        panel.appendChild(labeledField('Default Setpoint (0-100)', numberInputEl(entry.DefaultSetpoint, 0, 100, function(v) {
+            entry.DefaultSetpoint = Math.max(0, Math.min(100, v)); markDirty(); redrawEdit();
+        })));
+        panel.appendChild(checkboxFieldEl('Disable HomeKit', entry.DisableHomekit, function(v) {
+            entry.DisableHomekit = v; markDirty(); redrawEdit();
+        }));
+    }
+
+    function buildButtonForm(panel, entry) {
+        buildNameField(panel, entry, 'button');
+        panel.appendChild(ioFieldEl('Event Input', entry.EventInputName, 'push_event', function(v) {
+            entry.EventInputName = v; markDirty(); redrawEdit();
+        }));
+        panel.appendChild(checkboxFieldEl('Disable HomeKit', entry.DisableHomekit, function(v) {
+            entry.DisableHomekit = v; markDirty(); redrawEdit();
+        }));
+
+        panel.appendChild(mkEl('div', { class: 'schema-panel-section' }, 'Control relations'));
+        entry.ControlDevices = entry.ControlDevices || [];
+        const list = mkEl('div', { class: 'edit-relation-list' });
+        entry.ControlDevices.forEach(function(cd, idx) {
+            list.appendChild(buildControlRelationRow(entry, cd, idx));
+        });
+        panel.appendChild(list);
+
+        const addBtn = mkEl('button', { class: 'io-filter-btn' }, '+ Add relation');
+        addBtn.addEventListener('click', function() {
+            const targets = targetNameOptions();
+            entry.ControlDevices.push({ EventType: 'single_press', Action: 'toggle', Level: 0, DeviceName: targets[0] || '' });
+            markDirty();
+            redrawEdit();
+        });
+        panel.appendChild(addBtn);
+    }
+
+    function buildControlRelationRow(button, cd, idx) {
+        const meta = (S.editData && S.editData.meta) || {};
+        const eventTypes = meta.event_types || ['single_press', 'double_press', 'triple_press', 'long_press'];
+        const verbs = meta.action_verbs || ['on', 'off', 'toggle', 'brightness', 'brightness_up', 'brightness_down'];
+
+        const row = mkEl('div', { class: 'edit-relation-row' });
+        row.appendChild(selectFieldEl(eventTypes, cd.EventType, function(v) { cd.EventType = v; markDirty(); redrawEdit(); }));
+        row.appendChild(selectFieldEl(verbs, cd.Action, function(v) { cd.Action = v; markDirty(); redrawEdit(); }));
+        if (isBrightnessVerb(cd.Action)) {
+            row.appendChild(numberInputEl(cd.Level, 0, 100, function(v) { cd.Level = Math.max(0, Math.min(100, v)); markDirty(); redrawEdit(); }));
+        }
+        row.appendChild(selectFieldEl(targetNameOptions(), cd.DeviceName, function(v) { cd.DeviceName = v; markDirty(); redrawEdit(); }));
+        const rmBtn = mkEl('button', { class: 'io-filter-btn schema-row-remove' }, '✕');
+        rmBtn.addEventListener('click', function() {
+            button.ControlDevices.splice(idx, 1);
+            markDirty();
+            redrawEdit();
+        });
+        row.appendChild(rmBtn);
+        return row;
+    }
+
+    function buildSceneForm(panel, entry) {
+        buildNameField(panel, entry, 'scene');
+        panel.appendChild(mkEl('div', { class: 'schema-panel-section' }, 'States'));
+        entry.States = entry.States || [];
+        const list = mkEl('div', { class: 'edit-state-list' });
+        entry.States.forEach(function(st, idx) {
+            list.appendChild(buildSceneStateRow(entry, st, idx));
+        });
+        panel.appendChild(list);
+
+        const addBtn = mkEl('button', { class: 'io-filter-btn' }, '+ Add state');
+        addBtn.addEventListener('click', function() {
+            entry.States.push({ Name: 'state' + (entry.States.length + 1), Actions: [] });
+            markDirty();
+            redrawEdit();
+        });
+        panel.appendChild(addBtn);
+    }
+
+    function buildSceneStateRow(scene, st, idx) {
+        const wrap = mkEl('div', { class: 'edit-state-row' });
+        wrap.appendChild(labeledField('State name', textInputEl(st.Name, function(v) {
+            v = v.trim();
+            if (v) st.Name = v;
+            markDirty();
+            redrawEdit();
+        })));
+
+        const ta = mkEl('textarea', { class: 'edit-textarea', rows: 4 });
+        ta.value = (st.Actions || []).join('\n');
+        ta.addEventListener('blur', function() {
+            st.Actions = ta.value.split('\n').map(function(s) { return s.trim(); }).filter(function(s) { return s !== ''; });
+            markDirty();
+            redrawEdit();
+        });
+        wrap.appendChild(labeledField('Actions (one per line)', ta));
+
+        const rmBtn = mkEl('button', { class: 'io-filter-btn schema-row-remove' }, '✕ Remove state');
+        rmBtn.addEventListener('click', function() {
+            scene.States.splice(idx, 1);
+            markDirty();
+            redrawEdit();
+        });
+        wrap.appendChild(rmBtn);
+        return wrap;
+    }
+
+    function buildErrorsBlock(errors) {
+        const wrap = mkEl('div', { class: 'schema-panel-errors' });
+        wrap.appendChild(mkEl('div', { class: 'schema-panel-section text-error' }, 'Could not save'));
+        const ul = mkEl('ul', { class: 'schema-panel-list' });
+        errors.forEach(function(e) {
+            ul.appendChild(mkEl('li', { class: 'text-error' }, e));
+        });
+        wrap.appendChild(ul);
+        return wrap;
+    }
+
+    // renderEditPanel builds the stage 2 edit form for S.selectedEdit into
+    // #schema-detail-panel via createElement/textContent only - never
+    // innerHTML with a user-controlled string (device names, io ids, scene
+    // action text are all attacker-controllable in principle).
+    function renderEditPanel() {
+        const panel = document.getElementById('schema-detail-panel');
+        if (!panel) return;
+        panel.textContent = '';
+
+        if (!S.selectedEdit) {
+            panel.classList.remove('open');
+            return;
+        }
+
+        if (S.selectedEdit.kind === 'color_light') {
+            const closeBtn = mkEl('button', { class: 'schema-panel-close', 'aria-label': 'Close' }, '✕');
+            closeBtn.addEventListener('click', function() { selectNode(null); });
+            panel.appendChild(closeBtn);
+            panel.appendChild(mkEl('div', { class: 'schema-panel-title' }, '\u{1F308} ' + S.selectedEdit.label));
+            panel.appendChild(mkEl('div', { class: 'text-muted' }, 'Color lights are not editable here yet.'));
+            panel.classList.add('open');
+            return;
+        }
+
+        const entry = findWorkingEntry(S.selectedEdit.kind, S.selectedEdit.editId);
+        if (!entry) {
+            S.selectedEdit = null;
+            panel.classList.remove('open');
+            return;
+        }
+
+        const closeBtn = mkEl('button', { class: 'schema-panel-close', 'aria-label': 'Close' }, '✕');
+        closeBtn.addEventListener('click', function() { selectNode(null); });
+        panel.appendChild(closeBtn);
+        panel.appendChild(mkEl('div', { class: 'schema-panel-title' }, 'Edit ' + kindLabel(S.selectedEdit.kind)));
+
+        switch (S.selectedEdit.kind) {
+            case 'light': buildLightForm(panel, entry); break;
+            case 'dimmable_light': buildDimmableForm(panel, entry); break;
+            case 'outlet': buildOutletForm(panel, entry); break;
+            case 'button': buildButtonForm(panel, entry); break;
+            case 'scene': buildSceneForm(panel, entry); break;
+        }
+
+        if (S.saveErrors && S.saveErrors.length) {
+            panel.appendChild(buildErrorsBlock(S.saveErrors));
+        }
+
+        const actions = mkEl('div', { class: 'schema-panel-actions' });
+        const delBtn = mkEl('button', { class: 'io-filter-btn schema-delete-btn' }, '🗑 Delete');
+        delBtn.addEventListener('click', function() {
+            if (!confirm('Delete this ' + kindLabel(S.selectedEdit.kind) + '? This cannot be undone.')) return;
+            deleteWorkingEntry(S.selectedEdit.kind, S.selectedEdit.editId);
+            S.selectedEdit = null;
+            S.selectedId = null;
+            markDirty();
+            redrawEdit();
+        });
+        actions.appendChild(delBtn);
+        panel.appendChild(actions);
+
+        panel.classList.add('open');
+    }
+
+    // ---- Save ----
+
+    let toastEl = null;
+    let toastTimer = null;
+
+    function showToast(msg) {
+        if (!toastEl) {
+            toastEl = document.createElement('div');
+            toastEl.className = 'schema-toast';
+            document.body.appendChild(toastEl);
+        }
+        toastEl.textContent = msg;
+        toastEl.classList.add('visible');
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(function() { toastEl.classList.remove('visible'); }, 3000);
+    }
+
+    async function saveChanges() {
+        const saveBtn = document.getElementById('schema-save-btn');
+        if (saveBtn) saveBtn.disabled = true;
+        setStatus('Saving…');
+        try {
+            const payload = sanitizeWorkingCopy(S.working);
+            const resp = await fetch('/api/config/edit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config: payload }),
+            });
+            let data;
+            try {
+                data = await resp.json();
+            } catch (e) {
+                data = { ok: false, errors: ['invalid response from server'] };
+            }
+            if (!resp.ok || !data.ok) {
+                S.saveErrors = (data.errors && data.errors.length) ? data.errors : ['save failed (HTTP ' + resp.status + ')'];
+                setStatus('');
+                renderEditPanel();
+                return;
+            }
+            S.saveErrors = null;
+            setStatus('');
+            showToast('Saved — config reload triggered');
+            exitEditMode({ refetch: false });
+            setTimeout(loadAndDraw, 1500);
+        } catch (e) {
+            S.saveErrors = ['network error: ' + (e && e.message || e)];
+            renderEditPanel();
+        } finally {
+            if (saveBtn) saveBtn.disabled = false;
         }
     }
 
@@ -726,5 +1617,15 @@
         loadAndDraw();
     }
 
-    window.swkitSchema = { render };
+    window.swkitSchema = {
+        render: render,
+        hasUnsavedChanges: function() { return S.editMode && S.dirty; },
+        discardSilently: function() {
+            S.editMode = false;
+            S.working = null;
+            S.dirty = false;
+            S.selectedEdit = null;
+            S.saveErrors = null;
+        },
+    };
 })();

@@ -1030,3 +1030,189 @@ td.mono {
         right: 12px;
     }
 }
+
+/* ---- Schema: edit mode (stage 2) ---- */
+
+.schema-unsaved-dot {
+    fill: var(--warning);
+}
+
+.schema-add-wrap {
+    position: relative;
+    display: inline-block;
+}
+
+.schema-add-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    min-width: 170px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+}
+
+.schema-add-menu-item {
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--transition);
+}
+
+.schema-add-menu-item:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text);
+}
+
+.schema-panel-actions {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.schema-delete-btn {
+    color: var(--error);
+    border-color: var(--error);
+}
+
+.schema-delete-btn:hover {
+    background: rgba(247, 118, 142, 0.12);
+}
+
+.schema-panel-errors {
+    margin-top: 12px;
+}
+
+.schema-panel-errors .schema-panel-list li {
+    border-bottom: none;
+    padding: 2px 0;
+}
+
+.edit-field {
+    margin-bottom: 12px;
+}
+
+.edit-label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.edit-input,
+.edit-select,
+.edit-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text);
+    font-size: 0.82rem;
+    outline: none;
+    transition: border-color var(--transition);
+}
+
+.edit-input.mono {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+}
+
+.edit-input:focus,
+.edit-select:focus,
+.edit-textarea:focus {
+    border-color: var(--accent);
+}
+
+.edit-textarea {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+    resize: vertical;
+}
+
+.edit-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    cursor: pointer;
+}
+
+.edit-relation-list,
+.edit-state-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.edit-relation-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 4px;
+    align-items: center;
+    padding: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.edit-relation-row .edit-select,
+.edit-relation-row .edit-input {
+    min-width: 0;
+}
+
+.edit-state-row {
+    padding: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.schema-row-remove {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+}
+
+.schema-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(12px);
+    background: var(--bg-surface);
+    border: 1px solid var(--success);
+    color: var(--text);
+    padding: 10px 18px;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    font-size: 0.85rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--transition), transform var(--transition);
+    z-index: 100;
+}
+
+.schema-toast.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+#schema-edit-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}

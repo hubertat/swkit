@@ -111,9 +111,29 @@ func buildSchemaGraph(state app.AppState, cfg *app.EditableConfig) apiSchemaResp
 	}
 
 	// ---- IO + device nodes, IO edges ----
+	// Config-provided io ids (DigitalOutName/AnalogOutName/EventInputName) are
+	// preferred over the state-provided ones where a device is present in
+	// EditableConfig: state ids come from driver IO objects' String() methods,
+	// which for Shelly/Grenton/Mock return ad-hoc debug strings that do not
+	// parse with drivers.ResolveIoIdString (see configIoOverrides). Devices
+	// absent from EditableConfig (color lights) or with an empty config
+	// string fall back to the state id unchanged.
+	configIoOverrides := buildConfigIoIndex(cfg)
 	ioNodeSeen := make(map[string]bool)
 	for _, d := range state.Devices {
 		nodeID := deviceNodeId(d.Type, d.Name)
+
+		if override, ok := configIoOverrides[configIoKey(d.Type, d.Name)]; ok {
+			if override.OutputIoId != "" {
+				d.OutputIoId = override.OutputIoId
+			}
+			if override.AnalogIoId != "" {
+				d.AnalogIoId = override.AnalogIoId
+			}
+			if override.EventInputId != "" {
+				d.EventInputId = override.EventInputId
+			}
+		}
 
 		homekit := d.HomeKitEnabled
 		healthy := d.IsHealthy
@@ -211,6 +231,48 @@ func buildSchemaGraph(state app.AppState, cfg *app.EditableConfig) apiSchemaResp
 	}
 
 	return resp
+}
+
+// configIoOverride carries the canonical (config-grammar) io ids for a single
+// device, as read from app.EditableConfig, keyed by device type+name.
+type configIoOverride struct {
+	OutputIoId   string
+	AnalogIoId   string
+	EventInputId string
+}
+
+// configIoKey returns the lookup key used by configIoOverrides: device type
+// and name, matching how state.Devices and EditableConfig entries correspond.
+func configIoKey(deviceType app.DeviceType, name string) string {
+	return string(deviceType) + "|" + name
+}
+
+// buildConfigIoIndex builds a device (type+name) -> configIoOverride index
+// from the editable config's DigitalOutName/AnalogOutName/EventInputName
+// fields. Returns an empty (non-nil) map if cfg is nil. Color lights are not
+// part of app.EditableConfig, so they are never present in the result - their
+// nodes/edges always fall back to the state-provided io ids.
+func buildConfigIoIndex(cfg *app.EditableConfig) map[string]configIoOverride {
+	idx := make(map[string]configIoOverride)
+	if cfg == nil {
+		return idx
+	}
+	for _, l := range cfg.Lights {
+		idx[configIoKey(app.DeviceTypeLight, l.Name)] = configIoOverride{OutputIoId: l.DigitalOutName}
+	}
+	for _, o := range cfg.Outlets {
+		idx[configIoKey(app.DeviceTypeOutlet, o.Name)] = configIoOverride{OutputIoId: o.DigitalOutName}
+	}
+	for _, dl := range cfg.DimmableLights {
+		idx[configIoKey(app.DeviceTypeDimmableLight, dl.Name)] = configIoOverride{
+			OutputIoId: dl.DigitalOutName,
+			AnalogIoId: dl.AnalogOutName,
+		}
+	}
+	for _, b := range cfg.Buttons {
+		idx[configIoKey(app.DeviceTypeButton, b.Name)] = configIoOverride{EventInputId: b.EventInputName}
+	}
+	return idx
 }
 
 // deviceNodeId returns the canonical node id for a device: "device:<type>:<name>".

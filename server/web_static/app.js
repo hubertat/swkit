@@ -637,6 +637,20 @@
 
     function renderPage(state) {
         const tab = getTab();
+
+        // Leaving the schema tab with unsaved edit-mode changes needs
+        // confirmation, since the whole schema chrome (including the working
+        // copy) lives only in schema.js's module state and gets discarded the
+        // moment another tab's render*() replaces #page-content wholesale.
+        if (currentTab === 'schema' && tab !== 'schema' &&
+            window.swkitSchema && window.swkitSchema.hasUnsavedChanges && window.swkitSchema.hasUnsavedChanges()) {
+            if (!confirm('You have unsaved schema changes. Leave without saving?')) {
+                history.replaceState(null, '', '/schema');
+                return; // stay put; #page-content/schema chrome is untouched
+            }
+            window.swkitSchema.discardSilently();
+        }
+
         currentTab = tab;
 
         // Update nav active state
