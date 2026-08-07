@@ -203,16 +203,19 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 
 	for _, d := range state.Devices {
 		dev := apiDevice{
-			Name:           d.Name,
-			Type:           string(d.Type),
-			IsOn:           d.IsOn,
-			IsHealthy:      d.IsHealthy,
-			IsFaulty:       d.IsFaulty,
-			HomeKitEnabled: d.HomeKitEnabled,
-			OutputIoId:     d.OutputIoId,
-			RgbwIoId:       d.RgbwIoId,
-			EventInputId:   d.EventInputId,
-			LastEventType:  d.LastEventType,
+			Name:            d.Name,
+			Type:            string(d.Type),
+			IsOn:            d.IsOn,
+			IsHealthy:       d.IsHealthy,
+			IsFaulty:        d.IsFaulty,
+			HomeKitEnabled:  d.HomeKitEnabled,
+			OutputIoId:      d.OutputIoId,
+			RgbwIoId:        d.RgbwIoId,
+			EventInputId:    d.EventInputId,
+			LastEventType:   d.LastEventType,
+			Brightness:      d.Brightness,
+			SceneStateIndex: d.SceneStateIndex,
+			SceneStateNames: d.SceneStateNames,
 		}
 		if !d.LastEventTime.IsZero() {
 			dev.LastEventTime = &d.LastEventTime
@@ -229,6 +232,19 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, pt := range state.IoDebug {
+		// IoIds carries the canonical config-grammar id(s) (driver|type|name)
+		// this debug point resolves to, via the same app.IoPointToId/
+		// IoPointToIdWithType conversion schema.go uses to key io node ids -
+		// so the schema tab's live overlay can match io_debug entries to
+		// schema io pills without re-implementing the shelly/wago name
+		// translation in JS. Input points get two ids (their natural d_in id
+		// plus the push_event variant), matching ioCustomNames in schema.go,
+		// since button EventInputName fields are push_event-typed while the
+		// debug point itself reports Type "input".
+		ioIds := []string{app.IoPointToId(pt)}
+		if pt.Type == "input" {
+			ioIds = append(ioIds, app.IoPointToIdWithType(pt, "push_event"))
+		}
 		ioPt := apiIoPoint{
 			DriverName:   pt.DriverName,
 			Index:        pt.Index,
@@ -241,6 +257,7 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 			Value:        pt.Value,
 			Min:          pt.Min,
 			Max:          pt.Max,
+			IoIds:        ioIds,
 		}
 		if !pt.LastChanged.IsZero() {
 			ioPt.LastChanged = &pt.LastChanged
@@ -385,6 +402,14 @@ type apiDevice struct {
 	ControlRelations []apiControlRelation `json:"control_relations,omitempty"`
 	LastEventType    string               `json:"last_event_type,omitempty"`
 	LastEventTime    *time.Time           `json:"last_event_time,omitempty"`
+
+	// Brightness (dimmable lights only) and scene state (scenes only) are
+	// carried on /api/state so the schema tab's live overlay (schema.js) can
+	// show them without a second fetch - the /api/schema graph only snapshots
+	// these at diagram-build/refresh time, not on every 1s poll.
+	Brightness      int      `json:"brightness,omitempty"`
+	SceneStateIndex int      `json:"scene_state_index,omitempty"`
+	SceneStateNames []string `json:"scene_state_names,omitempty"`
 }
 
 type apiControlRelation struct {
@@ -405,6 +430,7 @@ type apiIoPoint struct {
 	LastEvent    *time.Time `json:"last_event,omitempty"`
 	ConfiguredAs string     `json:"configured_as,omitempty"`
 	CustomName   string     `json:"custom_name,omitempty"`
+	IoIds        []string   `json:"io_ids,omitempty"`
 
 	// Analog fields, populated only when Type == "analog_output".
 	Value int `json:"value,omitempty"`

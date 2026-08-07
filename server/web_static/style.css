@@ -845,6 +845,61 @@ td.mono {
     fill: var(--error);
 }
 
+/* ---- Live state overlay (round-2 item 3) ---- */
+/* State dot + brightness/event/scene-state label, seeded from the initial
+   /api/schema snapshot and then only ever updated in place (class/text) on
+   every 1s /api/state poll - see setDotState/updateDeviceOverlay in
+   schema.js. Reuses the existing --on/--off vars (same language as the rest
+   of the diagnostic UI's on/off indicators). */
+.schema-state-dot {
+    transition: fill var(--transition), stroke var(--transition), filter var(--transition);
+}
+
+.schema-state-dot.off {
+    fill: none;
+    stroke: var(--off);
+    stroke-width: 1.5;
+}
+
+.schema-state-dot.on {
+    fill: var(--on);
+    stroke: none;
+    filter: drop-shadow(0 0 3px var(--on));
+}
+
+.schema-state-dot.event-flash {
+    fill: var(--event);
+    stroke: none;
+    filter: drop-shadow(0 0 4px var(--event));
+}
+
+.schema-state-extra {
+    fill: var(--text-muted);
+    font-size: 9px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.schema-state-extra.visible {
+    opacity: 1;
+}
+
+/* Recency ring: a soft accent glow on a device node whose state changed
+   recently, fading across 3 age buckets (<10s / <30s / <90s); applied to the
+   node's outer <g> so it wraps the whole shape (rect + accent bar + dot). */
+.schema-recency-strong {
+    filter: drop-shadow(0 0 6px rgba(122, 162, 247, 0.85));
+}
+
+.schema-recency-medium {
+    filter: drop-shadow(0 0 5px rgba(122, 162, 247, 0.55));
+}
+
+.schema-recency-faint {
+    filter: drop-shadow(0 0 4px rgba(122, 162, 247, 0.28));
+}
+
 .schema-group-rect {
     fill: var(--bg-card);
     stroke: var(--border);
@@ -890,6 +945,15 @@ td.mono {
     font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
 }
 
+.schema-io-pill-rect.schema-io-on {
+    stroke: var(--on);
+    stroke-width: 1.5;
+}
+
+.schema-io-pill-rect.schema-io-off {
+    stroke: var(--border);
+}
+
 .schema-edge {
     fill: none;
     transition: opacity var(--transition);
@@ -932,24 +996,91 @@ td.mono {
     opacity: 1;
 }
 
-.schema-detail-panel {
+/* schema-detail-dock: round-2 item 2 - a real-layout bottom dock under the
+   diagram card (not an overlay), so it can never cover the SVG. Collapsed to
+   zero height/padding when empty; sliding it open is a plain max-height
+   transition (simple CSS transition, per the round-2 spec) rather than a
+   fixed-position slide-in. */
+.schema-detail-dock {
+    max-height: 0;
+    overflow: hidden;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: 16px;
+    padding: 0 18px;
+    transition: max-height var(--transition), padding var(--transition);
+}
+
+.schema-detail-dock.open {
+    max-height: 360px;
+    overflow-y: auto;
+    padding: 14px 18px 16px;
+}
+
+.schema-dock-header {
+    margin-bottom: 8px;
+}
+
+/* Horizontal, wrapping grid of compact fact groups (identity/type, IO
+   bindings, relations, state) instead of one tall vertical list. */
+.schema-dock-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 32px;
+}
+
+.schema-dock-group {
+    min-width: 180px;
+    flex: 1 1 200px;
+}
+
+.schema-dock-subhead {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+
+/* schema-modal-backdrop/.schema-modal: round-2 item 1 - the edit panel is a
+   centered modal dialog instead of a right-edge panel. The backdrop dims the
+   page and is the click-outside-to-close target; it stays fully transparent
+   to clicks/hit-testing while closed (pointer-events: none) so it never
+   traps clicks meant for the diagram, toast or a confirm() dialog. */
+.schema-modal-backdrop {
     position: fixed;
-    top: 90px;
-    right: -360px;
-    width: 320px;
-    max-height: calc(100vh - 120px);
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(10, 11, 20, 0.6);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--transition);
+    z-index: 70;
+}
+
+.schema-modal-backdrop.open {
+    opacity: 1;
+    pointer-events: all;
+}
+
+.schema-modal {
+    width: min(640px, 92vw);
+    max-height: 85vh;
     overflow-y: auto;
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    padding: 16px;
+    padding: 20px 22px;
     box-shadow: var(--shadow);
-    transition: right var(--transition);
-    z-index: 50;
+    transform: translateY(8px);
+    transition: transform var(--transition);
 }
 
-.schema-detail-panel.open {
-    right: 16px;
+.schema-modal-backdrop.open .schema-modal {
+    transform: translateY(0);
 }
 
 .schema-panel-close {
@@ -999,35 +1130,38 @@ td.mono {
     border-bottom: none;
 }
 
-.schema-detail-panel .row {
+.schema-detail-dock .row,
+.schema-modal .row {
     font-size: 0.82rem;
     margin-bottom: 4px;
 }
 
-.schema-detail-panel .row dt {
+.schema-detail-dock .row dt,
+.schema-modal .row dt {
     display: inline;
     color: var(--text-secondary);
     font-weight: 500;
 }
 
-.schema-detail-panel .row dd {
+.schema-detail-dock .row dd,
+.schema-modal .row dd {
     display: inline;
     margin-left: 4px;
 }
 
-.schema-detail-panel .mono {
+.schema-detail-dock .mono,
+.schema-modal .mono {
     font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
     font-size: 0.75rem;
 }
 
 @media (max-width: 768px) {
-    .schema-detail-panel {
-        width: calc(100% - 24px);
-        right: -100%;
+    .schema-detail-dock.open {
+        max-height: 55vh;
     }
 
-    .schema-detail-panel.open {
-        right: 12px;
+    .schema-modal {
+        padding: 16px;
     }
 }
 

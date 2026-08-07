@@ -24,6 +24,14 @@
     const GROUP_HEADER_H = 24;
     const GROUP_GAP = 18;
     const MARGIN = 24;
+    const IO_COL_W = IO_PILL_W + GROUP_PAD * 2;
+
+    // ---- Live overlay constants (Stage 3: round-2 feedback item 3) ----
+
+    const RECENCY_STRONG_MS = 10000;
+    const RECENCY_MEDIUM_MS = 30000;
+    const RECENCY_FADE_MS = 90000;
+    const EVENT_FLASH_MS = 2000;
 
     const EVENT_COLORS = {
         single_press: 'var(--accent)',
@@ -71,6 +79,11 @@
         selectedEdit: null,  // {kind, editId} for an editable device, or {kind:'color_light', label} - drives the edit form
         saveErrors: null,    // string[] from the last failed POST /api/config/edit
         colorLightNodes: [], // color light nodes snapshotted from the live graph on entering edit mode (read-only in the edit graph)
+
+        // ---- Live overlay (round-2 item 3): fed by app.js's 1s /api/state
+        // poll via render(state). Overlay-only - never touched by/touches
+        // layout or node creation. Skipped entirely while S.editMode.
+        liveTrack: new Map(), // nodeId -> {sig, changedAt}; recency bookkeeping across polls
     };
 
     let editIdSeq = 1;
@@ -128,6 +141,18 @@
     // Graph build (pure): data -> positioned layout. No DOM access here.
     // ==================================================================
 
+    // ioSide classifies an io node as belonging to the left (input) or right
+    // (output) driver/IO column: push_event/d_in are inputs (wired from
+    // Controls), d_out/a_out/rgbw_out are outputs (wired from Devices).
+    // Invalid ids and any other/unknown io_type default to the right/output
+    // side, per the round-2 spec ("unknown/invalid ids default to output
+    // side, right") - the /api/schema payload itself is unchanged, this is
+    // purely a client-side layout classification of the same nodes.
+    function ioSide(io) {
+        if (io.invalid || !io.io_type) return 'right';
+        return (io.io_type === 'push_event' || io.io_type === 'd_in') ? 'left' : 'right';
+    }
+
     function buildLayout(data, showIo) {
         const nodes = data.nodes || [];
         const edges = data.edges || [];
@@ -138,19 +163,25 @@
         const drivers = nodes.filter(n => n.kind === 'driver');
         const ios = nodes.filter(n => n.kind === 'io');
 
+        // Column order: [Driver inputs] [Controls] [Devices] [Driver outputs].
+        // The two IO columns only take up space when showIo is on; collapsed,
+        // Controls/Devices sit exactly where the pre-split 2-column layout
+        // put them.
+        const ioColSpan = showIo ? IO_COL_W + COL_GAP : 0;
         const colX = {
-            controls: MARGIN,
-            devices: MARGIN + NODE_W + COL_GAP,
-            drivers: MARGIN + (NODE_W + COL_GAP) * 2,
+            driversLeft: MARGIN,
+            controls: MARGIN + ioColSpan,
+            devices: MARGIN + ioColSpan + NODE_W + COL_GAP,
+            driversRight: MARGIN + ioColSpan + (NODE_W + COL_GAP) * 2,
         };
 
-        // ---- Column 1: Controls, kept in backend (config) order ----
+        // ---- Controls, kept in backend (config) order ----
         const controlPos = new Map();
         controls.forEach((n, i) => {
             controlPos.set(n.id, { x: colX.controls, y: MARGIN + i * (NODE_H + ROW_GAP) });
         });
 
-        // ---- Column 2: Devices, barycenter-ordered by connected controls ----
+        // ---- Devices, barycenter-ordered by connected controls ----
         const relEdges = edges.filter(e => e.kind === 'control' || e.kind === 'scene_action');
         const incomingByDevice = new Map();
         relEdges.forEach(e => {
@@ -169,22 +200,32 @@
             devicePos.set(d.n.id, { x: colX.devices, y: MARGIN + i * (NODE_H + ROW_GAP) });
         });
 
-        // ---- Column 3: Drivers & IO (only when showIo) ----
-        const groups = [];
+        // ---- Driver inputs (left) & Driver outputs (right) (only when showIo) ----
+        let leftGroups = [], rightGroups = [];
+        let leftHeight = 0, rightHeight = 0;
         const ioPos = new Map();
-        let driversHeight = 0;
         if (showIo) {
             const ioEdges = edges.filter(e => e.kind === 'io');
-            const incomingByIo = new Map();
+            // Two separate incoming-y maps: left-side pills are barycentered
+            // against the Controls column (buttons feeding event_input
+            // edges), right-side pills against the Devices column (output/
+            // analog/rgbw edges) - see round-2 spec item 4.
+            const fromControlY = new Map();
+            const fromDeviceY = new Map();
             ioEdges.forEach(e => {
-                if (!incomingByIo.has(e.to)) incomingByIo.set(e.to, []);
-                const p = devicePos.get(e.from);
-                if (p) incomingByIo.get(e.to).push(p.y + NODE_H / 2);
+                const cp = controlPos.get(e.from);
+                const dp = cp ? null : devicePos.get(e.from);
+                const p = cp || dp;
+                if (!p) return;
+                const bucket = cp ? fromControlY : fromDeviceY;
+                if (!bucket.has(e.to)) bucket.set(e.to, []);
+                bucket.get(e.to).push(p.y + NODE_H / 2);
             });
 
-            // Real + placeholder driver nodes, in backend order.
+            // Real + placeholder driver nodes, in backend order; pills split
+            // per-driver into left/right buckets by io type.
             const byDriverName = new Map();
-            drivers.forEach(d => byDriverName.set(d.label, { driverNode: d, pills: [] }));
+            drivers.forEach(d => byDriverName.set(d.label, { driverNode: d, left: [], right: [] }));
             const invalidPills = [];
             ios.forEach((io, i) => {
                 if (io.invalid || !io.driver) {
@@ -192,80 +233,127 @@
                     return;
                 }
                 if (!byDriverName.has(io.driver)) {
-                    byDriverName.set(io.driver, { driverNode: null, pills: [] });
+                    byDriverName.set(io.driver, { driverNode: null, left: [], right: [] });
                 }
-                byDriverName.get(io.driver).pills.push({ n: io, i });
+                byDriverName.get(io.driver)[ioSide(io)].push({ n: io, i });
             });
 
-            let gy = MARGIN;
-            byDriverName.forEach((group, driverName) => {
-                const keyed = group.pills.map(p => {
-                    const ys = incomingByIo.get(p.n.id);
+            // orderPills: barycenter-sort one driver box's pills by the avg y
+            // of whichever column feeds them, falling back to config order.
+            function orderPills(list, incomingMap) {
+                const keyed = list.map(p => {
+                    const ys = incomingMap.get(p.n.id);
                     const avg = ys && ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : p.i * (IO_PILL_H + IO_PILL_GAP);
                     return { n: p.n, avg, i: p.i };
                 });
                 keyed.sort((a, b) => a.avg - b.avg || a.i - b.i);
+                return keyed;
+            }
 
-                const boxH = GROUP_HEADER_H + GROUP_PAD * 2 + Math.max(keyed.length, 1) * (IO_PILL_H + IO_PILL_GAP) - (keyed.length ? IO_PILL_GAP : 0);
-                const boxY = gy;
-                keyed.forEach((k, idx) => {
-                    ioPos.set(k.n.id, {
-                        x: colX.drivers + GROUP_PAD,
-                        y: boxY + GROUP_HEADER_H + GROUP_PAD + idx * (IO_PILL_H + IO_PILL_GAP),
+            // groupAvgY: barycenter for an entire driver box (pooling the y's
+            // of every edge feeding any of its pills), so driver boxes
+            // themselves - not just the pills inside them - are ordered by
+            // their connected buttons (left) / devices (right).
+            function groupAvgY(list, incomingMap, fallbackIndex) {
+                const ys = [];
+                list.forEach(p => {
+                    const arr = incomingMap.get(p.n.id);
+                    if (arr) ys.push.apply(ys, arr);
+                });
+                return ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : fallbackIndex * (IO_PILL_H + IO_PILL_GAP);
+            }
+
+            // layoutSide stacks one column's driver boxes top-to-bottom in
+            // barycenter order, writing pill positions into the shared ioPos
+            // map, and returns the built groups plus the column's height.
+            function layoutSide(entries, incomingMap, x) {
+                const ordered = entries.map((e, i) => ({ e, avg: groupAvgY(e.rawPills, incomingMap, i) }));
+                ordered.sort((a, b) => a.avg - b.avg);
+                const built = [];
+                let gy = MARGIN;
+                ordered.forEach(({ e }) => {
+                    const keyed = orderPills(e.rawPills, incomingMap);
+                    const boxH = GROUP_HEADER_H + GROUP_PAD * 2 + Math.max(keyed.length, 1) * (IO_PILL_H + IO_PILL_GAP) - (keyed.length ? IO_PILL_GAP : 0);
+                    const boxY = gy;
+                    keyed.forEach((k, idx) => {
+                        ioPos.set(k.n.id, {
+                            x: x + GROUP_PAD,
+                            y: boxY + GROUP_HEADER_H + GROUP_PAD + idx * (IO_PILL_H + IO_PILL_GAP),
+                        });
                     });
+                    built.push({
+                        driverNode: e.driverNode,
+                        name: e.name,
+                        x: x, y: boxY, w: IO_COL_W, h: boxH,
+                        pills: keyed.map(k => k.n),
+                    });
+                    gy += boxH + GROUP_GAP;
                 });
-                groups.push({
-                    driverNode: group.driverNode,
-                    name: driverName,
-                    x: colX.drivers,
-                    y: boxY,
-                    w: IO_PILL_W + GROUP_PAD * 2,
-                    h: boxH,
-                    pills: keyed.map(k => k.n),
-                });
-                gy += boxH + GROUP_GAP;
+                return { groups: built, height: built.length ? gy - GROUP_GAP : 0 };
+            }
+
+            const leftEntries = [];
+            const rightEntries = [];
+            byDriverName.forEach((group, driverName) => {
+                // A driver with pills on both sides gets a box on each side,
+                // same name+icon, disambiguated with an "(in)"/"(out)" suffix.
+                const dual = group.left.length > 0 && group.right.length > 0;
+                if (group.left.length) leftEntries.push({ name: dual ? driverName + ' (in)' : driverName, driverNode: group.driverNode, rawPills: group.left });
+                if (group.right.length) rightEntries.push({ name: dual ? driverName + ' (out)' : driverName, driverNode: group.driverNode, rawPills: group.right });
+                if (!group.left.length && !group.right.length && group.driverNode) {
+                    // A known driver with nothing currently wired to it: keep
+                    // it visible (readiness/IO-count still useful) on the
+                    // right - the same default side as unknown/invalid ids.
+                    rightEntries.push({ name: driverName, driverNode: group.driverNode, rawPills: [] });
+                }
             });
 
+            const leftLayout = layoutSide(leftEntries, fromControlY, colX.driversLeft);
+            const rightLayout = layoutSide(rightEntries, fromDeviceY, colX.driversRight);
+            leftGroups = leftLayout.groups;
+            rightGroups = rightLayout.groups;
+            leftHeight = leftLayout.height;
+            rightHeight = rightLayout.height;
+
             if (invalidPills.length) {
+                // Unsorted (no driver to barycenter against, same as before
+                // the split): appended below the real driver boxes on the
+                // right, their default side.
                 const boxH = GROUP_HEADER_H + GROUP_PAD * 2 + invalidPills.length * (IO_PILL_H + IO_PILL_GAP) - IO_PILL_GAP;
-                const boxY = gy;
+                const boxY = rightGroups.length ? rightHeight + GROUP_GAP : MARGIN;
                 invalidPills.forEach((p, idx) => {
                     ioPos.set(p.n.id, {
-                        x: colX.drivers + GROUP_PAD,
+                        x: colX.driversRight + GROUP_PAD,
                         y: boxY + GROUP_HEADER_H + GROUP_PAD + idx * (IO_PILL_H + IO_PILL_GAP),
                     });
                 });
-                groups.push({
+                rightGroups.push({
                     driverNode: null,
                     invalid: true,
                     name: 'invalid ids',
-                    x: colX.drivers,
-                    y: boxY,
-                    w: IO_PILL_W + GROUP_PAD * 2,
-                    h: boxH,
+                    x: colX.driversRight, y: boxY, w: IO_COL_W, h: boxH,
                     pills: invalidPills.map(p => p.n),
                 });
-                gy += boxH + GROUP_GAP;
+                rightHeight = boxY + boxH;
             }
-            driversHeight = gy - GROUP_GAP;
         }
 
         const controlsHeight = controls.length ? controls.length * (NODE_H + ROW_GAP) - ROW_GAP : 0;
         const devicesHeight = devices.length ? devices.length * (NODE_H + ROW_GAP) - ROW_GAP : 0;
-        const contentHeight = Math.max(controlsHeight, devicesHeight, driversHeight, NODE_H);
+        const contentHeight = Math.max(controlsHeight, devicesHeight, leftHeight, rightHeight, NODE_H);
 
-        const width = (showIo ? colX.drivers + IO_PILL_W + GROUP_PAD * 2 : colX.devices + NODE_W) + MARGIN;
+        const width = (showIo ? colX.driversRight + IO_COL_W : colX.devices + NODE_W) + MARGIN;
         const height = contentHeight + MARGIN * 2;
 
         // Edges to actually draw: hide io-kind edges (and anything touching a
-        // hidden io node) when the driver/IO column is collapsed.
+        // hidden io node) when the driver/IO columns are collapsed.
         const drawEdges = edges.filter(e => showIo || e.kind !== 'io');
 
         return {
             width, height,
             controls: controls.map(n => Object.assign({ node: n }, controlPos.get(n.id))),
             devices: devices.map(n => Object.assign({ node: n }, devicePos.get(n.id))),
-            groups,
+            groups: leftGroups.concat(rightGroups),
             ioPos,
             edges: drawEdges,
             nodeMap: nMap,
@@ -320,8 +408,18 @@
             if (!from || !to) return;
             const color = edgeColor(edge);
             const isIo = edge.kind === 'io';
+            // Direction-aware endpoints: with the driver I/O split (round-2
+            // item 4), an io edge's "to" (an input-side pill in the left
+            // column) can sit to the LEFT of its "from" (a button in
+            // Controls) - in that case draw from from's LEFT edge to to's
+            // RIGHT edge so the curve still runs between the two shapes'
+            // nearest edges, instead of reaching backward across both node
+            // widths. Everything else (left-to-right as before) is unchanged.
+            const leftToRight = from.x <= to.x;
+            const x1 = leftToRight ? from.xRight : from.x;
+            const x2 = leftToRight ? to.x : to.xRight;
             const path = svgEl('path', {
-                d: bezierPath(from.xRight, from.y, to.x, to.y),
+                d: bezierPath(x1, from.y, x2, to.y),
                 class: 'schema-edge' + (isIo ? ' schema-edge-io' : ' schema-edge-rel'),
                 stroke: color,
                 fill: 'none',
@@ -444,7 +542,66 @@
             g.appendChild(svgEl('circle', { cx: item.x + 8, cy: item.y + NODE_H - 8, r: 4, class: 'schema-unsaved-dot' }));
         }
 
+        // Live-state overlay hooks (round-2 item 3): a state dot + a small
+        // "extra" label (brightness %, active scene state, event flash),
+        // seeded here from the schema node's own snapshot fields so the node
+        // looks right before the first /api/state poll ever lands, then only
+        // ever updated in place (class/text) by applyLiveOverlay - never
+        // recreated. Skipped for "missing" placeholders (nothing to show)
+        // and entirely in edit mode (the edit-graph carries no live state,
+        // and the overlay itself bails out while S.editMode - see
+        // applyLiveOverlay - so a dot here would just sit inert; simplest to
+        // not build it at all).
+        if (!n.missing && !S.editMode) {
+            const dotCx = item.x + NODE_W - 10;
+            const dotCy = item.y + NODE_H - 10;
+            const dot = svgEl('circle', { cx: dotCx, cy: dotCy, r: 4.5, class: 'schema-state-dot' });
+            const extra = svgEl('text', { x: dotCx - 10, y: dotCy + 3, class: 'schema-state-extra', 'text-anchor': 'end' });
+            g.appendChild(dot);
+            g.appendChild(extra);
+            seedStateOverlay(dot, extra, n);
+        }
+
         return g;
+    }
+
+    // seedStateOverlay sets the initial dot/extra-label appearance from the
+    // schema node's own snapshot fields (is_on / detail.*, as built by
+    // schema.go's buildDeviceDetail). This is what a freshly opened tab shows
+    // before the first live /api/state poll arrives; applyLiveOverlay takes
+    // over from there and only ever updates these same two elements in place.
+    function seedStateOverlay(dot, extra, n) {
+        const detail = n.detail || {};
+        if (n.device_type === 'scene') {
+            const idx = detail.state_index || 0;
+            const names = detail.state_names || [];
+            setDotState(dot, extra, idx > 0 ? 'on' : 'off', idx > 0 ? (names[idx] || '') : '');
+        } else if (n.device_type === 'button') {
+            // Buttons have no persisted on/off state to seed; the event
+            // flash is purely poll-driven (last_event_time isn't on the
+            // schema node), so start neutral.
+            setDotState(dot, extra, 'off', '');
+        } else if (n.device_type === 'dimmable_light') {
+            setDotState(dot, extra, n.is_on ? 'on' : 'off', n.is_on ? ((detail.brightness || 0) + '%') : '');
+        } else {
+            setDotState(dot, extra, n.is_on ? 'on' : 'off', '');
+        }
+    }
+
+    // setDotState applies a dot class ('on'/'off'/'event-flash') and the
+    // extra label's text in one place, shared by the seed path above and the
+    // live-overlay update path below - both only ever touch these two
+    // elements' class/text, never recreate them.
+    function setDotState(dot, extra, dotClass, extraText) {
+        dot.setAttribute('class', 'schema-state-dot' + (dotClass ? ' ' + dotClass : ''));
+        if (!extra) return;
+        if (extraText) {
+            extra.textContent = extraText;
+            extra.classList.add('visible');
+        } else {
+            extra.textContent = '';
+            extra.classList.remove('visible');
+        }
     }
 
     function buildDriverGroup(group) {
@@ -607,8 +764,67 @@
         svg.querySelectorAll('.schema-edge-active').forEach(el => el.classList.remove('schema-edge-active'));
     }
 
+    // ---- Detail dock fact-group helpers ----
+    // Small string builders shared by renderDetailPanel below. Kept as plain
+    // string concatenation (matching the pre-existing style) - all
+    // user-derived values still go through escHtml exactly as before; only
+    // the grouping/layout changed (round-2 item 2: docked, horizontal fact
+    // groups instead of a tall vertical list).
+
+    function factRow(label, valueHtml, opts) {
+        opts = opts || {};
+        if (valueHtml === undefined) {
+            return '<div class="row"><dt class="text-error">' + label + '</dt></div>';
+        }
+        const cls = opts.cls ? ' class="' + opts.cls + '"' : '';
+        const live = opts.live ? ' data-live="' + opts.live + '"' : '';
+        return '<div class="row"><dt>' + label + ':</dt><dd' + cls + live + '>' + valueHtml + '</dd></div>';
+    }
+
+    function factGroup(title, bodyHtml) {
+        if (!bodyHtml) return '';
+        return '<div class="schema-dock-group"><div class="schema-panel-section">' + title + '</div>' + bodyHtml + '</div>';
+    }
+
+    function ioDetailLabel(key) {
+        switch (key) {
+            case 'output_io_id': return 'Output';
+            case 'rgbw_io_id': return 'RGBW';
+            case 'analog_io_id': return 'Analog';
+            case 'event_input_id': return 'Event input';
+            default: return key;
+        }
+    }
+
+    const IO_DETAIL_KEYS = ['output_io_id', 'rgbw_io_id', 'analog_io_id', 'event_input_id'];
+
+    // relTimeAgo/formatEventFact/formatSceneFact format the same "State"
+    // facts both at initial render (from the /api/schema node snapshot, via
+    // node.detail) and on every live poll thereafter (from /api/state, via
+    // updateDetailDockLive) - kept as pure functions so both call sites stay
+    // in sync without duplicating the formatting logic.
+    function relTimeAgo(ms) {
+        if (ms < 1500) return 'just now';
+        if (ms < 60000) return Math.round(ms / 1000) + 's ago';
+        if (ms < 3600000) return Math.round(ms / 60000) + 'm ago';
+        return Math.round(ms / 3600000) + 'h ago';
+    }
+
+    function formatEventFact(eventType, eventTime, now) {
+        if (!eventType) return '—';
+        if (!eventTime) return eventType;
+        const t = (eventTime instanceof Date) ? eventTime.getTime() : new Date(eventTime).getTime();
+        if (isNaN(t)) return eventType;
+        return eventType + ' (' + relTimeAgo(Math.max(0, now - t)) + ')';
+    }
+
+    function formatSceneFact(stateIndex, stateNames) {
+        if (stateIndex > 0 && stateNames && stateNames[stateIndex]) return stateNames[stateIndex];
+        return 'off';
+    }
+
     function renderDetailPanel() {
-        const panel = document.getElementById('schema-detail-panel');
+        const panel = document.getElementById('schema-detail-dock');
         if (!panel) return;
         if (!S.selectedId || !S.data) {
             panel.classList.remove('open');
@@ -622,77 +838,112 @@
             return;
         }
 
-        let html = '<button class="schema-panel-close" aria-label="Close">✕</button>';
-        html += '<div class="schema-panel-title">' + (DEVICE_ICONS[node.device_type] || (node.kind === 'driver' ? '⚡' : '\u{1F50C}')) + ' ' + escHtml(node.label || node.id) + '</div>';
+        const icon = DEVICE_ICONS[node.device_type] || (node.kind === 'driver' ? '⚡' : '\u{1F50C}');
+        let html = '<div class="schema-dock-header">';
+        html += '<button class="schema-panel-close" aria-label="Close">✕</button>';
+        html += '<div class="schema-panel-title">' + icon + ' ' + escHtml(node.label || node.id) + '</div>';
+        html += '</div><div class="schema-dock-grid">';
 
         if (node.kind === 'driver') {
-            html += '<div class="row"><dt>Kind:</dt><dd>Driver</dd></div>';
-            html += '<div class="row"><dt>Ready:</dt><dd>' + (node.ready ? 'yes' : 'no') + (node.missing ? ' (referenced, not configured)' : '') + '</dd></div>';
-            if (node.io_total != null) html += '<div class="row"><dt>IO points:</dt><dd>' + node.io_total + '</dd></div>';
+            let identity = factRow('Kind', 'Driver');
+            identity += factRow('Ready', (node.ready ? 'yes' : 'no') + (node.missing ? ' (referenced, not configured)' : ''));
+            if (node.io_total != null) identity += factRow('IO points', node.io_total);
+            html += factGroup('Identity', identity);
+
             const ios = S.data.nodes.filter(n => n.kind === 'io' && n.driver === node.label);
             if (ios.length) {
-                html += '<div class="schema-panel-section">IO points</div><ul class="schema-panel-list">';
-                ios.forEach(io => { html += '<li class="mono">' + escHtml((io.io_type || '?') + ' ' + io.label) + '</li>'; });
-                html += '</ul>';
+                let list = '<ul class="schema-panel-list">';
+                ios.forEach(io => { list += '<li class="mono">' + escHtml((io.io_type || '?') + ' ' + io.label) + '</li>'; });
+                list += '</ul>';
+                html += factGroup('IO points', list);
             }
         } else if (node.kind === 'io') {
-            html += '<div class="row"><dt>Driver:</dt><dd>' + escHtml(node.driver || '-') + '</dd></div>';
-            html += '<div class="row"><dt>Type:</dt><dd>' + escHtml(node.io_type || '-') + '</dd></div>';
-            if (node.custom_name) html += '<div class="row"><dt>Name:</dt><dd>' + escHtml(node.custom_name) + '</dd></div>';
-            if (node.invalid) html += '<div class="row"><dt class="text-error">Invalid io id</dt></div>';
+            let identity = factRow('Driver', escHtml(node.driver || '-'));
+            identity += factRow('Type', escHtml(node.io_type || '-'));
+            if (node.custom_name) identity += factRow('Name', escHtml(node.custom_name));
+            if (node.invalid) identity += factRow('Invalid io id');
+            html += factGroup('Identity', identity);
+
+            let stateRows = factRow('State', '—', { live: 'io_state' });
+            html += factGroup('State', stateRows);
+
             const users = (S.data.edges || []).filter(e => e.kind === 'io' && e.to === node.id);
             if (users.length) {
-                html += '<div class="schema-panel-section">Used by</div><ul class="schema-panel-list">';
+                let list = '<ul class="schema-panel-list">';
                 users.forEach(e => {
                     const from = S.data.nodes.find(n => n.id === e.from);
-                    html += '<li>' + escHtml(from ? from.label : e.from) + ' <span class="text-muted">(' + escHtml(e.role) + ')</span></li>';
+                    list += '<li>' + escHtml(from ? from.label : e.from) + ' <span class="text-muted">(' + escHtml(e.role) + ')</span></li>';
                 });
-                html += '</ul>';
+                list += '</ul>';
+                html += factGroup('Used by', list);
             }
         } else {
             // device (incl. missing placeholder)
-            html += '<div class="row"><dt>Type:</dt><dd>' + escHtml(node.device_type) + '</dd></div>';
+            let identity = factRow('Type', escHtml(node.device_type));
             if (node.missing) {
-                html += '<div class="row"><dt class="text-error">Not configured</dt><dd>referenced by name only</dd></div>';
+                identity += '<div class="row"><dt class="text-error">Not configured</dt><dd>referenced by name only</dd></div>';
             } else {
-                html += '<div class="row"><dt>HomeKit:</dt><dd>' + (node.homekit ? 'enabled' : 'disabled') + '</dd></div>';
-                html += '<div class="row"><dt>Healthy:</dt><dd>' + (node.healthy ? 'yes' : 'no') + '</dd></div>';
-                if (node.faulty) html += '<div class="row"><dt class="text-error">Faulty</dt></div>';
-                html += '<div class="row"><dt>State:</dt><dd>' + (node.is_on ? 'on' : 'off') + '</dd></div>';
+                identity += factRow('HomeKit', node.homekit ? 'enabled' : 'disabled');
+                identity += factRow('Healthy', node.healthy ? 'yes' : 'no');
+                if (node.faulty) identity += factRow('Faulty');
             }
-            if (node.detail) {
-                for (const k in node.detail) {
-                    if (!Object.prototype.hasOwnProperty.call(node.detail, k)) continue;
-                    html += '<div class="row"><dt>' + escHtml(k) + ':</dt><dd class="mono">' + escHtml(JSON.stringify(node.detail[k])) + '</dd></div>';
+            html += factGroup('Identity', identity);
+
+            const detail = node.detail || {};
+            let ioRows = '';
+            IO_DETAIL_KEYS.forEach(function(k) {
+                if (detail[k]) ioRows += factRow(ioDetailLabel(k), '<span class="mono">' + escHtml(String(detail[k])) + '</span>');
+            });
+            html += factGroup('IO bindings', ioRows);
+
+            if (!node.missing) {
+                let stateRows = '';
+                if (node.device_type === 'button') {
+                    stateRows += factRow('Last event', escHtml(formatEventFact(detail.last_event_type, detail.last_event_time, Date.now())), { live: 'last_event' });
+                } else if (node.device_type === 'scene') {
+                    stateRows += factRow('Active state', escHtml(formatSceneFact(detail.state_index || 0, detail.state_names)), { live: 'scene_state' });
+                } else {
+                    stateRows += factRow('State', node.is_on ? 'on' : 'off', { live: 'is_on' });
+                    if (node.device_type === 'dimmable_light') {
+                        stateRows += factRow('Brightness', (detail.brightness || 0) + '%', { live: 'brightness' });
+                    }
                 }
+                html += factGroup('State', stateRows);
             }
 
+            let relHtml = '';
             const incoming = (S.data.edges || []).filter(e => (e.kind === 'control' || e.kind === 'scene_action') && e.to === node.id);
             if (incoming.length) {
-                html += '<div class="schema-panel-section">Driven by</div><ul class="schema-panel-list">';
+                relHtml += '<div class="schema-dock-subhead">Driven by</div><ul class="schema-panel-list">';
                 incoming.forEach(e => {
                     const from = S.data.nodes.find(n => n.id === e.from);
                     const via = e.kind === 'control' ? (e.event + ' → ' + e.action) : (e.state + ': ' + e.action);
-                    html += '<li>' + escHtml(from ? from.label : e.from) + ' <span class="text-muted">(' + escHtml(via) + (e.level ? ' ' + e.level : '') + ')</span></li>';
+                    relHtml += '<li>' + escHtml(from ? from.label : e.from) + ' <span class="text-muted">(' + escHtml(via) + (e.level ? ' ' + e.level : '') + ')</span></li>';
                 });
-                html += '</ul>';
+                relHtml += '</ul>';
             }
             const outgoing = (S.data.edges || []).filter(e => (e.kind === 'control' || e.kind === 'scene_action') && e.from === node.id);
             if (outgoing.length) {
-                html += '<div class="schema-panel-section">Controls</div><ul class="schema-panel-list">';
+                relHtml += '<div class="schema-dock-subhead">Controls</div><ul class="schema-panel-list">';
                 outgoing.forEach(e => {
                     const to = S.data.nodes.find(n => n.id === e.to);
                     const via = e.kind === 'control' ? (e.event + ' → ' + e.action) : (e.state + ': ' + e.action);
-                    html += '<li>' + escHtml(to ? to.label : e.to) + ' <span class="text-muted">(' + escHtml(via) + (e.level ? ' ' + e.level : '') + ')</span></li>';
+                    relHtml += '<li>' + escHtml(to ? to.label : e.to) + ' <span class="text-muted">(' + escHtml(via) + (e.level ? ' ' + e.level : '') + ')</span></li>';
                 });
-                html += '</ul>';
+                relHtml += '</ul>';
             }
+            html += factGroup('Relations', relHtml);
         }
 
+        html += '</div>'; // .schema-dock-grid
         panel.innerHTML = html;
         panel.classList.add('open');
         const closeBtn = panel.querySelector('.schema-panel-close');
         if (closeBtn) closeBtn.addEventListener('click', function() { selectNode(null); });
+        // Item 2: bring the dock into view when the clicked node is
+        // off-screen (e.g. a tall diagram scrolled down); 'nearest' avoids
+        // yanking the viewport when the dock is already fully visible.
+        if (typeof panel.scrollIntoView === 'function') panel.scrollIntoView({ block: 'nearest' });
     }
 
     // ---- Toolbar / chrome / data loading ----
@@ -777,6 +1028,7 @@
         edgeItems.forEach(([color, label]) => {
             html += '<span class="schema-legend-item"><span class="schema-legend-swatch" style="background:' + color + '"></span>' + escHtml(label) + '</span>';
         });
+        html += '<span class="schema-legend-item">Driver I/O: inputs left · outputs right</span>';
         html += '</div>';
         return html;
     }
@@ -802,7 +1054,10 @@
             '</div>' +
             '<div class="schema-diagram-wrap"><div id="schema-diagram"></div></div>' +
             '<div id="schema-empty" class="empty-state" style="display:none">No devices configured</div>' +
-            '<div id="schema-detail-panel" class="schema-detail-panel"></div>';
+            '<div id="schema-detail-dock" class="schema-detail-dock"></div>' +
+            '<div id="schema-edit-backdrop" class="schema-modal-backdrop">' +
+                '<div id="schema-edit-modal" class="schema-modal" role="dialog" aria-modal="true" aria-label="Edit device"></div>' +
+            '</div>';
 
         document.getElementById('schema-io-toggle').addEventListener('change', function() {
             S.showIo = this.checked;
@@ -823,6 +1078,18 @@
         buildAddMenu();
         updateEditButtonState();
         probeEditAvailability();
+
+        // Item 1: clicking the dimmed backdrop (but not the dialog itself)
+        // closes the edit modal with the same semantics as the close
+        // button/Esc - selectNode(null), which only clears the selection;
+        // any focused field's blur-commit has already run (blur fires before
+        // this click, since it fires on mousedown) so nothing is lost.
+        const backdrop = document.getElementById('schema-edit-backdrop');
+        if (backdrop) {
+            backdrop.addEventListener('click', function(ev) {
+                if (ev.target === backdrop) selectNode(null);
+            });
+        }
         // Defensive: buildChrome always starts from the static toolbar HTML
         // (edit-mode buttons hidden), so if S.editMode is already true when
         // the chrome is (re)built - e.g. returning to /schema after
@@ -1028,7 +1295,7 @@
     //
     // Crucially, the deferred work here is diagram-only, NOT a full
     // redrawEdit(). Rebuilding the edit panel would replace
-    // #schema-detail-panel's entire subtree (renderEditPanel() does
+    // #schema-edit-modal's entire subtree (renderEditPanel() does
     // `panel.textContent = ''` then rebuilds from scratch), detaching
     // whatever the in-flight click is targeting before it is dispatched -
     // reintroducing the two-click bug - and, if the click landed on a
@@ -1674,16 +1941,23 @@
     }
 
     // renderEditPanel builds the stage 2 edit form for S.selectedEdit into
-    // #schema-detail-panel via createElement/textContent only - never
-    // innerHTML with a user-controlled string (device names, io ids, scene
-    // action text are all attacker-controllable in principle).
+    // #schema-edit-modal (the centered dialog, round-2 item 1) via
+    // createElement/textContent only - never innerHTML with a
+    // user-controlled string (device names, io ids, scene action text are
+    // all attacker-controllable in principle). The dialog's own open/closed
+    // state is driven off #schema-edit-backdrop's 'open' class (opacity +
+    // pointer-events; see style.css) rather than the panel itself, since the
+    // panel is just the inner box - the backdrop is what dims the page and
+    // must be inert while closed so it never eats clicks meant for the
+    // diagram underneath.
     function renderEditPanel() {
-        const panel = document.getElementById('schema-detail-panel');
+        const panel = document.getElementById('schema-edit-modal');
+        const backdrop = document.getElementById('schema-edit-backdrop');
         if (!panel) return;
         panel.textContent = '';
 
         if (!S.selectedEdit) {
-            panel.classList.remove('open');
+            if (backdrop) backdrop.classList.remove('open');
             return;
         }
 
@@ -1693,14 +1967,14 @@
             panel.appendChild(closeBtn);
             panel.appendChild(mkEl('div', { class: 'schema-panel-title' }, '\u{1F308} ' + S.selectedEdit.label));
             panel.appendChild(mkEl('div', { class: 'text-muted' }, 'Color lights are not editable here yet.'));
-            panel.classList.add('open');
+            if (backdrop) backdrop.classList.add('open');
             return;
         }
 
         const entry = findWorkingEntry(S.selectedEdit.kind, S.selectedEdit.editId);
         if (!entry) {
             S.selectedEdit = null;
-            panel.classList.remove('open');
+            if (backdrop) backdrop.classList.remove('open');
             return;
         }
 
@@ -1734,7 +2008,7 @@
         actions.appendChild(delBtn);
         panel.appendChild(actions);
 
-        panel.classList.add('open');
+        if (backdrop) backdrop.classList.add('open');
     }
 
     // ---- Save ----
@@ -1790,18 +2064,201 @@
         }
     }
 
+    // ==================================================================
+    // Stage 3: live overlay (round-2 item 3)
+    // ==================================================================
+    //
+    // Fed by app.js's existing 1s /api/state poll: app.js passes the freshly
+    // fetched state into render(state) every tick while the schema tab is
+    // active (see the public entry point below). This section only ever
+    // mutates attributes/classes/text of SVG/DOM elements the diagram
+    // already built - it never re-layouts, rebuilds nodes, or touches
+    // S.data. Skipped entirely in edit mode: the edit-mode graph carries no
+    // live state, and overlaying live values onto a working copy the user
+    // is mid-edit on would just be wrong.
+
+    // liveSignature reduces a polled device to whatever recency tracking
+    // cares about for its type - a signature change is what "counts" as a
+    // state change for the fading accent ring, independent of which
+    // specific field(s) actually changed.
+    function liveSignature(d) {
+        switch (d.type) {
+            case 'button': return d.last_event_time || '';
+            case 'scene': return String(d.scene_state_index || 0);
+            case 'dimmable_light': return (d.is_on ? '1' : '0') + ':' + (d.brightness || 0);
+            default: return d.is_on ? '1' : '0';
+        }
+    }
+
+    // shortEventLabel turns "single_press" into "single" etc., for the
+    // brief fading label shown next to a button's flashing state dot.
+    function shortEventLabel(eventType) {
+        if (!eventType) return '';
+        return String(eventType).replace(/_press$/, '');
+    }
+
+    // buildIoStateIndex maps every canonical io id a debug point resolves to
+    // (io_ids, computed server-side via app.IoPointToId/IoPointToIdWithType -
+    // see web_server.go) to that point, so schema io pills (keyed the same
+    // way by schema.go's ioCustomNames/appendIoNode) can be matched without
+    // re-implementing the shelly/wago id translation client-side.
+    function buildIoStateIndex(ioDebug) {
+        const idx = new Map();
+        (ioDebug || []).forEach(function(pt) {
+            (pt.io_ids || []).forEach(function(id) { idx.set(id, pt); });
+        });
+        return idx;
+    }
+
+    // applyLiveOverlay is the per-poll entry point (called from render()
+    // below on every tick the schema tab is already built). Guarded so it is
+    // a cheap no-op whenever there's nothing sensible to overlay onto.
+    function applyLiveOverlay(state) {
+        if (S.editMode) return;
+        if (!S.data || !state || !Array.isArray(state.devices)) return;
+        const svg = document.querySelector('.schema-svg');
+        if (!svg) return;
+
+        const now = Date.now();
+
+        // Build id->element maps once per tick by walking the DOM directly,
+        // rather than one querySelector('[data-node-id="..."]') per device -
+        // both for performance and because device/io names are arbitrary
+        // strings that could contain characters (e.g. a stray '"') unsafe to
+        // interpolate into a CSS attribute-selector string.
+        const deviceEls = new Map();
+        svg.querySelectorAll('.schema-node-device').forEach(function(g) {
+            if (g.dataset.nodeId) deviceEls.set(g.dataset.nodeId, g);
+        });
+        const pillEls = new Map();
+        svg.querySelectorAll('.schema-io-pill').forEach(function(g) {
+            if (g.dataset.nodeId) pillEls.set(g.dataset.nodeId, g);
+        });
+
+        state.devices.forEach(function(d) {
+            const id = 'device:' + d.type + ':' + d.name;
+            const g = deviceEls.get(id);
+            if (!g) return; // not in the current diagram (renamed/removed elsewhere) - skip silently
+            updateDeviceOverlay(g, id, d, now);
+        });
+
+        const ioStateById = buildIoStateIndex(state.io_debug);
+        pillEls.forEach(function(g, nodeId) {
+            const ioId = nodeId.indexOf('io:') === 0 ? nodeId.slice(3) : null;
+            const pt = ioId ? ioStateById.get(ioId) : null;
+            const rect = g.querySelector('.schema-io-pill-rect');
+            if (!rect) return;
+            if (!pt) { rect.classList.remove('schema-io-on', 'schema-io-off'); return; }
+            rect.classList.toggle('schema-io-on', !!pt.state);
+            rect.classList.toggle('schema-io-off', !pt.state);
+        });
+
+        updateDetailDockLive(state, now);
+    }
+
+    // updateDeviceOverlay updates one device node's recency-ring class (on
+    // the outer <g>) and its state dot/extra-label (see buildDeviceNode /
+    // setDotState) from one polled device entry. Never creates or removes
+    // SVG elements - only classes and text on what buildDeviceNode already
+    // built.
+    function updateDeviceOverlay(g, id, d, now) {
+        const sig = liveSignature(d);
+        let track = S.liveTrack.get(id);
+        if (!track) {
+            // First time this node id has ever been seen since the tab was
+            // (re)opened - seed silently (changedAt 0 => effectively
+            // infinite age => no glow), so opening the tab never triggers a
+            // glow storm across every device at once.
+            track = { sig: sig, changedAt: 0 };
+            S.liveTrack.set(id, track);
+        } else if (track.sig !== sig) {
+            track.sig = sig;
+            track.changedAt = now;
+        }
+        const age = track.changedAt ? (now - track.changedAt) : Infinity;
+        g.classList.remove('schema-recency-strong', 'schema-recency-medium', 'schema-recency-faint');
+        if (age < RECENCY_STRONG_MS) g.classList.add('schema-recency-strong');
+        else if (age < RECENCY_MEDIUM_MS) g.classList.add('schema-recency-medium');
+        else if (age < RECENCY_FADE_MS) g.classList.add('schema-recency-faint');
+
+        const dot = g.querySelector('.schema-state-dot');
+        if (!dot) return; // edit mode / missing placeholder never got one (see buildDeviceNode)
+        const extra = g.querySelector('.schema-state-extra');
+
+        if (d.type === 'button') {
+            const evAge = d.last_event_time ? now - new Date(d.last_event_time).getTime() : Infinity;
+            if (evAge >= 0 && evAge < EVENT_FLASH_MS) {
+                setDotState(dot, extra, 'event-flash', shortEventLabel(d.last_event_type));
+            } else {
+                setDotState(dot, extra, 'off', '');
+            }
+        } else if (d.type === 'scene') {
+            const active = (d.scene_state_index || 0) > 0;
+            const name = active && d.scene_state_names ? d.scene_state_names[d.scene_state_index] : '';
+            setDotState(dot, extra, active ? 'on' : 'off', name || '');
+        } else if (d.type === 'dimmable_light') {
+            setDotState(dot, extra, d.is_on ? 'on' : 'off', d.is_on ? ((d.brightness || 0) + '%') : '');
+        } else {
+            setDotState(dot, extra, d.is_on ? 'on' : 'off', '');
+        }
+    }
+
+    // updateDetailDockLive refreshes the docked detail panel's live "State"
+    // facts (textContent only - see the data-live hooks written by
+    // renderDetailPanel) when the currently open dock is showing a node this
+    // poll has fresh data for.
+    function updateDetailDockLive(state, now) {
+        if (!S.selectedId) return;
+        const dock = document.getElementById('schema-detail-dock');
+        if (!dock || !dock.classList.contains('open')) return;
+
+        if (S.selectedId.indexOf('io:') === 0) {
+            const ioEl = dock.querySelector('[data-live="io_state"]');
+            if (!ioEl) return;
+            const ioId = S.selectedId.slice(3);
+            const pt = buildIoStateIndex(state.io_debug).get(ioId);
+            ioEl.textContent = pt ? (pt.state ? 'on' : 'off') : '—';
+            return;
+        }
+
+        const d = (state.devices || []).find(function(x) { return ('device:' + x.type + ':' + x.name) === S.selectedId; });
+        if (!d) return;
+
+        const isOnEl = dock.querySelector('[data-live="is_on"]');
+        if (isOnEl) isOnEl.textContent = d.is_on ? 'on' : 'off';
+
+        const briEl = dock.querySelector('[data-live="brightness"]');
+        if (briEl) briEl.textContent = (d.brightness || 0) + '%';
+
+        const evEl = dock.querySelector('[data-live="last_event"]');
+        if (evEl) evEl.textContent = formatEventFact(d.last_event_type, d.last_event_time, now);
+
+        const sceneEl = dock.querySelector('[data-live="scene_state"]');
+        if (sceneEl) sceneEl.textContent = formatSceneFact(d.scene_state_index || 0, d.scene_state_names);
+    }
+
     // ---- Public entry point ----
-    // render() is called from app.js's renderPage() on every 1s poll tick
-    // while the schema tab is active, but must not rebuild/refetch each
-    // time (see app.js: the 'schema' case returns immediately after this
-    // call). We rely on #schema-root only existing once we've built the
-    // chrome; other tabs replace #page-content wholesale when navigated to,
-    // so returning to /schema naturally finds no #schema-root and rebuilds.
-    function render() {
+    // render(state) is called from app.js's renderPage() on every 1s poll
+    // tick while the schema tab is active, passing the freshly polled
+    // /api/state. The diagram itself is only built/refetched once per tab
+    // activation (see app.js: the 'schema' case returns immediately after
+    // this call, same as the pre-round-2 contract) - every subsequent tick
+    // just feeds the live overlay (round-2 item 3). We rely on #schema-root
+    // only existing once we've built the chrome; other tabs replace
+    // #page-content wholesale when navigated to, so returning to /schema
+    // naturally finds no #schema-root and rebuilds.
+    function render(state) {
         const el = document.getElementById('page-content');
         if (!el) return;
-        if (document.getElementById('schema-root')) return; // already built, no-op
+        if (document.getElementById('schema-root')) {
+            applyLiveOverlay(state);
+            return;
+        }
 
+        // Fresh tab activation: reset recency tracking so the very first
+        // poll after loadAndDraw() finishes seeds silently instead of
+        // comparing against stale values from a previous visit.
+        S.liveTrack.clear();
         buildChrome(el);
         loadAndDraw();
     }

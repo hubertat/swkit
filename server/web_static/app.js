@@ -684,7 +684,7 @@
             case 'io-debug': renderIoDebug(state); break;
             case 'config': renderConfig(state); break;
             case 'logs': renderLogs(); return; // Logs doesn't need state polling
-            case 'schema': if (window.swkitSchema) window.swkitSchema.render(); return; // no re-render on poll
+            case 'schema': if (window.swkitSchema) window.swkitSchema.render(state); return; // no diagram re-render on poll; state feeds the live overlay only
         }
     }
 
