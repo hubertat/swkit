@@ -733,3 +733,667 @@ td.mono {
 .mt-8 { margin-top: 8px; }
 .mt-16 { margin-top: 16px; }
 .mb-8 { margin-bottom: 8px; }
+
+/* ---- Schema ---- */
+
+.schema-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.schema-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.schema-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+
+.schema-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.schema-legend-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 3px;
+    border-radius: 2px;
+}
+
+/* schema-error-banner (finding 1): save-validation feedback that must stay
+   visible regardless of the edit modal's open/closed state - lives in the
+   card's normal document flow, directly under the toolbar/legend and above
+   the diagram, so the backdrop (z-index 70, fixed) can never cover it and it
+   never depends on the modal being open to be seen. */
+.schema-error-banner {
+    background: rgba(247, 118, 142, 0.1);
+    border: 1px solid var(--error);
+    border-radius: var(--radius-lg);
+    padding: 10px 16px;
+    margin-bottom: 16px;
+}
+
+.schema-error-banner .schema-panel-close {
+    float: right;
+}
+
+.schema-error-banner .schema-panel-section {
+    margin-top: 0;
+}
+
+.schema-error-banner .schema-panel-list li {
+    border-bottom: none;
+    padding: 2px 0;
+}
+
+.schema-diagram-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: 16px;
+}
+
+#schema-diagram {
+    min-width: 600px;
+    padding: 8px 4px;
+}
+
+.schema-svg {
+    display: block;
+}
+
+.schema-bg {
+    pointer-events: all;
+}
+
+.schema-node {
+    cursor: pointer;
+    transition: opacity var(--transition);
+}
+
+.schema-node.dim {
+    opacity: 0.22;
+}
+
+.schema-node-rect {
+    fill: var(--bg-surface);
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.schema-node-dashed {
+    stroke-dasharray: 5, 4;
+}
+
+.schema-node-missing {
+    stroke: var(--error);
+}
+
+.schema-node-scene {
+    stroke: #9ece6a;
+}
+
+.schema-node-accent {
+    pointer-events: none;
+}
+
+.schema-node-label {
+    fill: var(--text);
+    font-size: 12.5px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.schema-node-marker {
+    font-size: 11px;
+}
+
+.schema-fault-dot {
+    fill: var(--error);
+}
+
+/* ---- Live state overlay (round-2 item 3) ---- */
+/* State dot + brightness/event/scene-state label, seeded from the initial
+   /api/schema snapshot and then only ever updated in place (class/text) on
+   every 1s /api/state poll - see setDotState/updateDeviceOverlay in
+   schema.js. Reuses the existing --on/--off vars (same language as the rest
+   of the diagnostic UI's on/off indicators). */
+.schema-state-dot {
+    transition: fill var(--transition), stroke var(--transition), filter var(--transition);
+}
+
+.schema-state-dot.off {
+    fill: none;
+    stroke: var(--off);
+    stroke-width: 1.5;
+}
+
+.schema-state-dot.on {
+    fill: var(--on);
+    stroke: none;
+    filter: drop-shadow(0 0 3px var(--on));
+}
+
+.schema-state-dot.event-flash {
+    fill: var(--event);
+    stroke: none;
+    filter: drop-shadow(0 0 4px var(--event));
+}
+
+.schema-state-extra {
+    fill: var(--text-muted);
+    font-size: 9px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.schema-state-extra.visible {
+    opacity: 1;
+}
+
+/* Recency ring: a soft accent glow on a device node whose state changed
+   recently, fading across 3 age buckets (<10s / <30s / <90s); applied to the
+   node's outer <g> so it wraps the whole shape (rect + accent bar + dot). */
+.schema-recency-strong {
+    filter: drop-shadow(0 0 6px rgba(122, 162, 247, 0.85));
+}
+
+.schema-recency-medium {
+    filter: drop-shadow(0 0 5px rgba(122, 162, 247, 0.55));
+}
+
+.schema-recency-faint {
+    filter: drop-shadow(0 0 4px rgba(122, 162, 247, 0.28));
+}
+
+.schema-group-rect {
+    fill: var(--bg-card);
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.schema-group-invalid {
+    stroke: var(--text-muted);
+}
+
+.schema-group-header {
+    cursor: pointer;
+}
+
+.schema-group-title {
+    fill: var(--text-heading);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.schema-group-count {
+    fill: var(--text-muted);
+    font-size: 10px;
+}
+
+.schema-ready-dot-on {
+    fill: var(--success);
+}
+
+.schema-ready-dot-off {
+    fill: var(--error);
+}
+
+.schema-io-pill-rect {
+    fill: var(--bg);
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.schema-io-pill-label {
+    fill: var(--text-secondary);
+    font-size: 10px;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.schema-io-pill-rect.schema-io-on {
+    stroke: var(--on);
+    stroke-width: 1.5;
+}
+
+/* Finding 8: previously stroke: var(--border), identical to the unstyled
+   .schema-io-pill-rect default - a pill with confirmed-off live data was
+   visually indistinguishable from one with no live data at all. Give it a
+   dimmed fill (a faint --off tint) plus the --off stroke so "known off" reads
+   as its own state rather than "no live data yet". */
+.schema-io-pill-rect.schema-io-off {
+    stroke: var(--off);
+    fill: rgba(86, 95, 137, 0.18);
+}
+
+.schema-edge {
+    fill: none;
+    transition: opacity var(--transition);
+}
+
+.schema-edge-rel {
+    stroke-width: 2px;
+    opacity: 0.9;
+}
+
+.schema-edge-io {
+    stroke-width: 1px;
+    opacity: 0.55;
+}
+
+.schema-edge.dim {
+    opacity: 0.1;
+}
+
+.schema-edge-active {
+    opacity: 1;
+}
+
+.schema-tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    color: var(--text);
+    opacity: 0;
+    transition: opacity 0.1s;
+    z-index: 60;
+    white-space: nowrap;
+}
+
+.schema-tooltip.visible {
+    opacity: 1;
+}
+
+/* schema-detail-dock: round-2 item 2 - a real-layout bottom dock under the
+   diagram card (not an overlay), so it can never cover the SVG. Collapsed to
+   zero height/padding when empty; sliding it open is a plain max-height
+   transition (simple CSS transition, per the round-2 spec) rather than a
+   fixed-position slide-in. */
+.schema-detail-dock {
+    max-height: 0;
+    overflow: hidden;
+    background: var(--bg-surface);
+    /* Finding 6: border-width and margin are zeroed here (not just
+       max-height) so a closed dock leaves no visible trace at all - with a
+       standing 1px border and 16px margin-bottom, "collapsed" still drew a
+       flat bordered strip under the diagram even though its content area
+       was zero height. Both are restored in .open below. */
+    border: 0 solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: 0;
+    padding: 0 18px;
+    transition: max-height var(--transition), padding var(--transition),
+        border-width var(--transition), margin-bottom var(--transition);
+}
+
+.schema-detail-dock.open {
+    max-height: 360px;
+    overflow-y: auto;
+    padding: 14px 18px 16px;
+    border-width: 1px;
+    margin-bottom: 16px;
+}
+
+.schema-dock-header {
+    margin-bottom: 8px;
+}
+
+/* Horizontal, wrapping grid of compact fact groups (identity/type, IO
+   bindings, relations, state) instead of one tall vertical list. */
+.schema-dock-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 32px;
+}
+
+.schema-dock-group {
+    min-width: 180px;
+    flex: 1 1 200px;
+}
+
+.schema-dock-subhead {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+
+/* schema-modal-backdrop/.schema-modal: round-2 item 1 - the edit panel is a
+   centered modal dialog instead of a right-edge panel. The backdrop dims the
+   page and is the click-outside-to-close target; it stays fully transparent
+   to clicks/hit-testing while closed (pointer-events: none) so it never
+   traps clicks meant for the diagram, toast or a confirm() dialog. */
+.schema-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(10, 11, 20, 0.6);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--transition);
+    z-index: 70;
+}
+
+.schema-modal-backdrop.open {
+    opacity: 1;
+    pointer-events: all;
+}
+
+.schema-modal {
+    width: min(640px, 92vw);
+    max-height: 85vh;
+    overflow-y: auto;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px 22px;
+    box-shadow: var(--shadow);
+    transform: translateY(8px);
+    transition: transform var(--transition);
+}
+
+.schema-modal-backdrop.open .schema-modal {
+    transform: translateY(0);
+}
+
+.schema-panel-close {
+    float: right;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 2px 4px;
+}
+
+.schema-panel-close:hover {
+    color: var(--text);
+}
+
+.schema-panel-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-heading);
+    margin-bottom: 10px;
+}
+
+.schema-panel-section {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-muted);
+    margin-top: 12px;
+    margin-bottom: 4px;
+}
+
+.schema-panel-list {
+    list-style: none;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.schema-panel-list li {
+    padding: 3px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.schema-panel-list li:last-child {
+    border-bottom: none;
+}
+
+.schema-detail-dock .row,
+.schema-modal .row {
+    font-size: 0.82rem;
+    margin-bottom: 4px;
+}
+
+.schema-detail-dock .row dt,
+.schema-modal .row dt {
+    display: inline;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.schema-detail-dock .row dd,
+.schema-modal .row dd {
+    display: inline;
+    margin-left: 4px;
+}
+
+.schema-detail-dock .mono,
+.schema-modal .mono {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+}
+
+@media (max-width: 768px) {
+    .schema-detail-dock.open {
+        max-height: 55vh;
+    }
+
+    .schema-modal {
+        padding: 16px;
+    }
+}
+
+/* ---- Schema: edit mode (stage 2) ---- */
+
+.schema-unsaved-dot {
+    fill: var(--warning);
+}
+
+.schema-add-wrap {
+    position: relative;
+    display: inline-block;
+}
+
+.schema-add-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    min-width: 170px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+}
+
+.schema-add-menu-item {
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--transition);
+}
+
+.schema-add-menu-item:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text);
+}
+
+.schema-panel-actions {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.schema-delete-btn {
+    color: var(--error);
+    border-color: var(--error);
+}
+
+.schema-delete-btn:hover {
+    background: rgba(247, 118, 142, 0.12);
+}
+
+.schema-panel-errors {
+    margin-top: 12px;
+}
+
+.schema-panel-errors .schema-panel-list li {
+    border-bottom: none;
+    padding: 2px 0;
+}
+
+.edit-field {
+    margin-bottom: 12px;
+}
+
+.edit-label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.edit-input,
+.edit-select,
+.edit-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text);
+    font-size: 0.82rem;
+    outline: none;
+    transition: border-color var(--transition);
+}
+
+.edit-input.mono {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+}
+
+.edit-input:focus,
+.edit-select:focus,
+.edit-textarea:focus {
+    border-color: var(--accent);
+}
+
+.edit-textarea {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+    resize: vertical;
+}
+
+.edit-field-error {
+    color: var(--error);
+    font-size: 0.72rem;
+    margin-top: 4px;
+}
+
+.edit-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    cursor: pointer;
+}
+
+.edit-relation-list,
+.edit-state-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.edit-relation-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 4px;
+    align-items: center;
+    padding: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.edit-relation-row .edit-select,
+.edit-relation-row .edit-input {
+    min-width: 0;
+}
+
+.edit-state-row {
+    padding: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.schema-row-remove {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+}
+
+.schema-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(12px);
+    background: var(--bg-surface);
+    border: 1px solid var(--success);
+    color: var(--text);
+    padding: 10px 18px;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    font-size: 0.85rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--transition), transform var(--transition);
+    z-index: 100;
+}
+
+.schema-toast.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+#schema-edit-btn:disabled,
+#schema-refresh-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}

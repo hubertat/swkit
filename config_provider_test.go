@@ -71,3 +71,33 @@ func TestNormalizeButtonEventInputIoTypeKeepsInvalidValue(t *testing.T) {
 		t.Fatalf("expected invalid value unchanged: got %q, want %q", got, input)
 	}
 }
+
+// TestSwKitConfigProviderSwapReflectsInEditableConfig proves that Swap
+// actually retargets the provider: GetEditableConfig must reflect the
+// swapped-in SwKit's config, not the one the provider was constructed with.
+// This is what performReload relies on after a hot reload swaps the state
+// provider - without it, saves after a reload would read/write through the
+// stale, torn-down SwKit.
+func TestSwKitConfigProviderSwapReflectsInEditableConfig(t *testing.T) {
+	oldSw := &SwKit{
+		Name:   "old",
+		Lights: []LightConfig{{Name: "Old Light", DigitalOutName: "gpio|d_out|1"}},
+	}
+	provider := NewConfigProvider(oldSw, "unused-config-path.json")
+
+	before := provider.GetEditableConfig()
+	if len(before.Lights) != 1 || before.Lights[0].Name != "Old Light" {
+		t.Fatalf("before swap: config = %+v, want one light named Old Light", before)
+	}
+
+	newSw := &SwKit{
+		Name:   "new",
+		Lights: []LightConfig{{Name: "New Light", DigitalOutName: "gpio|d_out|2"}},
+	}
+	provider.Swap(newSw)
+
+	after := provider.GetEditableConfig()
+	if len(after.Lights) != 1 || after.Lights[0].Name != "New Light" {
+		t.Fatalf("after swap: config = %+v, want one light named New Light", after)
+	}
+}

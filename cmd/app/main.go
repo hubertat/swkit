@@ -112,7 +112,7 @@ func startServices(parentCtx context.Context, sk *swkit.SwKit, syncDuration time
 // performReload loads the new config, stops old services, swaps the provider, and starts new services.
 // Config is parsed first for early validation; drivers (and MQTT) are only set up after old ones are torn down.
 // On config parse failure, the old sk and svcs are returned unchanged so the app keeps running.
-func performReload(configPath string, currentSk *swkit.SwKit, provider *swkit.SwKitProvider,
+func performReload(configPath string, currentSk *swkit.SwKit, provider *swkit.SwKitProvider, configProvider *swkit.SwKitConfigProvider,
 	svcs *appServices, parentCtx context.Context, syncDuration time.Duration, forceEvery int, version string, logger *log.Logger) (*swkit.SwKit, *appServices) {
 
 	// Parse config first for early validation — no drivers/MQTT yet.
@@ -140,8 +140,13 @@ func performReload(configPath string, currentSk *swkit.SwKit, provider *swkit.Sw
 		return currentSk, svcs
 	}
 
-	// Swap the provider to point at the new SwKit.
+	// Swap the state provider and the config provider to point at the new
+	// SwKit. Both must be swapped together - otherwise the config provider
+	// keeps reading/writing through the old (now-closed) SwKit, and a save
+	// triggered from the web UI (which itself causes a reload) would revert
+	// any changes this reload just picked up.
 	provider.Reload(newSk)
+	configProvider.Swap(newSk)
 
 	// Start services for the new SwKit.
 	newSvcs := startServices(parentCtx, newSk, syncDuration, forceEvery, version, logger)
@@ -272,10 +277,11 @@ func main() {
 			services.AgentModel = agentCfg.Model
 		}
 		webSrv, err = server.NewWebServerWithConfig(provider, sk.WebServer.Port, logger, server.WebServerOptions{
-			GetRawConfig: getRawConfig,
-			Version:      Version,
-			Services:     services,
-			Broadcaster:  logging.GetBroadcaster(),
+			GetRawConfig:   getRawConfig,
+			Version:        Version,
+			Services:       services,
+			Broadcaster:    logging.GetBroadcaster(),
+			ConfigProvider: configProvider,
 		})
 		if err != nil {
 			logger.Error("failed to create web server", "err", err)
@@ -338,7 +344,7 @@ func main() {
 	for {
 		select {
 		case <-configProvider.ReloadCh():
-			sk, svcs = performReload(*config, sk, provider, svcs, ctx, syncDuration, *forceSyncEveryCycle, Version, logger)
+			sk, svcs = performReload(*config, sk, provider, configProvider, svcs, ctx, syncDuration, *forceSyncEveryCycle, Version, logger)
 
 		case sig := <-sigCh:
 			logger.Info("received signal, shutting down...", "signal", sig)

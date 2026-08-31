@@ -631,11 +631,33 @@
         if (path === '/drivers') return 'drivers';
         if (path === '/config') return 'config';
         if (path === '/logs') return 'logs';
+        if (path === '/schema') return 'schema';
         return 'dashboard';
     }
 
     function renderPage(state) {
         const tab = getTab();
+
+        // Leaving the schema tab while edit mode is active needs to tear down
+        // that mode, since the whole schema chrome (including the working
+        // copy) lives only in schema.js's module state and the DOM backing it
+        // gets discarded the moment another tab's render*() replaces
+        // #page-content wholesale - but S.editMode itself is untouched by
+        // that DOM replacement. Left set, it causes stale-state bugs on
+        // return to /schema (buildChrome rebuilds fresh chrome while editMode
+        // still reports true, and clicking a node reopens an edit form bound
+        // to the old working copy). Confirm first only when there are
+        // unsaved changes to actually lose; otherwise discard silently.
+        if (currentTab === 'schema' && tab !== 'schema' && window.swkitSchema) {
+            if (window.swkitSchema.hasUnsavedChanges && window.swkitSchema.hasUnsavedChanges()) {
+                if (!confirm('You have unsaved schema changes. Leave without saving?')) {
+                    history.replaceState(null, '', '/schema');
+                    return; // stay put; #page-content/schema chrome is untouched
+                }
+            }
+            if (window.swkitSchema.discardSilently) window.swkitSchema.discardSilently();
+        }
+
         currentTab = tab;
 
         // Update nav active state
@@ -662,6 +684,7 @@
             case 'io-debug': renderIoDebug(state); break;
             case 'config': renderConfig(state); break;
             case 'logs': renderLogs(); return; // Logs doesn't need state polling
+            case 'schema': if (window.swkitSchema) window.swkitSchema.render(state); return; // no diagram re-render on poll; state feeds the live overlay only
         }
     }
 
@@ -711,12 +734,12 @@
             refresh();
         });
 
-        // Keyboard tab navigation: 1-5 switches tabs
+        // Keyboard tab navigation: 1-7 switches tabs
         document.addEventListener('keydown', function(e) {
             if (document.activeElement && document.activeElement !== document.body) return;
-            const tabs = ['/', '/drivers', '/devices', '/io-debug', '/config', '/logs'];
+            const tabs = ['/', '/drivers', '/devices', '/io-debug', '/config', '/logs', '/schema'];
             const n = parseInt(e.key);
-            if (n >= 1 && n <= 6) { e.preventDefault(); navigate(tabs[n - 1]); }
+            if (n >= 1 && n <= 7) { e.preventDefault(); navigate(tabs[n - 1]); }
         });
 
         startRefresh();
