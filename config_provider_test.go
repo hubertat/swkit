@@ -1,6 +1,9 @@
 package swkit
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -99,5 +102,56 @@ func TestSwKitConfigProviderSwapReflectsInEditableConfig(t *testing.T) {
 	after := provider.GetEditableConfig()
 	if len(after.Lights) != 1 || after.Lights[0].Name != "New Light" {
 		t.Fatalf("after swap: config = %+v, want one light named New Light", after)
+	}
+}
+
+// TestSwKitConfigProviderScenePreservesDisableHomekit proves that
+// DisableHomekit round-trips through GetEditableConfig -> SaveConfig for
+// scenes, the same as it does for every other device type. Scenes have no
+// HomeKit accessory today, but a save from the web UI/TUI must not silently
+// erase a flag that already exists in config.json - regressing the mapping
+// in either direction (dropped on read, or dropped on write) would flip this
+// back to false.
+func TestSwKitConfigProviderScenePreservesDisableHomekit(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	sw := &SwKit{
+		Name: "test",
+		Scenes: []SceneConfig{
+			{
+				Name:           "Evening",
+				DisableHomekit: true,
+				States: []SceneStateConfig{
+					{Name: "off"},
+					{Name: "cozy", Actions: []string{"brightness:40:Hall"}},
+				},
+			},
+		},
+	}
+	provider := NewConfigProvider(sw, configPath)
+
+	edit := provider.GetEditableConfig()
+	if len(edit.Scenes) != 1 || !edit.Scenes[0].DisableHomekit {
+		t.Fatalf("GetEditableConfig: scenes = %+v, want one scene with DisableHomekit=true", edit.Scenes)
+	}
+
+	if err := provider.SaveConfig(edit); err != nil {
+		t.Fatalf("SaveConfig returned error: %v", err)
+	}
+
+	if !sw.Scenes[0].DisableHomekit {
+		t.Fatalf("SaveConfig: sw.Scenes[0].DisableHomekit = false, want true (flag was dropped on save)")
+	}
+
+	// Also confirm it survives the actual JSON round-trip written to disk.
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("reading saved config: %v", err)
+	}
+	var written SwKit
+	if err := json.Unmarshal(data, &written); err != nil {
+		t.Fatalf("unmarshal saved config: %v", err)
+	}
+	if len(written.Scenes) != 1 || !written.Scenes[0].DisableHomekit {
+		t.Fatalf("saved config on disk: scenes = %+v, want one scene with DisableHomekit=true", written.Scenes)
 	}
 }

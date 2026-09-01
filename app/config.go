@@ -58,6 +58,10 @@ type ButtonEditConfig struct {
 type SceneEditConfig struct {
 	Name   string
 	States []SceneStateEditConfig
+	// DisableHomekit is reserved; scenes have no HomeKit representation yet.
+	// It is carried through here purely so a config save does not silently
+	// erase the value already set in config.json (mirrors SceneConfig).
+	DisableHomekit bool
 }
 
 // SceneStateEditConfig represents one state of a scene.

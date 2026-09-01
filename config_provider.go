@@ -97,7 +97,7 @@ func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 	}
 
 	for _, s := range p.sw.Scenes {
-		sc := app.SceneEditConfig{Name: s.Name}
+		sc := app.SceneEditConfig{Name: s.Name, DisableHomekit: s.DisableHomekit}
 		for _, st := range s.States {
 			sc.States = append(sc.States, app.SceneStateEditConfig{
 				Name:    st.Name,
@@ -183,7 +183,7 @@ func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
 
 	p.sw.Scenes = make([]SceneConfig, len(config.Scenes))
 	for i, s := range config.Scenes {
-		sc := SceneConfig{Name: s.Name}
+		sc := SceneConfig{Name: s.Name, DisableHomekit: s.DisableHomekit}
 		for _, st := range s.States {
 			sc.States = append(sc.States, SceneStateConfig{
 				Name:    st.Name,
