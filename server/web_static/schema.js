@@ -1,10 +1,12 @@
 // swkit web ui - config schema diagram (Stage 1: read-only)
 //
-// Layout: a 3-column layered SVG diagram (Controls | Devices | Drivers & IO)
-// built from GET /api/schema. All mutable UI state lives in one module-level
-// object (S) so a future edit mode can extend it without restructuring.
-// Graph layout (pure, no DOM) is kept separate from SVG rendering (buildLayout
-// vs renderDiagram) for the same reason.
+// Layout: a layered SVG diagram, columns [Driver inputs] [Buttons] [Scenes]
+// [Devices] [Driver outputs] (the driver-IO columns only appear when the
+// "driver I/O" toggle is on), built from GET /api/schema. All mutable UI
+// state lives in one module-level object (S) so a future edit mode can
+// extend it without restructuring. Graph layout (pure, no DOM) is kept
+// separate from SVG rendering (buildLayout vs renderDiagram) for the same
+// reason.
 
 (function() {
     'use strict';
@@ -25,6 +27,9 @@
     const GROUP_GAP = 18;
     const MARGIN = 24;
     const IO_COL_W = IO_PILL_W + GROUP_PAD * 2;
+    const HEADER_H = 22; // vertical band above each column for its header label (item 6); content stacking starts at MARGIN + HEADER_H, not MARGIN alone.
+    const EDGE_FAN_GAP = 6; // per-member y offset for parallel edges sharing one from|to|kind (item 4)
+    const SCENE_STATE_LABEL_MAX_CHARS = 24; // a scene state row is a bit wider than an IO pill (NODE_W - GROUP_PAD*2 vs IO_PILL_W)
 
     // ---- Live overlay constants (Stage 3: round-2 feedback item 3) ----
 
@@ -140,6 +145,37 @@
         return m;
     }
 
+    // resolveScenePortId computes the geometry port id a scene_action edge's
+    // source actually leaves from: the owning state's sub-row (item 2) when
+    // edge.state unambiguously matches one of the scene's configured state
+    // names, or the scene's own (header) node id as a safe fallback
+    // otherwise - e.g. a state renamed/removed since this schema snapshot
+    // was taken (unmatched), or a hand-edited config.json with two states
+    // sharing a name (ambiguous: nothing server-side rejects a duplicate
+    // state name reaching the client - see scene.go's NewScene - and
+    // edge.state is a bare name, not an index, so there is no way to tell
+    // which of the two rows actually owns a given action). Falling back to
+    // the header in the ambiguous case is deliberate (finding F5): picking
+    // "the first one anyway" would render a specific, plausible-looking, but
+    // possibly wrong state->action mapping - exactly what per-state ports
+    // exist to prevent - whereas the header fallback is honestly neutral.
+    // Ports are keyed by state INDEX below ("#state@<idx>"), not name, so
+    // two same-named states still get two distinct, non-colliding rows even
+    // though an edge naming them can't itself be attributed to one. Pure
+    // (node-map lookup only, no DOM), so it is shared by buildLayout's device
+    // barycentring and renderDiagram's edge routing/fanning - both need to
+    // agree on where a scene_action edge "really" starts.
+    function resolveScenePortId(edge, nMap) {
+        if (edge.kind !== 'scene_action') return edge.from;
+        const node = nMap.get(edge.from);
+        if (!node || node.device_type !== 'scene') return edge.from;
+        const states = (node.detail && node.detail.state_names) || [];
+        const firstIdx = states.indexOf(edge.state);
+        if (firstIdx === -1) return edge.from; // unmatched
+        if (states.lastIndexOf(edge.state) !== firstIdx) return edge.from; // ambiguous: duplicate state name
+        return edge.from + '#state@' + firstIdx;
+    }
+
     // ==================================================================
     // Graph build (pure): data -> positioned layout. No DOM access here.
     // ==================================================================
@@ -161,36 +197,133 @@
         const edges = data.edges || [];
         const nMap = nodeMap(data);
 
-        const controls = nodes.filter(n => n.kind === 'device' && (n.device_type === 'button' || n.device_type === 'scene'));
+        // Column split (item 1): Controls used to hold both buttons and
+        // scenes at the same x, so a button->scene or scene->scene edge
+        // computed leftToRight = from.x <= to.x as true even though it ran
+        // backwards through both node bodies (P1) - equal x is never really
+        // "left to right". Splitting Scenes into its own column, to the
+        // RIGHT of Buttons, makes button->scene and scene->device both
+        // genuinely flow left-to-right; only scene->scene remains
+        // same-column, handled below by sameColumnPath (item 3).
+        const buttons = nodes.filter(n => n.kind === 'device' && n.device_type === 'button');
+        const scenes = nodes.filter(n => n.kind === 'device' && n.device_type === 'scene');
         const devices = nodes.filter(n => n.kind === 'device' && n.device_type !== 'button' && n.device_type !== 'scene');
         const drivers = nodes.filter(n => n.kind === 'driver');
         const ios = nodes.filter(n => n.kind === 'io');
 
-        // Column order: [Driver inputs] [Controls] [Devices] [Driver outputs].
-        // The two IO columns only take up space when showIo is on; collapsed,
-        // Controls/Devices sit exactly where the pre-split 2-column layout
-        // put them.
+        // Column order: [Driver inputs] [Buttons] [Scenes] [Devices] [Driver
+        // outputs]. The two IO columns only take up space when showIo is on;
+        // collapsed, Buttons/Scenes/Devices sit exactly where they would with
+        // no IO columns at all. Scenes gets the same treatment (finding F6):
+        // most existing configs have no scenes at all, and reserving a full
+        // NODE_W+COL_GAP column - plus its own header - for a column that
+        // will render nothing widened every scene-less diagram by ~300px for
+        // no reason.
         const ioColSpan = showIo ? IO_COL_W + COL_GAP : 0;
+        const scenesColSpan = scenes.length ? NODE_W + COL_GAP : 0;
         const colX = {
             driversLeft: MARGIN,
             controls: MARGIN + ioColSpan,
-            devices: MARGIN + ioColSpan + NODE_W + COL_GAP,
-            driversRight: MARGIN + ioColSpan + (NODE_W + COL_GAP) * 2,
+            scenes: MARGIN + ioColSpan + NODE_W + COL_GAP,
+            devices: MARGIN + ioColSpan + NODE_W + COL_GAP + scenesColSpan,
+            driversRight: MARGIN + ioColSpan + NODE_W + COL_GAP + scenesColSpan + NODE_W + COL_GAP,
         };
+        // Content rows (buttons/scenes/devices/driver groups) start below a
+        // header band (item 6) instead of flush against MARGIN.
+        const CONTENT_TOP = MARGIN + HEADER_H;
 
-        // ---- Controls, kept in backend (config) order ----
-        const controlPos = new Map();
-        controls.forEach((n, i) => {
-            controlPos.set(n.id, { x: colX.controls, y: MARGIN + i * (NODE_H + ROW_GAP) });
+        // ---- Buttons, kept in backend (config) order ----
+        const buttonPos = new Map();
+        buttons.forEach((n, i) => {
+            buttonPos.set(n.id, { x: colX.controls, y: CONTENT_TOP + i * (NODE_H + ROW_GAP) });
         });
 
-        // ---- Devices, barycenter-ordered by connected controls ----
+        // ---- Scenes: dedicated column, group boxes with per-state sub-rows
+        // (item 2). A scene's height depends on its state count, so scenes
+        // stack with dynamic heights - the same idiom as the driver group
+        // boxes below (buildDriverGroup is the DOM-side model). Positioned
+        // BEFORE devices, ordered by the average y of incoming *button*
+        // control edges only (scenes have no IO of their own to barycenter
+        // against - P4 - and this ordering is what lets the devices pass
+        // below pool both buttons' and scenes' positions in one go).
+        function sceneStateNames(n) {
+            return (n.detail && n.detail.state_names) || [];
+        }
+        function sceneBoxHeight(states) {
+            // A 0-state (legacy inert) scene still reserves one row's worth
+            // of body, so it never collapses to header-only/zero height.
+            const n = Math.max(states.length, 1);
+            return GROUP_HEADER_H + GROUP_PAD * 2 + n * (IO_PILL_H + IO_PILL_GAP) - IO_PILL_GAP;
+        }
+
+        const incomingByScene = new Map();
+        edges.filter(e => e.kind === 'control').forEach(e => {
+            const p = buttonPos.get(e.from);
+            if (!p) return;
+            if (!incomingByScene.has(e.to)) incomingByScene.set(e.to, []);
+            incomingByScene.get(e.to).push(p.y + NODE_H / 2);
+        });
+        const sceneKey = scenes.map((n, i) => {
+            const ys = incomingByScene.get(n.id);
+            const avg = ys && ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : i * (NODE_H + ROW_GAP);
+            return { n, avg, i };
+        });
+        // Finding 11 tiebreaker (see layoutSide's comment below): keeps this
+        // sort deterministic across equal/fallback avgs, same as its siblings.
+        sceneKey.sort((a, b) => a.avg - b.avg || a.i - b.i);
+
+        const scenePortPos = new Map(); // bare scene id -> header port; "id#state@idx" -> that state row's port
+        const sceneList = [];
+        let sceneY = CONTENT_TOP;
+        sceneKey.forEach(({ n }) => {
+            const states = sceneStateNames(n);
+            const h = sceneBoxHeight(states);
+            const x = colX.scenes;
+            const headerY = sceneY + GROUP_HEADER_H / 2;
+            scenePortPos.set(n.id, { x: x, xRight: x + NODE_W, y: headerY, halfH: GROUP_HEADER_H / 2 });
+            const rowItems = states.map((name, idx) => {
+                const y = sceneY + GROUP_HEADER_H + GROUP_PAD + idx * (IO_PILL_H + IO_PILL_GAP) + IO_PILL_H / 2;
+                // Port ids for state rows are geometry-only (D6): the node id
+                // itself ("device:scene:<name>") never changes, so
+                // selection/adjacency/edit-mode lookups keyed on it keep
+                // working untouched - only portFor and resolveScenePortId
+                // ever see this "#state@" suffix. Keyed by INDEX, not name
+                // (finding F5): a hand-edited config.json can carry two
+                // states with the same name (nothing server-side rejects
+                // it), and keying by name here would let the second row's
+                // Map.set silently overwrite the first row's port, corrupting
+                // both rows' edge geometry (an edge would appear to leave
+                // from the wrong row's y).
+                scenePortPos.set(n.id + '#state@' + idx, { x: x, xRight: x + NODE_W, y: y, halfH: IO_PILL_H / 2 });
+                return { name: name, index: idx, y: y };
+            });
+            sceneList.push({ node: n, x: x, y: sceneY, w: NODE_W, h: h, headerY: headerY, states: rowItems });
+            sceneY += h + ROW_GAP;
+        });
+        const scenesHeight = sceneList.length ? sceneY - ROW_GAP - CONTENT_TOP : 0;
+
+        // ---- Devices, barycenter-ordered by ALL connected buttons+scenes ----
+        // Pools control edges (button -> target) and scene_action edges
+        // (scene -> target) into one incoming-y map per device, same as
+        // before the column split - the only change is that a scene_action
+        // edge now contributes the y of the specific STATE ROW that owns it
+        // (falling back to the scene's header row - see resolveScenePortId)
+        // instead of one scene-wide y, which only works because scenePortPos
+        // above is already fully built.
         const relEdges = edges.filter(e => e.kind === 'control' || e.kind === 'scene_action');
         const incomingByDevice = new Map();
         relEdges.forEach(e => {
+            let centerY;
+            if (e.kind === 'control') {
+                const p = buttonPos.get(e.from);
+                if (p) centerY = p.y + NODE_H / 2;
+            } else {
+                const p = scenePortPos.get(resolveScenePortId(e, nMap));
+                if (p) centerY = p.y; // scenePortPos y values are already row/header centers
+            }
+            if (centerY === undefined) return;
             if (!incomingByDevice.has(e.to)) incomingByDevice.set(e.to, []);
-            const p = controlPos.get(e.from);
-            if (p) incomingByDevice.get(e.to).push(p.y + NODE_H / 2);
+            incomingByDevice.get(e.to).push(centerY);
         });
         const deviceKey = devices.map((n, i) => {
             const ys = incomingByDevice.get(n.id);
@@ -200,7 +333,7 @@
         deviceKey.sort((a, b) => a.avg - b.avg || a.i - b.i);
         const devicePos = new Map();
         deviceKey.forEach((d, i) => {
-            devicePos.set(d.n.id, { x: colX.devices, y: MARGIN + i * (NODE_H + ROW_GAP) });
+            devicePos.set(d.n.id, { x: colX.devices, y: CONTENT_TOP + i * (NODE_H + ROW_GAP) });
         });
 
         // ---- Driver inputs (left) & Driver outputs (right) (only when showIo) ----
@@ -210,13 +343,13 @@
         if (showIo) {
             const ioEdges = edges.filter(e => e.kind === 'io');
             // Two separate incoming-y maps: left-side pills are barycentered
-            // against the Controls column (buttons feeding event_input
-            // edges), right-side pills against the Devices column (output/
-            // analog/rgbw edges) - see round-2 spec item 4.
+            // against the Buttons column (buttons feeding event_input edges -
+            // scenes have no IO of their own, see P4), right-side pills
+            // against the Devices column (output/analog/rgbw edges).
             const fromControlY = new Map();
             const fromDeviceY = new Map();
             ioEdges.forEach(e => {
-                const cp = controlPos.get(e.from);
+                const cp = buttonPos.get(e.from);
                 const dp = cp ? null : devicePos.get(e.from);
                 const p = cp || dp;
                 if (!p) return;
@@ -282,7 +415,7 @@
                 const ordered = entries.map((e, i) => ({ e, avg: groupAvgY(e.rawPills, incomingMap, i), i }));
                 ordered.sort((a, b) => a.avg - b.avg || a.i - b.i);
                 const built = [];
-                let gy = MARGIN;
+                let gy = CONTENT_TOP;
                 ordered.forEach(({ e }) => {
                     const keyed = orderPills(e.rawPills, incomingMap);
                     const boxH = GROUP_HEADER_H + GROUP_PAD * 2 + Math.max(keyed.length, 1) * (IO_PILL_H + IO_PILL_GAP) - (keyed.length ? IO_PILL_GAP : 0);
@@ -336,7 +469,7 @@
                 // the split): appended below the real driver boxes on the
                 // right, their default side.
                 const boxH = GROUP_HEADER_H + GROUP_PAD * 2 + invalidPills.length * (IO_PILL_H + IO_PILL_GAP) - IO_PILL_GAP;
-                const boxY = rightGroups.length ? rightHeight + GROUP_GAP : MARGIN;
+                const boxY = rightGroups.length ? rightHeight + GROUP_GAP : CONTENT_TOP;
                 invalidPills.forEach((p, idx) => {
                     ioPos.set(p.n.id, {
                         x: colX.driversRight + GROUP_PAD,
@@ -354,29 +487,45 @@
             }
         }
 
-        const controlsHeight = controls.length ? controls.length * (NODE_H + ROW_GAP) - ROW_GAP : 0;
+        const buttonsHeight = buttons.length ? buttons.length * (NODE_H + ROW_GAP) - ROW_GAP : 0;
         const devicesHeight = devices.length ? devices.length * (NODE_H + ROW_GAP) - ROW_GAP : 0;
-        const contentHeight = Math.max(controlsHeight, devicesHeight, leftHeight, rightHeight, NODE_H);
+        const contentHeight = Math.max(buttonsHeight, scenesHeight, devicesHeight, leftHeight, rightHeight, NODE_H);
 
         const width = (showIo ? colX.driversRight + IO_COL_W : colX.devices + NODE_W) + MARGIN;
-        const height = contentHeight + MARGIN * 2;
+        const height = contentHeight + MARGIN * 2 + HEADER_H;
 
         // Edges to actually draw: hide io-kind edges (and anything touching a
         // hidden io node) when the driver/IO columns are collapsed.
         const drawEdges = edges.filter(e => showIo || e.kind !== 'io');
 
+        // Column headers (item 6): plain data, no DOM - rendered as SVG text
+        // by renderDiagram. Every column's header is conditional on that
+        // column actually having content (finding F6) - an empty column
+        // still labelled (e.g. "SCENES" over nothing) reads as a diagram bug,
+        // not an intentionally empty section.
+        const headers = [];
+        if (showIo) headers.push({ x: colX.driversLeft, w: IO_COL_W, label: 'Inputs' });
+        if (buttons.length) headers.push({ x: colX.controls, w: NODE_W, label: 'Buttons' });
+        if (scenes.length) headers.push({ x: colX.scenes, w: NODE_W, label: 'Scenes' });
+        if (devices.length) headers.push({ x: colX.devices, w: NODE_W, label: 'Devices' });
+        if (showIo) headers.push({ x: colX.driversRight, w: IO_COL_W, label: 'Outputs' });
+
         return {
             width, height,
-            controls: controls.map(n => Object.assign({ node: n }, controlPos.get(n.id))),
+            headerY: MARGIN + HEADER_H / 2 + 4,
+            headers: headers,
+            buttons: buttons.map(n => Object.assign({ node: n }, buttonPos.get(n.id))),
+            scenes: sceneList,
             devices: devices.map(n => Object.assign({ node: n }, devicePos.get(n.id))),
             groups: leftGroups.concat(rightGroups),
             ioPos,
             edges: drawEdges,
             nodeMap: nMap,
             portFor(id) {
-                if (controlPos.has(id)) return { x: controlPos.get(id).x, xRight: controlPos.get(id).x + NODE_W, y: controlPos.get(id).y + NODE_H / 2 };
-                if (devicePos.has(id)) return { x: devicePos.get(id).x, xRight: devicePos.get(id).x + NODE_W, y: devicePos.get(id).y + NODE_H / 2 };
-                if (ioPos.has(id)) { const p = ioPos.get(id); return { x: p.x, xRight: p.x + IO_PILL_W, y: p.y + IO_PILL_H / 2 }; }
+                if (buttonPos.has(id)) { const p = buttonPos.get(id); return { x: p.x, xRight: p.x + NODE_W, y: p.y + NODE_H / 2, halfH: NODE_H / 2 }; }
+                if (devicePos.has(id)) { const p = devicePos.get(id); return { x: p.x, xRight: p.x + NODE_W, y: p.y + NODE_H / 2, halfH: NODE_H / 2 }; }
+                if (scenePortPos.has(id)) return scenePortPos.get(id);
+                if (ioPos.has(id)) { const p = ioPos.get(id); return { x: p.x, xRight: p.x + IO_PILL_W, y: p.y + IO_PILL_H / 2, halfH: IO_PILL_H / 2 }; }
                 return null;
             },
         };
@@ -389,6 +538,43 @@
     function bezierPath(x1, y1, x2, y2) {
         const midX = (x1 + x2) / 2;
         return 'M ' + x1 + ',' + y1 + ' C ' + midX + ',' + y1 + ' ' + midX + ',' + y2 + ' ' + x2 + ',' + y2;
+    }
+
+    // sameColumnPath (item 3, residual P1: scene->scene) routes an edge whose
+    // endpoints share one x - today only possible for a scene targeting an
+    // earlier scene, since Scenes is the only column that is both a source
+    // and a target of rel edges - via each shape's LEFT edge, bulging out
+    // into the gutter to their left, so the curve never crosses either node
+    // body the way the old from.xRight->to.x fallback did (P1: leftToRight's
+    // "<=" treated equal x as left-to-right). Guards y1 === y2 so a
+    // degenerate same-point edge (a scene can never legally target itself -
+    // see sceneTargetNameOptions/resolveControllable - but a stale/malformed
+    // graph must still not hand the bezier a zero-length control vector).
+    function sameColumnPath(x, y1, y2) {
+        if (y1 === y2) y2 += 0.01;
+        const bulge = Math.max(40, COL_GAP / 2);
+        const gx = x - bulge;
+        return 'M ' + x + ',' + y1 + ' C ' + gx + ',' + y1 + ' ' + gx + ',' + y2 + ' ' + x + ',' + y2;
+    }
+
+    // clampFan (item 4) turns a fan index (…, -1, 0, 1, …) into a y offset,
+    // never exceeding either endpoint's own half-height - so a fanned edge's
+    // shifted endpoint can never poke outside the shape it leaves from/
+    // arrives at. fanMax is the group's own largest |fanIndex| (always
+    // (memberCount-1)/2, since fanIndex is centered on 0); scaling the gap
+    // down so the outermost member lands exactly on the limit - rather than
+    // independently clamping each member's already-computed offset to that
+    // same limit - keeps every member's offset distinct at any group size
+    // (finding F12: pure clamping collapsed multiple outer members onto the
+    // same clamped value once (memberCount-1)*EDGE_FAN_GAP/2 exceeded the
+    // limit, e.g. 7 parallel edges into an IO pill's IO_PILL_H/2=11 limit
+    // clamped to -11,-11,-6,0,6,11,11 - two pairs pixel-identical again,
+    // re-creating the overlap the fanning exists to fix).
+    function clampFan(fanIndex, fanMax, halfHFrom, halfHTo) {
+        if (fanMax <= 0) return 0;
+        const limit = Math.min(halfHFrom, halfHTo);
+        const gap = Math.min(EDGE_FAN_GAP, limit / fanMax);
+        return fanIndex * gap;
     }
 
     function renderDiagram(container, data, layout) {
@@ -414,33 +600,92 @@
 
         const edgeLayer = svgEl('g', { class: 'schema-edges' });
         const nodeLayer = svgEl('g', { class: 'schema-nodes' });
+        const headerLayer = svgEl('g', { class: 'schema-headers' });
+        // Edges render behind nodes (edgeLayer appended first) - this is what
+        // already made IO edges pass behind driver group boxes, and now also
+        // covers a button->device control edge that spans past the whole
+        // Scenes column: its bezier midpoint arcs near/through scene boxes,
+        // but sits underneath them, same as any other cross-column edge.
         svg.appendChild(edgeLayer);
         svg.appendChild(nodeLayer);
+        svg.appendChild(headerLayer);
+
+        // ---- Column headers (item 6) ----
+        layout.headers.forEach(h => {
+            const text = svgEl('text', { x: h.x + 4, y: layout.headerY, class: 'schema-col-header' });
+            text.textContent = h.label;
+            headerLayer.appendChild(text);
+        });
 
         // ---- Edges ----
-        layout.edges.forEach(edge => {
-            const from = layout.portFor(edge.from);
+        // Parallel-edge fanning (item 4): group by from|to|kind using the
+        // *resolved* port id, so a scene's own per-state ports (already
+        // distinct - item 2) never get fanned redundantly on top of that. A
+        // group with more than one member offsets each member's endpoint y
+        // so no two edges between the same pair of ports render identically
+        // (this covers e.g. one button with several event types all
+        // targeting the same light).
+        const edgeItems = layout.edges.map(edge => ({ edge: edge, fromId: resolveScenePortId(edge, layout.nodeMap) }));
+        const fanGroups = new Map();
+        edgeItems.forEach(item => {
+            const key = item.fromId + '|' + item.edge.to + '|' + item.edge.kind;
+            if (!fanGroups.has(key)) fanGroups.set(key, []);
+            fanGroups.get(key).push(item);
+        });
+        fanGroups.forEach(group => {
+            const fanMax = (group.length - 1) / 2;
+            group.forEach((item, i) => { item.fanIndex = i - fanMax; item.fanMax = fanMax; });
+        });
+
+        edgeItems.forEach(item => {
+            const edge = item.edge;
+            const from = layout.portFor(item.fromId);
             const to = layout.portFor(edge.to);
             if (!from || !to) return;
             const color = edgeColor(edge);
             const isIo = edge.kind === 'io';
-            // Direction-aware endpoints: with the driver I/O split (round-2
-            // item 4), an io edge's "to" (an input-side pill in the left
-            // column) can sit to the LEFT of its "from" (a button in
-            // Controls) - in that case draw from from's LEFT edge to to's
-            // RIGHT edge so the curve still runs between the two shapes'
-            // nearest edges, instead of reaching backward across both node
-            // widths. Everything else (left-to-right as before) is unchanged.
-            const leftToRight = from.x <= to.x;
-            const x1 = leftToRight ? from.xRight : from.x;
-            const x2 = leftToRight ? to.x : to.xRight;
+            const fanOffset = clampFan(item.fanIndex, item.fanMax, from.halfH, to.halfH);
+
+            let d;
+            if (from.x === to.x) {
+                // Item 3: same-column edges (scene->scene) never use the
+                // left-to-right bezier fallback below - see sameColumnPath.
+                d = sameColumnPath(from.x, from.y + fanOffset, to.y + fanOffset);
+            } else {
+                // Direction-aware endpoints: with the driver I/O split, an io
+                // edge's "to" (an input-side pill in the left column) can sit
+                // to the LEFT of its "from" (a button in Buttons) - in that
+                // case draw from from's LEFT edge to to's RIGHT edge so the
+                // curve still runs between the two shapes' nearest edges,
+                // instead of reaching backward across both node widths.
+                // Everything else (left-to-right) is unchanged. Equal x is
+                // handled above, so this comparison never needs "<=".
+                const leftToRight = from.x < to.x;
+                const x1 = leftToRight ? from.xRight : from.x;
+                const x2 = leftToRight ? to.x : to.xRight;
+                d = bezierPath(x1, from.y + fanOffset, x2, to.y + fanOffset);
+            }
+
             const path = svgEl('path', {
-                d: bezierPath(x1, from.y, x2, to.y),
+                d: d,
                 class: 'schema-edge' + (isIo ? ' schema-edge-io' : ' schema-edge-rel'),
                 stroke: color,
                 fill: 'none',
             });
-            path.dataset.from = edge.from;
+            // D6: dataset.from carries the *resolved* port id (possibly a
+            // scene's "id#state@N" sub-row) for debugging/inspection -
+            // exactly which row an edge geometrically leaves from. Adjacency
+            // comparisons must never derive the owning node id by string-
+            // splitting this value: a device name is free to contain a
+            // literal '#' (nothing server-side forbids it - config_edit.go's
+            // name validation only rejects ':'), so a fold-at-'#' approach
+            // corrupted any node whose real name contained one (finding F2 -
+            // e.g. a light named "Lamp#1" got folded to "Lamp"). dataset.
+            // fromNode instead carries the always-bare edge.from straight
+            // from the schema/edit graph, so applyAdjacency below compares
+            // like-for-like without parsing anything.
+            path.dataset.from = item.fromId;
+            path.dataset.fromNode = edge.from;
             path.dataset.to = edge.to;
             if (!isIo) {
                 path.setAttribute('marker-end', 'url(#arrow-' + colorId(color) + ')');
@@ -454,8 +699,9 @@
             edgeLayer.appendChild(path);
         });
 
-        // ---- Control / Device nodes ----
-        layout.controls.forEach(item => nodeLayer.appendChild(buildDeviceNode(item)));
+        // ---- Button / Scene / Device nodes ----
+        layout.buttons.forEach(item => nodeLayer.appendChild(buildDeviceNode(item)));
+        layout.scenes.forEach(item => nodeLayer.appendChild(buildSceneGroupNode(item)));
         layout.devices.forEach(item => nodeLayer.appendChild(buildDeviceNode(item)));
 
         // ---- Driver groups + IO pills ----
@@ -501,6 +747,12 @@
 
     const NODE_LABEL_MAX_CHARS = 22;
     const IO_PILL_LABEL_MAX_CHARS = 20;
+    // A scene header's 24px band also carries the right-anchored live
+    // "extra" state label (see buildSceneGroupNode) - something no other
+    // node type shares its label row with - so it gets a tighter truncation
+    // budget than NODE_LABEL_MAX_CHARS to leave that label room (finding
+    // F13: at the full budget the two routinely overlapped).
+    const SCENE_HEADER_LABEL_MAX_CHARS = 13;
 
     function buildMarker(color) {
         const marker = svgEl('marker', {
@@ -514,16 +766,18 @@
         return marker;
     }
 
+    // buildDeviceNode renders a fixed-height NODE_H rect for a button or an
+    // "ordinary" device (light/outlet/etc). Scenes are rendered by
+    // buildSceneGroupNode instead (item 2's dynamic-height container box) -
+    // layout.buttons/layout.devices never include a scene node, so the
+    // device_type checks below only ever see 'missing' as a dashed variant.
     function buildDeviceNode(item) {
         const n = item.node;
         const g = svgEl('g', { class: 'schema-node schema-node-device', 'data-node-id': n.id });
-        const dashed = n.device_type === 'scene' || n.missing;
-        let extraClass = '';
-        if (n.missing) extraClass = ' schema-node-missing';
-        else if (n.device_type === 'scene') extraClass = ' schema-node-scene';
+        const dashed = n.missing;
         const rectAttrs = {
             x: item.x, y: item.y, width: NODE_W, height: NODE_H, rx: 8,
-            class: 'schema-node-rect' + (dashed ? ' schema-node-dashed' : '') + extraClass,
+            class: 'schema-node-rect' + (dashed ? ' schema-node-dashed schema-node-missing' : ''),
         };
         g.appendChild(svgEl('rect', rectAttrs));
 
@@ -576,6 +830,134 @@
             g.appendChild(dot);
             g.appendChild(extra);
             seedStateOverlay(dot, extra, n);
+        }
+
+        return g;
+    }
+
+    // buildSceneGroupNode renders a scene as a container box (item 2): a
+    // header row (name + the same HomeKit/fault/unsaved/live-state markers
+    // buildDeviceNode above uses) plus one sub-row per configured state, in
+    // the idiom of buildDriverGroup below. scene_action edges leave from the
+    // owning state's row (see resolveScenePortId/portFor) instead of the
+    // scene's centre, so different states never draw identical, overlapping
+    // curves - this is what structurally fixes P2 for scenes.
+    function buildSceneGroupNode(item) {
+        const n = item.node;
+        // schema-node-device (not just schema-node-scene-group) is required
+        // here (finding F1): applyLiveOverlay (Stage 3) walks the DOM for
+        // '.schema-node-device' to find every node it should keep in sync on
+        // each /api/state poll - a scene's state dot, "extra" label and
+        // per-state active-row highlight are all wired through that same
+        // class (see applyLiveOverlay below). It carries no CSS rule of its
+        // own (checked style.css - it's a pure JS selector hook), so adding
+        // it here changes no styling; without it a scene's live overlay was
+        // never applied at all and froze at whatever seedStateOverlay
+        // painted on page load.
+        const g = svgEl('g', { class: 'schema-node schema-node-device schema-node-scene-group', 'data-node-id': n.id });
+
+        g.appendChild(svgEl('rect', {
+            x: item.x, y: item.y, width: item.w, height: item.h, rx: 8,
+            class: 'schema-group-rect schema-scene-group-rect',
+        }));
+
+        const headerText = svgEl('text', { x: item.x + 14, y: item.y + GROUP_HEADER_H / 2 + 5, class: 'schema-node-label' });
+        // SCENE_HEADER_LABEL_MAX_CHARS, not NODE_LABEL_MAX_CHARS (finding
+        // F13) - see its own comment. The untruncated name is still always
+        // available via the <title> child below, same as everywhere else.
+        headerText.textContent = DEVICE_ICONS.scene + ' ' + truncateLabel(n.label || '', SCENE_HEADER_LABEL_MAX_CHARS);
+        if (n.label) {
+            const title = svgEl('title');
+            title.textContent = n.label;
+            headerText.appendChild(title);
+        }
+        g.appendChild(headerText);
+
+        let markerX = item.x + item.w - 14;
+        if (n.homekit) {
+            const hk = svgEl('text', { x: markerX, y: item.y + 15, class: 'schema-node-marker', 'text-anchor': 'end' });
+            hk.textContent = '\u{1F34E}';
+            g.appendChild(hk);
+            markerX -= 16;
+        }
+        if (n.faulty) {
+            // Chained onto markerX rather than a fixed item.x+item.w-8
+            // (finding F13): at that fixed position the fault dot sat only
+            // ~2px from the live-state dot below (cx item.x+item.w-10) -
+            // two same-radius circles close enough to visually merge.
+            // Chaining after the HomeKit marker (when present), or the
+            // header's own right margin (when not), keeps it clear of the
+            // state dot regardless of which markers this scene has.
+            g.appendChild(svgEl('circle', { cx: markerX - 4, cy: item.y + 8, r: 4, class: 'schema-fault-dot' }));
+            markerX -= 14;
+        }
+        if (n.unsaved) {
+            g.appendChild(svgEl('circle', { cx: item.x + 8, cy: item.y + item.h - 8, r: 4, class: 'schema-unsaved-dot' }));
+        }
+
+        // Live-state overlay hooks: same contract as buildDeviceNode's dot/
+        // extra above - seeded here, then only ever updated in place by
+        // updateDeviceOverlay, never recreated. Placed in the header band
+        // (rather than the node's bottom-right corner, since a scene box's
+        // total height varies with its state count).
+        if (!S.editMode) {
+            const dotCx = item.x + item.w - 10;
+            const dotCy = item.y + GROUP_HEADER_H - 7;
+            const dot = svgEl('circle', { cx: dotCx, cy: dotCy, r: 4.5, class: 'schema-state-dot' });
+            const extra = svgEl('text', { x: dotCx - 10, y: dotCy + 3, class: 'schema-state-extra', 'text-anchor': 'end' });
+            g.appendChild(dot);
+            g.appendChild(extra);
+            seedStateOverlay(dot, extra, n);
+        }
+
+        // ---- per-state sub-rows ----
+        // activeIdx falls back to 0 whenever detail.state_index is absent -
+        // which is exactly what buildEditGraph supplies for a scene (only
+        // state_names, no state_index: the working copy has no notion of a
+        // "current" state). Outside edit mode that fallback only shows
+        // briefly (until the first /api/state poll seeds the real value);
+        // in edit mode it never gets overtaken by a poll, so without the
+        // !S.editMode guard below, state row 0 would render permanently -
+        // and wrongly - "active" for the whole editing session (finding F9).
+        // Same rule buildSceneGroupNode's dot/extra pair above already
+        // follows.
+        const activeIdx = (n.detail && n.detail.state_index) || 0;
+        if (!item.states.length) {
+            // A legacy 0-state scene: still show the reserved row's worth of
+            // body (sceneBoxHeight in buildLayout), rather than an
+            // unexplained blank box.
+            const empty = svgEl('text', {
+                x: item.x + GROUP_PAD + 6, y: item.y + GROUP_HEADER_H + GROUP_PAD + IO_PILL_H / 2 + 4,
+                class: 'schema-scene-state-empty',
+            });
+            empty.textContent = 'no states configured';
+            g.appendChild(empty);
+        } else {
+            item.states.forEach(st => {
+                const active = !S.editMode && st.index === activeIdx;
+                const rowTop = st.y - IO_PILL_H / 2;
+                // data-state-index (not data-node-id: state rows are not
+                // independently selectable/hoverable, they're decoration
+                // inside the scene's own node) is how the live overlay
+                // (updateDeviceOverlay) finds this row again on every poll to
+                // toggle the active-state class in place - item 6.
+                const rowG = svgEl('g', {
+                    class: 'schema-scene-state-row' + (active ? ' schema-scene-state-active' : ''),
+                    'data-state-index': st.index,
+                });
+                rowG.appendChild(svgEl('rect', {
+                    x: item.x + GROUP_PAD, y: rowTop, width: item.w - GROUP_PAD * 2, height: IO_PILL_H, rx: 4,
+                    class: 'schema-scene-state-rect',
+                }));
+                const label = svgEl('text', { x: item.x + GROUP_PAD + 6, y: st.y + 4, class: 'schema-scene-state-label' });
+                const full = st.index + ' ' + st.name;
+                label.textContent = truncateLabel(full, SCENE_STATE_LABEL_MAX_CHARS);
+                const title = svgEl('title');
+                title.textContent = full;
+                label.appendChild(title);
+                rowG.appendChild(label);
+                g.appendChild(rowG);
+            });
         }
 
         return g;
@@ -678,6 +1060,20 @@
 
     // ---- Hover adjacency ----
 
+    // Node ids are bare by construction (finding F2): every graph node
+    // (button, device, scene, driver, io) is keyed by its own real id, and
+    // S.data's edges always carry bare e.from/e.to - schema.go and
+    // buildEditGraph never emit a "#"-suffixed id; that suffix only ever
+    // appears in the DOM, written by renderDiagram's edge loop above as the
+    // *resolved* geometry port for a scene's per-state sub-row (dataset.
+    // from/fromNode). So adjacency here never needs to parse or fold
+    // anything: it compares nodeId (from a clicked/hovered element's bare
+    // data-node-id) against dataset.fromNode/dataset.to (also always bare)
+    // directly. A prior version instead folded at the first '#' to recover
+    // the owning node id from an edge's *resolved* dataset.from - which
+    // broke on any node whose real name legitimately contains a '#' (again,
+    // nothing server-side forbids it), truncating e.g. "Lamp#1" to "Lamp"
+    // and silently failing to dim/highlight anything connected to it.
     function adjacentSet(nodeId, data) {
         const ids = new Set([nodeId]);
         (data.edges || []).forEach(e => {
@@ -693,7 +1089,9 @@
             el.classList.toggle('dim', !adj.has(el.dataset.nodeId));
         });
         svg.querySelectorAll('.schema-edge').forEach(el => {
-            const touches = adj.has(el.dataset.from) && adj.has(el.dataset.to) && (el.dataset.from === nodeId || el.dataset.to === nodeId);
+            const from = el.dataset.fromNode;
+            const to = el.dataset.to;
+            const touches = adj.has(from) && adj.has(to) && (from === nodeId || to === nodeId);
             el.classList.toggle('dim', !touches);
             el.classList.toggle('schema-edge-active', touches);
         });
@@ -1146,7 +1544,8 @@
         edgeItems.forEach(([color, label]) => {
             html += '<span class="schema-legend-item"><span class="schema-legend-swatch" style="background:' + color + '"></span>' + escHtml(label) + '</span>';
         });
-        html += '<span class="schema-legend-item">Driver I/O: inputs left · outputs right</span>';
+        html += '<span class="schema-legend-item">Columns: Inputs · Buttons · Scenes · Devices · Outputs</span>';
+        html += '<span class="schema-legend-item">Scene edges leave from the state row that fires them</span>';
         html += '</div>';
         return html;
     }
@@ -1549,6 +1948,28 @@
         return candidate;
     }
 
+    // uniqueStateName mirrors uniquePlaceholderName's idiom (probe, bump,
+    // retry) but scoped to one scene's own States list instead of the
+    // cross-kind device-name set - state names only need to be unique within
+    // their own scene (validateEditableConfig's seenStates check, mirrored
+    // client-side by buildSceneStateNameField). Finding F4: deriving the
+    // candidate purely from states.length (as this used to) breaks the
+    // instant a state is removed from the middle/end of the list, e.g.
+    // [off, on] -> +Add -> [off, on, state3] -> remove "on" -> [off, state3]
+    // -> +Add derives 'state' + (2+1) = 'state3' again, colliding with the
+    // state3 still present and failing to save server-side with "duplicate
+    // state name".
+    function uniqueStateName(states) {
+        const names = new Set((states || []).map(function(s) { return s.Name; }));
+        let n = states.length + 1;
+        let candidate = 'state' + n;
+        while (names.has(candidate)) {
+            n++;
+            candidate = 'state' + n;
+        }
+        return candidate;
+    }
+
     // propagateRename rewrites every reference to oldName in the working copy
     // (button control-relation targets, scene action device names) to
     // newName. Called once, at rename commit (blur), for controllable kinds.
@@ -1655,7 +2076,13 @@
                 S.working.Buttons.push(entry);
                 break;
             case 'scene':
-                entry = withEditId({ Name: name, States: [] });
+                // Seed off/on states rather than an empty list: a scene with
+                // zero states is completely inert at runtime (Toggle() no-ops
+                // with len(states)==0, SetValue(true) no-ops with fewer than
+                // 2 - see scene.go), and server-side validation never flags
+                // that as an error, so a freshly added scene would otherwise
+                // silently do nothing until the user happened to notice.
+                entry = withEditId({ Name: name, States: [{ Name: 'off', Actions: [] }, { Name: 'on', Actions: [] }] });
                 S.working.Scenes.push(entry);
                 break;
             default:
@@ -1762,12 +2189,25 @@
         });
         (working.Scenes || []).forEach(function(s) {
             const fromId = 'device:scene:' + s.Name;
+            // Item 5: dedup on the same key the server uses (schema.go's
+            // buildSchemaGraph, ~line 219: fromID|toID|state|verb|level) so
+            // the edit-mode diagram never fans/overlaps an edge the
+            // server-side view never would (e.g. a duplicated hand-edited
+            // action string within one state). Scoped per-scene rather than
+            // one map across the whole loop, like the server's single `seen`
+            // - since fromId is always this scene, a shared map could never
+            // dedup across different scenes anyway.
+            const seen = new Set();
             (s.States || []).forEach(function(st) {
                 (st.Actions || []).forEach(function(actionStr) {
                     const parsed = parseActionString(actionStr);
                     if (!parsed) return;
                     const toId = resolveTarget(parsed.device);
-                    edges.push({ kind: 'scene_action', from: fromId, to: toId, state: st.Name, action: parsed.verb, level: parsed.level || 0 });
+                    const level = parsed.level || 0;
+                    const key = fromId + '|' + toId + '|' + st.Name + '|' + parsed.verb + '|' + level;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    edges.push({ kind: 'scene_action', from: fromId, to: toId, state: st.Name, action: parsed.verb, level: level });
                 });
             });
         });
@@ -1888,13 +2328,62 @@
     // S.editData.meta.output_device_names, which is a snapshot fixed at the
     // moment edit mode was entered and goes stale the instant a device is
     // renamed, added or deleted in the working copy.
+    //
+    // Finding F8: a ':'-containing name can only reach the working copy via
+    // a hand-edited config.json (buildNameField already refuses ':' on
+    // rename - see its inline validator), but nothing stops such a name from
+    // being *offered* here and picked, producing an action string like
+    // "on:Strip:1" that parseActionString then rejects as malformed (3 parts
+    // for an on/off/toggle verb) - degrading the row the user just built
+    // with the picker straight into the raw-text error row (see F7). An
+    // already-selected such value still displays via selectFieldEl's
+    // "(missing)" fallback path (checked: options.indexOf(value) === -1
+    // once filtered out here, so hasValue && missing both go true), so
+    // filtering it out of the offered list loses no information, just stops
+    // it from being freshly chosen. Filtering here also keeps the client
+    // self-consistent with buildNameField's own rule: ':' delimits the
+    // action-string grammar, so no target name may contain one.
     function targetNameOptions() {
         const set = new Set();
         ['Lights', 'DimmableLights', 'Outlets', 'Scenes'].forEach(function(key) {
             (S.working[key] || []).forEach(function(e) { set.add(e.Name); });
         });
         (S.colorLightNodes || []).forEach(function(n) { set.add(n.label); });
-        return Array.from(set).sort();
+        return Array.from(set).filter(function(name) { return name.indexOf(':') === -1; }).sort();
+    }
+
+    // sceneTargetNameOptions restricts targetNameOptions() to the targets a
+    // scene action on `scene` may legally reference. SwKit.Setup builds
+    // scenes sequentially and resolves each action's target via
+    // resolveControllable, which only ever sees scenes already appended - so
+    // an action may target an earlier scene, never itself or a later one
+    // (mirrors the sceneIndex check in config_edit.go's validateEditableConfig).
+    // Non-scene targets (lights, dimmable lights, outlets, color lights) carry
+    // no such ordering constraint. Button control relations have no ordering
+    // constraint at all (buttons aren't built in dependency order relative to
+    // their targets), so they keep the unfiltered targetNameOptions() list.
+    function sceneTargetNameOptions(scene) {
+        const idx = S.working.Scenes.indexOf(scene);
+        return targetNameOptions().filter(function(name) {
+            const sceneIdx = S.working.Scenes.findIndex(function(s) { return s.Name === name; });
+            return sceneIdx === -1 || sceneIdx < idx;
+        });
+    }
+
+    // verbOptionsForTarget filters the verb vocabulary down to the
+    // non-brightness subset (on/off/toggle) unless `name` resolves to a
+    // dimmable light - mirrors dimmableTargetTypes in config_edit.go
+    // (DimmableLight is the only runtime type that implements app.Dimmable;
+    // ColorLight and Scene do not implement SetBrightness). Used for both
+    // button control-relation rows and scene action rows, since the server
+    // enforces the same rule for both (see validateEditableConfig's two call
+    // sites of dimmableTargetTypes).
+    function verbOptionsForTarget(name) {
+        const meta = (S.editData && S.editData.meta) || {};
+        const allVerbs = meta.action_verbs || ['on', 'off', 'toggle', 'brightness', 'brightness_up', 'brightness_down'];
+        const isDimmable = (S.working.DimmableLights || []).some(function(d) { return d.Name === name; });
+        if (isDimmable) return allVerbs;
+        return allVerbs.filter(function(v) { return !isBrightnessVerb(v); });
     }
 
     // buildNameField builds its own input (rather than reusing textInputEl)
@@ -1999,27 +2488,48 @@
         panel.appendChild(list);
 
         const addBtn = mkEl('button', { class: 'io-filter-btn' }, '+ Add relation');
-        addBtn.addEventListener('click', function() {
-            const targets = targetNameOptions();
-            entry.ControlDevices.push({ EventType: 'single_press', Action: 'toggle', Level: 0, DeviceName: targets[0] || '' });
-            markDirty();
-            redrawEdit();
-        });
+        const relationTargets = targetNameOptions();
+        if (!relationTargets.length) {
+            // Finding F11: mirrors the scene "+ Add action" guard just below
+            // in buildSceneStateRow - without it, staging DeviceName: ''
+            // fails validation only on save, with a confusing "target
+            // device "" does not exist" error, instead of being caught here
+            // where the user can see why the button is disabled.
+            addBtn.disabled = true;
+            addBtn.title = 'No valid target exists yet - add a light, outlet, dimmable light, or scene first';
+        } else {
+            addBtn.addEventListener('click', function() {
+                const targets = targetNameOptions();
+                entry.ControlDevices.push({ EventType: 'single_press', Action: 'toggle', Level: 0, DeviceName: targets[0] || '' });
+                markDirty();
+                redrawEdit();
+            });
+        }
         panel.appendChild(addBtn);
     }
 
     function buildControlRelationRow(button, cd, idx) {
         const meta = (S.editData && S.editData.meta) || {};
         const eventTypes = meta.event_types || ['single_press', 'double_press', 'triple_press', 'long_press'];
-        const verbs = meta.action_verbs || ['on', 'off', 'toggle', 'brightness', 'brightness_up', 'brightness_down'];
 
         const row = mkEl('div', { class: 'edit-relation-row' });
         row.appendChild(selectFieldEl(eventTypes, cd.EventType, function(v) { cd.EventType = v; markDirty(); redrawEdit(); }));
-        row.appendChild(selectFieldEl(verbs, cd.Action, function(v) { cd.Action = v; markDirty(); redrawEdit(); }));
+        row.appendChild(selectFieldEl(verbOptionsForTarget(cd.DeviceName), cd.Action, function(v) { cd.Action = v; markDirty(); redrawEdit(); }));
         if (isBrightnessVerb(cd.Action)) {
             row.appendChild(numberInputEl(cd.Level, 0, 100, function(v) { cd.Level = Math.max(0, Math.min(100, v)); markDirty(); scheduleRedrawEdit(); }));
         }
-        row.appendChild(selectFieldEl(targetNameOptions(), cd.DeviceName, function(v) { cd.DeviceName = v; markDirty(); redrawEdit(); }));
+        row.appendChild(selectFieldEl(targetNameOptions(), cd.DeviceName, function(v) {
+            cd.DeviceName = v;
+            // Item 4: switching the target can make the currently-selected
+            // verb illegal (brightness requires a dimmable target) - coerce
+            // to toggle rather than leave an invalid verb/target combination
+            // staged in the working copy.
+            if (isBrightnessVerb(cd.Action) && verbOptionsForTarget(v).indexOf(cd.Action) === -1) {
+                cd.Action = 'toggle';
+            }
+            markDirty();
+            redrawEdit();
+        }));
         const rmBtn = mkEl('button', { class: 'io-filter-btn schema-row-remove' }, '✕');
         rmBtn.addEventListener('click', function() {
             button.ControlDevices.splice(idx, 1);
@@ -2034,6 +2544,16 @@
         buildNameField(panel, entry, 'scene');
         panel.appendChild(mkEl('div', { class: 'schema-panel-section' }, 'States'));
         entry.States = entry.States || [];
+        if (entry.States.length < 2) {
+            // A scene with fewer than 2 states can never be toggled to
+            // anything: Toggle() no-ops with zero states and SetValue(true)
+            // no-ops with fewer than two (scene.go) - state index 0 is the
+            // "off" state by convention, so a usable scene needs at least one
+            // more state beyond it. Server-side validation doesn't reject
+            // this (it's a usability trap, not a data error), so flag it here.
+            panel.appendChild(mkEl('div', { class: 'text-muted' },
+                'A scene needs at least two states to be toggleable. State 0 is the "off" state by convention.'));
+        }
         const list = mkEl('div', { class: 'edit-state-list' });
         entry.States.forEach(function(st, idx) {
             list.appendChild(buildSceneStateRow(entry, st, idx));
@@ -2042,33 +2562,112 @@
 
         const addBtn = mkEl('button', { class: 'io-filter-btn' }, '+ Add state');
         addBtn.addEventListener('click', function() {
-            entry.States.push({ Name: 'state' + (entry.States.length + 1), Actions: [] });
+            entry.States.push({ Name: uniqueStateName(entry.States), Actions: [] });
             markDirty();
             redrawEdit();
         });
         panel.appendChild(addBtn);
     }
 
-    function buildSceneStateRow(scene, st, idx) {
-        const wrap = mkEl('div', { class: 'edit-state-row' });
-        wrap.appendChild(labeledField('State name', textInputEl(st.Name, function(v) {
-            const trimmed = v.trim();
-            if (!trimmed || trimmed === st.Name) return; // invalid or unchanged: no-op
+    // buildSceneStateNameField mirrors buildNameField's inline-error pattern
+    // (no markDirty/redraw on an invalid edit, offending text stays visible)
+    // but validates against the server's actual state-name rules (empty, or
+    // duplicating another state's name within the same scene - see
+    // validateEditableConfig's seenStates check), instead of buildNameField's
+    // device-name rules (empty, or containing ':').
+    function buildSceneStateNameField(scene, st) {
+        const wrap = mkEl('div', { class: 'edit-field' });
+        wrap.appendChild(mkEl('label', { class: 'edit-label' }, 'State name'));
+        const initial = st.Name || '';
+        const input = mkEl('input', { type: 'text', class: 'edit-input' });
+        input.value = initial;
+        const errEl = mkEl('div', { class: 'edit-field-error' });
+        errEl.style.display = 'none';
+
+        input.addEventListener('blur', function() {
+            const trimmed = input.value.trim();
+            if (trimmed === initial) {
+                errEl.style.display = 'none';
+                return; // unchanged: no-op, no markDirty/no redraw
+            }
+            if (!trimmed) {
+                errEl.textContent = 'State name must not be empty';
+                errEl.style.display = '';
+                return;
+            }
+            const dup = (scene.States || []).some(function(other) { return other !== st && other.Name === trimmed; });
+            if (dup) {
+                errEl.textContent = 'Another state in this scene is already named "' + trimmed + '"';
+                errEl.style.display = '';
+                return;
+            }
+            errEl.style.display = 'none';
             st.Name = trimmed;
             markDirty();
             scheduleRedrawEdit();
-        })));
-
-        const ta = mkEl('textarea', { class: 'edit-textarea', rows: 4 });
-        const initialActions = (st.Actions || []).join('\n');
-        ta.value = initialActions;
-        ta.addEventListener('blur', function() {
-            if (ta.value === initialActions) return; // unchanged: no-op
-            st.Actions = ta.value.split('\n').map(function(s) { return s.trim(); }).filter(function(s) { return s !== ''; });
-            markDirty();
-            scheduleRedrawEdit();
         });
-        wrap.appendChild(labeledField('Actions (one per line)', ta));
+        input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
+
+        wrap.appendChild(input);
+        wrap.appendChild(errEl);
+        return wrap;
+    }
+
+    function buildSceneStateRow(scene, st, idx) {
+        const wrap = mkEl('div', { class: 'edit-state-row' });
+        wrap.appendChild(buildSceneStateNameField(scene, st));
+
+        const upBtn = mkEl('button', { class: 'io-filter-btn' }, '↑ Move up');
+        upBtn.disabled = idx === 0;
+        upBtn.addEventListener('click', function() {
+            if (idx === 0) return;
+            // State order is semantic (index 0 = off, Toggle cycles states in
+            // array order) - this is a click-driven structural commit, so a
+            // full redrawEdit() (not scheduleRedrawEdit) is correct here.
+            const arr = scene.States;
+            const tmp = arr[idx - 1]; arr[idx - 1] = arr[idx]; arr[idx] = tmp;
+            markDirty();
+            redrawEdit();
+        });
+        wrap.appendChild(upBtn);
+
+        const downBtn = mkEl('button', { class: 'io-filter-btn' }, '↓ Move down');
+        downBtn.disabled = idx === scene.States.length - 1;
+        downBtn.addEventListener('click', function() {
+            if (idx === scene.States.length - 1) return;
+            const arr = scene.States;
+            const tmp = arr[idx + 1]; arr[idx + 1] = arr[idx]; arr[idx] = tmp;
+            markDirty();
+            redrawEdit();
+        });
+        wrap.appendChild(downBtn);
+
+        wrap.appendChild(mkEl('div', { class: 'schema-panel-section' }, 'Actions'));
+        st.Actions = st.Actions || [];
+        const actionList = mkEl('div', { class: 'edit-relation-list' });
+        st.Actions.forEach(function(actionStr, actionIdx) {
+            actionList.appendChild(buildSceneActionRow(scene, st, actionIdx));
+        });
+        wrap.appendChild(actionList);
+
+        const addActionBtn = mkEl('button', { class: 'io-filter-btn' }, '+ Add action');
+        const defaultTargets = sceneTargetNameOptions(scene);
+        if (!defaultTargets.length) {
+            // No legal target exists yet (no lights/dimmable lights/outlets/
+            // color lights configured, and no earlier scene to reference) -
+            // disable instead of staging an "on:" action with an empty
+            // device, which would just fail validation on save with a
+            // confusing "target device "" does not exist" error.
+            addActionBtn.disabled = true;
+            addActionBtn.title = 'No valid target exists yet - add a light, outlet, dimmable light, or an earlier scene first';
+        } else {
+            addActionBtn.addEventListener('click', function() {
+                st.Actions.push(formatActionString({ verb: 'on', level: 0, device: defaultTargets[0] }));
+                markDirty();
+                redrawEdit();
+            });
+        }
+        wrap.appendChild(addActionBtn);
 
         const rmBtn = mkEl('button', { class: 'io-filter-btn schema-row-remove' }, '✕ Remove state');
         rmBtn.addEventListener('click', function() {
@@ -2078,6 +2677,139 @@
         });
         wrap.appendChild(rmBtn);
         return wrap;
+    }
+
+    // buildSceneActionRow renders one scene-state action string as a
+    // structured verb/level/target picker (mirroring buildControlRelationRow),
+    // when the string parses via parseActionString. When it doesn't - a
+    // hand-edited or legacy action string the grammar can't represent - it
+    // falls back to a raw text input pre-filled with the original string plus
+    // an inline error, and leaves that string completely untouched until the
+    // user edits it: the picker must never silently drop or rewrite an
+    // unparseable action.
+    function buildSceneActionRow(scene, st, idx) {
+        const row = mkEl('div', { class: 'edit-relation-row' });
+
+        // buildRowContent renders the verb/level/target pickers, or the raw-
+        // fallback input+error, for whatever action string idx *currently*
+        // holds. Shared by the row's initial build below and by
+        // replaceContent (finding F7): this row's whole structure - raw
+        // input+error vs. structured pickers - is a function of the
+        // committed value, unlike every other blur commit in this file
+        // (where the panel's own inputs already display the value that was
+        // just committed, and only the diagram needs refreshing - see
+        // scheduleRedrawEdit's doc comment). Without re-running this after a
+        // repair, the row stayed stuck showing the raw box and a stale
+        // "Not a recognised action" error even once the string was fixed.
+        function buildRowContent() {
+            const raw = st.Actions[idx];
+            const parsed = parseActionString(raw);
+            const nodes = [];
+            if (!parsed) {
+                const wrap = mkEl('div', { class: 'edit-field' });
+                const input = mkEl('input', { type: 'text', class: 'edit-input mono' });
+                input.value = raw;
+                input.addEventListener('blur', function() {
+                    if (input.value === raw) return; // unchanged: no-op
+                    st.Actions[idx] = input.value;
+                    markDirty();
+                    // Replace only this row's own content in place - do NOT
+                    // call the full redrawEdit() from here; see
+                    // scheduleRedrawEdit's doc comment for why rebuilding the
+                    // whole edit panel from a blur handler detaches whatever
+                    // click is still in flight (blur fires on mousedown,
+                    // before the matching click is dispatched).
+                    replaceContent();
+                    scheduleRedrawEdit();
+                });
+                input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
+                wrap.appendChild(input);
+                wrap.appendChild(mkEl('div', { class: 'edit-field-error' },
+                    'Not a recognised action (expected on/off/toggle:<device> or brightness[_up|_down]:<level>:<device>)'));
+                nodes.push(wrap);
+            } else {
+                const targets = sceneTargetNameOptions(scene);
+                nodes.push(selectFieldEl(verbOptionsForTarget(parsed.device), parsed.verb, function(v) {
+                    parsed.verb = v;
+                    st.Actions[idx] = formatActionString(parsed);
+                    markDirty();
+                    redrawEdit();
+                }));
+                if (isBrightnessVerb(parsed.verb)) {
+                    nodes.push(numberInputEl(parsed.level, 0, 100, function(v) {
+                        parsed.level = Math.max(0, Math.min(100, v));
+                        st.Actions[idx] = formatActionString(parsed);
+                        markDirty();
+                        scheduleRedrawEdit();
+                    }));
+                }
+                nodes.push(selectFieldEl(targets, parsed.device, function(v) {
+                    parsed.device = v;
+                    // Item 4: switching the target can make the currently-selected
+                    // verb illegal (brightness requires a dimmable target) -
+                    // coerce to toggle rather than leave an invalid combination
+                    // staged in the working copy.
+                    if (isBrightnessVerb(parsed.verb) && verbOptionsForTarget(v).indexOf(parsed.verb) === -1) {
+                        parsed.verb = 'toggle';
+                    }
+                    st.Actions[idx] = formatActionString(parsed);
+                    markDirty();
+                    redrawEdit();
+                }));
+            }
+            return nodes;
+        }
+
+        // contentNodes tracks whichever DOM nodes buildRowContent last
+        // produced, so replaceContent can remove exactly those (and only
+        // those) before inserting the freshly rebuilt ones in their place,
+        // ahead of the row's own up/down/remove buttons (upBtn, defined
+        // below - always still in the DOM by the time replaceContent can
+        // possibly run, since that only happens from an async blur handler
+        // fired well after this row finished building).
+        let contentNodes = [];
+        function replaceContent() {
+            contentNodes.forEach(function(n) { row.removeChild(n); });
+            contentNodes = buildRowContent();
+            contentNodes.forEach(function(n) { row.insertBefore(n, upBtn); });
+        }
+
+        const upBtn = mkEl('button', { class: 'io-filter-btn' }, '↑');
+        upBtn.disabled = idx === 0;
+        upBtn.addEventListener('click', function() {
+            if (idx === 0) return;
+            // Action order is the apply order within a state (Activate walks
+            // state.actions in order) - a click-driven structural commit.
+            const arr = st.Actions;
+            const tmp = arr[idx - 1]; arr[idx - 1] = arr[idx]; arr[idx] = tmp;
+            markDirty();
+            redrawEdit();
+        });
+
+        const downBtn = mkEl('button', { class: 'io-filter-btn' }, '↓');
+        downBtn.disabled = idx === st.Actions.length - 1;
+        downBtn.addEventListener('click', function() {
+            if (idx === st.Actions.length - 1) return;
+            const arr = st.Actions;
+            const tmp = arr[idx + 1]; arr[idx + 1] = arr[idx]; arr[idx] = tmp;
+            markDirty();
+            redrawEdit();
+        });
+
+        const rmBtn = mkEl('button', { class: 'io-filter-btn schema-row-remove' }, '✕');
+        rmBtn.addEventListener('click', function() {
+            st.Actions.splice(idx, 1);
+            markDirty();
+            redrawEdit();
+        });
+
+        contentNodes = buildRowContent();
+        contentNodes.forEach(function(n) { row.appendChild(n); });
+        row.appendChild(upBtn);
+        row.appendChild(downBtn);
+        row.appendChild(rmBtn);
+
+        return row;
     }
 
     function buildErrorsBlock(errors) {
@@ -2395,6 +3127,15 @@
             const active = (d.scene_state_index || 0) > 0;
             const name = active && d.scene_state_names ? d.scene_state_names[d.scene_state_index] : '';
             setDotState(dot, extra, active ? 'on' : 'off', name || '');
+            // Item 6: toggle the active-state sub-row's highlight class only
+            // - buildSceneGroupNode already created one <g class="schema-
+            // scene-state-row" data-state-index="N"> per configured state at
+            // build time, this never creates/removes rows, same rule as the
+            // dot/extra above.
+            const activeIdx = d.scene_state_index || 0;
+            g.querySelectorAll('.schema-scene-state-row').forEach(function(row) {
+                row.classList.toggle('schema-scene-state-active', Number(row.dataset.stateIndex) === activeIdx);
+            });
         } else if (d.type === 'dimmable_light') {
             setDotState(dot, extra, d.is_on ? 'on' : 'off', d.is_on ? ((d.brightness || 0) + '%') : '');
         } else {

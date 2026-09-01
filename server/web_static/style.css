@@ -849,8 +849,18 @@ td.mono {
     stroke: var(--error);
 }
 
-.schema-node-scene {
-    stroke: #9ece6a;
+/* Scene group box (item 2): repurposed from the old fixed-height scene node
+   rect's border color (this was a literal #9ece6a - var(--success)'s hex -
+   now written as the variable itself). Scenes no longer render via
+   buildDeviceNode/.schema-node-rect at all; see buildSceneGroupNode.
+   Compounded with .schema-group-rect below (finding F3): the rect carries
+   both classes, and .schema-group-rect's own stroke has equal (0,1,0)
+   specificity, so whichever rule happens to come later in this file wins -
+   silently reverting every scene box to the driver-box border the moment
+   the two get reordered. Compounding the selector raises this rule to
+   (0,2,0) so it wins on its own merits, independent of source order. */
+.schema-group-rect.schema-scene-group-rect {
+    stroke: var(--success);
 }
 
 .schema-node-accent {
@@ -957,6 +967,56 @@ td.mono {
 
 .schema-ready-dot-off {
     fill: var(--error);
+}
+
+/* ---- Schema: column headers (item 6) ---- */
+.schema-col-header {
+    fill: var(--text-muted);
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ---- Schema: scene group boxes (item 2) ---- */
+/* A scene renders as a container (buildDriverGroup's idiom, see
+   buildSceneGroupNode) instead of a fixed-height node rect: a header row
+   plus one sub-row per configured state, so scene membership - which state
+   fires which action - reads as containment instead of only as edges. */
+.schema-scene-state-rect {
+    fill: var(--bg);
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.schema-scene-state-label {
+    fill: var(--text-secondary);
+    font-size: 10px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.schema-scene-state-empty {
+    fill: var(--text-muted);
+    font-size: 10px;
+    font-style: italic;
+}
+
+/* Active-state highlight: toggled class-only (never recreated) both at
+   initial build (buildSceneGroupNode, from the schema snapshot) and on every
+   live /api/state poll thereafter (updateDeviceOverlay's scene branch) - see
+   schema.js. rgba() below is the decimal form of var(--success) (#9ece6a),
+   same manual-sync convention as .schema-io-pill-rect.schema-io-off and
+   .schema-error-banner elsewhere in this file - there is no rgb-channel
+   custom property to blend an alpha value against a var() color directly. */
+.schema-scene-state-row.schema-scene-state-active .schema-scene-state-rect {
+    stroke: var(--success);
+    stroke-width: 1.5;
+    fill: rgba(158, 206, 106, 0.16);
+}
+
+.schema-scene-state-row.schema-scene-state-active .schema-scene-state-label {
+    fill: var(--success);
 }
 
 .schema-io-pill-rect {
@@ -1341,9 +1401,16 @@ td.mono {
     margin-bottom: 8px;
 }
 
+/* Was a 3-column grid (1fr 1fr auto), but a row can legitimately hold up to
+   6 children now (scene action rows: verb select, optional level input,
+   target select, up/down/remove buttons) - a fixed 3-track grid either
+   clipped or mis-sized whatever didn't fit those 3 slots (the button-relation
+   row, at 4 children, already overflowed it). Flex-wrap handles any child
+   count: selects/inputs share the available width and wrap to a second line
+   together, while the (fixed-size) buttons never grow or shrink. */
 .edit-relation-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr auto;
+    display: flex;
+    flex-wrap: wrap;
     gap: 4px;
     align-items: center;
     padding: 8px;
@@ -1354,7 +1421,25 @@ td.mono {
 
 .edit-relation-row .edit-select,
 .edit-relation-row .edit-input {
+    flex: 1 1 110px;
     min-width: 0;
+}
+
+.edit-relation-row .io-filter-btn {
+    flex: 0 0 auto;
+}
+
+/* The malformed-action raw-input fallback (buildSceneActionRow) wraps its
+   input+error in a .edit-field, which elsewhere in the form is a block-level
+   child with its own bottom margin (see .edit-field above) - correct outside
+   a flex row, but here it sits beside the row's fixed-size up/down/remove
+   buttons and, without an explicit flex-basis, shrinks to its intrinsic
+   (unwrapped) width instead of growing to fill the row like every other
+   field (finding F10). Also drops the standalone-field bottom margin, which
+   inside the row just read as a stray gap above the row's own padding. */
+.edit-relation-row > .edit-field {
+    flex: 1 1 100%;
+    margin-bottom: 0;
 }
 
 .edit-state-row {
