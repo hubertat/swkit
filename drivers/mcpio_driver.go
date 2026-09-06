@@ -2,22 +2,19 @@ package drivers
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strconv"
-	"strings"
+	"time"
 
-	"github.com/charmbracelet/log"
-	"github.com/hubertat/swkit/logging"
-	"github.com/hubertat/swkit/mqtt"
 	"github.com/racerxdl/go-mcp23017"
 )
 
 const mcpioDriverName = "mcpio"
+const listenInterval = 15 * time.Millisecond
+const pushConfirmationInterval = 75 * time.Millisecond
+const deadTime = 300 * time.Millisecond
 
 type McpIO struct {
 	device *mcp23017.Device
-	logger *log.Logger
 
 	inputs  []McpInput
 	outputs []McpOutput
@@ -34,6 +31,8 @@ type McpInput struct {
 	invert bool
 
 	device *mcp23017.Device
+
+	timer *time.Timer
 }
 
 type McpOutput struct {
@@ -41,11 +40,6 @@ type McpOutput struct {
 	invert bool
 
 	device *mcp23017.Device
-	logger *log.Logger
-}
-
-func (min *McpInput) String() string {
-	return GetIoIdString(mcpioDriverName, IoTypeDigitalInput, fmt.Sprintf("%d", min.pin))
 }
 
 func (min *McpInput) GetState() (state bool, err error) {
@@ -62,9 +56,34 @@ func (min *McpInput) GetState() (state bool, err error) {
 	return
 }
 
-// IsHealthy returns healthy/ready state
-func (min *McpInput) IsHealthy() bool {
-	return min.device.IsPresent()
+func (min *McpInput) SubscribeToPushEvent(listener EventListener) error {
+	if min.timer != nil {
+		return nil
+	}
+
+	min.timer = time.NewTimer(listenInterval)
+
+	go func() {
+		for {
+			select {
+			case <-min.timer.C:
+				state, _ := min.GetState()
+
+				if state {
+					time.Sleep(pushConfirmationInterval)
+					state, _ = min.GetState()
+					if state {
+						listener.FireEvent(PushEventSinglePress)
+						time.Sleep(deadTime)
+					}
+				}
+
+				min.timer.Reset(listenInterval)
+			}
+		}
+	}()
+
+	return nil
 }
 
 func (mout *McpOutput) GetState() (state bool, err error) {
@@ -81,33 +100,17 @@ func (mout *McpOutput) GetState() (state bool, err error) {
 	return
 }
 
-func (mout *McpOutput) String() string {
-	return GetIoIdString(mcpioDriverName, IoTypeDigitalOutput, fmt.Sprintf("%d", mout.pin))
-}
-
 func (mout *McpOutput) Set(state bool) (err error) {
 	if mout.invert {
 		state = !state
 	}
 
-	mout.logger.Debug("setting pin", "pin", mout.pin, "state", state)
 	err = mout.device.DigitalWrite(mout.pin, mcp23017.PinLevel(state))
-	if err != nil {
-		mout.logger.Debug("failed to set pin", "pin", mout.pin, "err", err)
-	}
+
 	return
 }
 
-func (mout *McpOutput) SetOnStateUpdate(onStateUpdate func(bool)) error {
-	return errors.New("SetOnStateUpdate not supported")
-}
-
-// IsHealthy returns healthy/ready state
-func (mout *McpOutput) IsHealthy() bool {
-	return mout.device.IsPresent()
-}
-
-func (mcpio *McpIO) String() string {
+func (mcpio *McpIO) NameId() string {
 	return mcpioDriverName
 }
 
@@ -115,138 +118,67 @@ func (mcpio *McpIO) IsReady() bool {
 	return mcpio.isReady
 }
 
-func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
-	mcp.logger = logging.NewLogger(logging.PrefixMcpio)
-
-	var err error
+func (mcp *McpIO) Setup(ctx context.Context, inputs []uint16, outputs []uint16) (err error) {
 	mcp.device, err = mcp23017.Open(mcp.BusNo, mcp.DevNo)
 	if err != nil {
-		return errors.Join(err, errors.New("failed to open mcp23017 device"))
+		return
 	}
 
-	mcp.logger.Debug("setup starting", "busNo", mcp.BusNo, "devNo", mcp.DevNo)
-
-	for _, io := range ios {
-		driver, ioType, ioId, err := ResolveIoIdString(io)
+	for _, inputPin := range inputs {
+		if inputPin > 255 {
+			err = fmt.Errorf("input pin out of range (mcpio takes uint8 pin id)")
+			return
+		}
+		err = mcp.device.PinMode(uint8(inputPin), mcp23017.INPUT)
 		if err != nil {
-			return errors.Join(err, errors.New("invalid io id format, expected 3 parts separated by '|'"))
+			return
 		}
-
-		if !strings.EqualFold(driver, mcp.String()) {
-			return errors.New("invalid io, driver name mismatch")
+		err = mcp.device.SetPullUp(uint8(inputPin), true)
+		if err != nil {
+			return
 		}
+		mcp.inputs = append(mcp.inputs, McpInput{pin: uint8(inputPin), invert: mcp.InvertInputs, device: mcp.device})
+	}
 
-		switch ioType {
-		case IoTypeDigitalInput:
-			pin, err := strconv.Atoi(ioId)
-			if err != nil {
-				return errors.Join(err, errors.New("failed to convert input pin to int"))
-			}
-			if pin > 255 || pin < 0 {
-				return errors.Join(err, errors.New("input pin out of range (mcpio takes uint8 pin id)"))
-			}
-
-			err = mcp.device.PinMode(uint8(pin), mcp23017.INPUT)
-			if err != nil {
-				return errors.Join(err, errors.New("failed to set pin mode"))
-			}
-			err = mcp.device.SetPullUp(uint8(pin), true)
-			if err != nil {
-				return errors.Join(err, errors.New("failed to set pullup"))
-			}
-			mcp.inputs = append(mcp.inputs, McpInput{pin: uint8(pin), invert: mcp.InvertInputs, device: mcp.device})
-
-		case IoTypeDigitalOutput:
-			pin, err := strconv.Atoi(ioId)
-			if err != nil {
-				return errors.Join(err, errors.New("failed to convert output pin to int"))
-			}
-			if pin > 255 || pin < 0 {
-				return errors.Join(err, errors.New("output pin out of range (mcpio takes uint8 pin id)"))
-			}
-
-			err = mcp.device.PinMode(uint8(pin), mcp23017.OUTPUT)
-			if err != nil {
-				return errors.Join(err, errors.New("failed to set pin mode"))
-			}
-			mcp.outputs = append(mcp.outputs, McpOutput{pin: uint8(pin), device: mcp.device, logger: mcp.logger})
-
-		default:
-			return errors.New("unsupported io type: " + ioType.String())
+	for _, outputPin := range outputs {
+		if outputPin > 255 {
+			err = fmt.Errorf("output pin out of range (mcpio takes uint8 pin id)")
+			return
 		}
+		err = mcp.device.PinMode(uint8(outputPin), mcp23017.OUTPUT)
+		if err != nil {
+			return
+		}
+		mcp.outputs = append(mcp.outputs, McpOutput{pin: uint8(outputPin), invert: mcp.InvertOutputs, device: mcp.device})
 	}
 
 	mcp.isReady = err == nil
 
-	return err
-}
-
-func (mcp *McpIO) SetMqtt(publisher mqtt.Publisher) (h []mqtt.MqttHandler) {
 	return
 }
 
-func (mcp *McpIO) GetDigitalInput(id string) (input DigitalInput, err error) {
-	pin, err := strconv.Atoi(id)
-	if err != nil {
-		err = errors.Join(err, errors.New("failed to convert input id to int"))
-		return
-	}
-	if pin > 255 || pin < 0 {
-		err = errors.New("input pin out of range (mcpio takes uint8 pin id)")
-		return
-	}
+func (mcp *McpIO) GetInput(id uint16) (input DigitalInput, err error) {
 	for _, in := range mcp.inputs {
-		if in.pin == uint8(pin) {
-			return &in, nil
+		if in.pin == uint8(id) {
+			input = &in
+			return
 		}
 	}
 
-	err = fmt.Errorf("input (id: %s) not found", id)
+	err = fmt.Errorf("input (id: %d) not found", id)
 	return
 }
 
-func (mcp *McpIO) GetDigitalOutput(id string) (output DigitalOutput, err error) {
-	pin, err := strconv.Atoi(id)
-	if err != nil {
-		err = errors.Join(err, errors.New("failed to convert output id to int"))
-		return
-	}
-	if pin > 255 || pin < 0 {
-		err = errors.New("output pin out of range (mcpio takes uint8 pin id)")
-		return
-	}
+func (mcp *McpIO) GetOutput(id uint16) (output DigitalOutput, err error) {
 	for _, out := range mcp.outputs {
-		if out.pin == uint8(pin) {
-			return &out, nil
+		if out.pin == uint8(id) {
+			output = &out
+			return
 		}
 	}
 
-	err = fmt.Errorf("input (id: %s) not found", id)
+	err = fmt.Errorf("input (id: %d) not found", id)
 	return
-}
-
-func (mcp *McpIO) GetAnalogOutput(id string) (output AnalogOutput, err error) {
-	pin, err := strconv.Atoi(id)
-	if err != nil {
-		err = errors.Join(err, errors.New("failed to convert analog output id to int"))
-		return
-	}
-	if pin > 255 || pin < 0 {
-		err = errors.New("output pin out of range (mcpio takes uint8 pin id)")
-		return
-	}
-	err = errors.New("mcp io analog outputs not implemented")
-	return
-}
-
-func (mcp *McpIO) GetRgbwOutput(id string) (output RgbwOutput, err error) {
-	err = errors.New("mcp io rgbw outputs not implemented")
-	return
-}
-
-// GetPushEventEmitter returns a PushEventEmitter for the given pin.
-func (mcp *McpIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
-	return nil, errors.New("push event emitter not implemented in MCPIO driver")
 }
 
 func (mcp *McpIO) Close() error {
@@ -257,20 +189,14 @@ func (mcp *McpIO) Close() error {
 	return mcp.device.Close()
 }
 
-func (mcp *McpIO) GetAllIo() (inputs []string, outputs []string) {
+func (mcp *McpIO) GetAllIo() (inputs []uint16, outputs []uint16) {
 	for _, input := range mcp.inputs {
-		inputs = append(inputs, fmt.Sprintf("%d", input.pin))
+		inputs = append(inputs, uint16(input.pin))
 	}
 
 	for _, output := range mcp.outputs {
-		outputs = append(outputs, fmt.Sprintf("%d", output.pin))
+		outputs = append(outputs, uint16(output.pin))
 	}
 
 	return
-}
-
-// Status returns a summary of the driver's current state
-func (mcp *McpIO) Status() string {
-	addr := fmt.Sprintf("0x%02X", 0x20+mcp.DevNo)
-	return fmt.Sprintf("i2c:%d addr:%s in:%d out:%d", mcp.BusNo, addr, len(mcp.inputs), len(mcp.outputs))
 }
