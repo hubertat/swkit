@@ -47,8 +47,13 @@ type SshServerOptions struct {
 	// MaxSessions caps concurrent SSH sessions. <= 0 means
 	// defaultMaxSessions.
 	MaxSessions int
-	// IdleTimeoutSeconds sets the per-connection idle timeout. <= 0 means
-	// defaultIdleTimeoutSeconds.
+	// IdleTimeoutSeconds bounds real user inactivity: it is applied both as
+	// wish.WithIdleTimeout (a transport-level backstop against a connection
+	// with no traffic at all) and as the TUI model's own input watchdog
+	// (tui.Options.IdleTimeout), which is what actually enforces it in
+	// practice — the TUI's periodic repaints count as transport traffic and
+	// keep the transport-level deadline alive on their own. <= 0 means
+	// defaultIdleTimeoutSeconds. See SshServerConfig.IdleTimeoutSeconds.
 	IdleTimeoutSeconds int
 	// MaxTimeoutSeconds sets a hard cap on session lifetime. <= 0 disables
 	// the cap entirely.
@@ -67,6 +72,12 @@ type SshTuiServer struct {
 	maxSessions     int64
 	sessionCount    atomic.Int64
 	unauthenticated bool
+
+	// idleTimeout is applied to every session's TUI model (tui.Options.IdleTimeout)
+	// as an application-level watchdog on real user input; see the
+	// SshServerConfig.IdleTimeoutSeconds doc comment for why the
+	// transport-level wish.WithIdleTimeout above cannot do this alone.
+	idleTimeout time.Duration
 }
 
 // NewSshTuiServer creates a new SSH TUI server
@@ -115,6 +126,7 @@ func NewSshTuiServerWithConfig(provider app.StateProvider, configProvider app.Co
 		broadcaster:    bc,
 		logger:         logger,
 		maxSessions:    int64(maxSessions),
+		idleTimeout:    time.Duration(idleTimeoutSeconds) * time.Second,
 	}
 
 	if decision.Enabled {
@@ -198,6 +210,7 @@ func (s *SshTuiServer) teaHandler(sess ssh.Session) (tea.Model, []tea.ProgramOpt
 		Renderer:       renderer,
 		Broadcaster:    s.broadcaster,
 		Ctx:            sess.Context(),
+		IdleTimeout:    s.idleTimeout,
 	})
 	return model, []tea.ProgramOption{tea.WithAltScreen()}
 }

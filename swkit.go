@@ -75,8 +75,21 @@ type SshServerConfig struct {
 	BindAddress        string // default "" (all interfaces)
 	AuthorizedKeysPath string // default ".ssh/authorized_keys"
 	MaxSessions        int    // default 8
-	IdleTimeoutSeconds int    // default 900
-	MaxTimeoutSeconds  int    // default 0 (disabled)
+	// IdleTimeoutSeconds bounds real user inactivity in the TUI: the model
+	// tracks the time of the last key press it receives and quits the
+	// session once this many seconds pass without one. (Mouse input is
+	// tracked too, but the TUI does not enable mouse reporting, so in
+	// practice keystrokes are what keep a session alive.) Because the TUI
+	// repaints roughly once a second on its own (state polling ticks the
+	// "ago" timestamps shown in the UI even with no one at the keyboard),
+	// this cannot be enforced by watching raw connection traffic — a
+	// wish.WithIdleTimeout deadline is refreshed by those writes and would
+	// never fire. Default 900.
+	IdleTimeoutSeconds int
+	// MaxTimeoutSeconds is the only hard, unconditional bound on a session's
+	// total lifetime: once set, the connection is torn down after this many
+	// seconds regardless of activity, idle or not. Default 0 (disabled).
+	MaxTimeoutSeconds int
 }
 
 // WebServerConfig configures the diagnostic web UI server

@@ -173,23 +173,34 @@ func (p *SwKitProvider) SaveIoNames(path string) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// GetState returns the current application state snapshot
+// GetState returns the current application state snapshot.
+//
+// It only holds p.mu for long enough to read the current *SwKit pointer; the
+// rest of the snapshot is built against that local copy without the lock
+// held. Reload swaps the pointer under p.mu.Lock(), so a GetState already in
+// flight simply finishes building its snapshot against the SwKit instance it
+// started with. That is correct snapshot semantics (the caller gets a
+// consistent view of "some" recent state) and, critically, it means a driver
+// call blocking inside GetState no longer holds p.mu and cannot stall Reload
+// or a concurrent GetState.
 func (p *SwKitProvider) GetState() app.AppState {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	sw := p.sw
+	p.mu.RUnlock()
+
 	state := app.AppState{
-		Name:      p.sw.Name,
+		Name:      sw.Name,
 		Timestamp: time.Now(),
 	}
 
 	// Collect driver states in stable alphabetical order
-	driverNames := make([]string, 0, len(p.sw.ioDrivers))
-	for name := range p.sw.ioDrivers {
+	driverNames := make([]string, 0, len(sw.ioDrivers))
+	for name := range sw.ioDrivers {
 		driverNames = append(driverNames, name)
 	}
 	sort.Strings(driverNames)
 	for _, name := range driverNames {
-		driver := p.sw.ioDrivers[name]
+		driver := sw.ioDrivers[name]
 		ds := app.DriverState{
 			Name:  name,
 			Ready: driver.IsReady(),
@@ -213,32 +224,32 @@ func (p *SwKitProvider) GetState() app.AppState {
 	}
 
 	// Collect device states
-	for _, light := range p.sw.lights {
+	for _, light := range sw.lights {
 		ds := p.buildLightState(light)
 		state.Devices = append(state.Devices, ds)
 	}
 
-	for _, colorLight := range p.sw.colorLights {
+	for _, colorLight := range sw.colorLights {
 		ds := p.buildColorLightState(colorLight)
 		state.Devices = append(state.Devices, ds)
 	}
 
-	for _, dimmableLight := range p.sw.dimmableLights {
+	for _, dimmableLight := range sw.dimmableLights {
 		ds := p.buildDimmableLightState(dimmableLight)
 		state.Devices = append(state.Devices, ds)
 	}
 
-	for _, outlet := range p.sw.outlets {
+	for _, outlet := range sw.outlets {
 		ds := p.buildOutletState(outlet)
 		state.Devices = append(state.Devices, ds)
 	}
 
-	for _, button := range p.sw.buttons {
+	for _, button := range sw.buttons {
 		ds := p.buildButtonState(button)
 		state.Devices = append(state.Devices, ds)
 	}
 
-	for _, scene := range p.sw.scenes {
+	for _, scene := range sw.scenes {
 		ds := p.buildSceneState(scene)
 		state.Devices = append(state.Devices, ds)
 	}
@@ -269,11 +280,11 @@ func (p *SwKitProvider) GetState() app.AppState {
 			})
 		}
 	}
-	if p.sw.Wago != nil {
-		collectIoDebug(p.sw.Wago.String(), p.sw.Wago)
+	if sw.Wago != nil {
+		collectIoDebug(sw.Wago.String(), sw.Wago)
 	}
-	if p.sw.Shelly != nil {
-		collectIoDebug(p.sw.Shelly.String(), p.sw.Shelly)
+	if sw.Shelly != nil {
+		collectIoDebug(sw.Shelly.String(), sw.Shelly)
 	}
 
 	// Build IO id → device name map for annotating IO debug points
@@ -316,10 +327,10 @@ func (p *SwKitProvider) GetState() app.AppState {
 
 	// Collect HomeKit state
 	state.HomeKit = app.HomeKitState{
-		Enabled:     len(p.sw.HkPin) == 8,
-		Pin:         p.sw.HkPin,
-		Address:     p.sw.HkAddress,
-		DeviceCount: len(p.sw.getHkThings()),
+		Enabled:     len(sw.HkPin) == 8,
+		Pin:         sw.HkPin,
+		Address:     sw.HkAddress,
+		DeviceCount: len(sw.getHkThings()),
 	}
 
 	return state
@@ -328,6 +339,37 @@ func (p *SwKitProvider) GetState() app.AppState {
 // Subscribe returns a channel that receives state updates at the specified interval.
 // The channel is buffered (size 1): periodic sends are non-blocking so a slow consumer
 // never stalls the ticker goroutine.
+// runGetState runs GetState on its own goroutine and reports the result on a
+// dedicated, single-use buffered channel (capacity 1). A dedicated channel per
+// call is required, not just convenient: if GetState is blocked inside a
+// driver call when the caller gives up on it (context cancelled, or a fresh
+// call started because the previous one is still stuck), the abandoned
+// goroutine must still be able to send its eventual result without anyone
+// listening or panicking. Sharing the subscriber's own channel would risk a
+// send on it after Subscribe's goroutine has returned and closed it.
+func (p *SwKitProvider) runGetState() <-chan app.AppState {
+	result := make(chan app.AppState, 1)
+	go func() {
+		result <- p.GetState()
+	}()
+	return result
+}
+
+// Subscribe returns a channel that receives state updates at the specified interval.
+// The channel is buffered (size 1): periodic sends are non-blocking so a slow consumer
+// never stalls the ticker goroutine.
+//
+// GetState reads driver state and can block indefinitely if a driver's
+// call hangs (e.g. a wedged Shelly/MQTT round trip). Every GetState call is
+// therefore run on its own goroutine, and the subscriber selects on its
+// result versus ctx.Done() so that cancellation always wins immediately,
+// even mid-poll. Only one GetState call is allowed in flight at a time: while
+// one is still running, ticks are skipped rather than spawning another
+// goroutine, so a stuck driver cannot accumulate goroutines at the ticker's
+// rate. A goroutine stuck inside a blocked driver call is leaked until that
+// call returns (Go cannot interrupt it), but it can only ever write to its
+// own dedicated result channel, never to ch, so it cannot panic on a closed
+// channel or corrupt a later subscription.
 func (p *SwKitProvider) Subscribe(ctx context.Context, interval time.Duration) <-chan app.AppState {
 	ch := make(chan app.AppState, 1)
 
@@ -336,22 +378,23 @@ func (p *SwKitProvider) Subscribe(ctx context.Context, interval time.Duration) <
 		defer ticker.Stop()
 		defer close(ch)
 
-		// Initial send: blocking to guarantee first state is delivered.
-		select {
-		case ch <- p.GetState():
-		case <-ctx.Done():
-			return
-		}
+		// Initial fetch: run off-goroutine so cancellation can win the race
+		// even if this very first GetState blocks in a driver call.
+		pending := p.runGetState()
 
 		for {
 			select {
-			case <-ticker.C:
-				state := p.GetState()
-				// Non-blocking: drop stale update if consumer is behind.
+			case state := <-pending:
 				select {
 				case ch <- state:
 				default:
 				}
+				pending = nil
+			case <-ticker.C:
+				if pending == nil {
+					pending = p.runGetState()
+				}
+				// else: previous GetState still running, skip this tick.
 			case <-ctx.Done():
 				return
 			}

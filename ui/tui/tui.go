@@ -117,6 +117,18 @@ type Model struct {
 	logs           *LogsView
 	agent          *agent.Agent
 	configEditor   ConfigEditor
+
+	// idleTimeout, when non-zero, is the period of no user input after
+	// which the session's idle watchdog quits it. Only key (and mouse)
+	// messages count — state and log updates arrive on their own regardless
+	// of whether anyone is watching, which is exactly why a transport-level
+	// deadline cannot measure this. Note the programs do not enable mouse
+	// reporting, so keystrokes are what keep a session alive in practice.
+	// Zero disables the watchdog; the local non-SSH TUI always gets zero.
+	idleTimeout time.Duration
+	// lastInput is updated on every tea.KeyMsg/tea.MouseMsg and read by the
+	// idle watchdog tick to decide whether the session has gone idle.
+	lastInput time.Time
 }
 
 // StateUpdateMsg is sent when state is updated
@@ -161,6 +173,12 @@ type Options struct {
 	// background work started by the model is tied to it, so cancelling Ctx
 	// tears the session down. Nil means context.Background().
 	Ctx context.Context
+	// IdleTimeout, when non-zero, quits the session after this long with no
+	// key or mouse input. Zero disables the watchdog. This is a TUI-level
+	// (application input) idle timeout, distinct from and complementary to
+	// any transport-level idle timeout the caller may also apply — see the
+	// SSH server's IdleTimeoutSeconds doc comment for why both exist.
+	IdleTimeout time.Duration
 }
 
 // NewModelWithOptions creates a new TUI model with all optional dependencies.
@@ -211,6 +229,8 @@ func NewModelFromOptions(opts Options) Model {
 		chat:           NewChatView(ctx, ag, theme),
 		logs:           NewLogsView(ctx, bc, theme),
 		configEditor:   NewConfigEditor(configProvider, theme),
+		idleTimeout:    opts.IdleTimeout,
+		lastInput:      time.Now(),
 	}
 	if man, ok := provider.(app.IoNamesManager); ok {
 		m.ioNamesMan = man
@@ -237,7 +257,28 @@ func NewModelFromOptions(opts Options) Model {
 // Init initializes the model. It does not subscribe to logs — the Logs tab
 // does that lazily via LogsView.Start when the user actually views it.
 func (m Model) Init() tea.Cmd {
+	if m.idleTimeout > 0 {
+		return tea.Batch(m.waitForNextState(), idleWatchdogTick())
+	}
 	return m.waitForNextState()
+}
+
+// idleWatchdogInterval is how often the idle watchdog checks elapsed time
+// since the last key/mouse input. It only needs to be fine-grained relative
+// to the configured timeout (default 900s), not to wall-clock time, so a
+// cheap 20s tick keeps the goroutine essentially free while still resolving
+// a 900s timeout to within about 2%.
+const idleWatchdogInterval = 20 * time.Second
+
+// idleWatchdogTickMsg drives the idle-timeout watchdog loop (see
+// Model.idleTimeout). It reschedules itself every idleWatchdogInterval for
+// as long as the session stays under its idle timeout.
+type idleWatchdogTickMsg struct{}
+
+func idleWatchdogTick() tea.Cmd {
+	return tea.Tick(idleWatchdogInterval, func(time.Time) tea.Msg {
+		return idleWatchdogTickMsg{}
+	})
 }
 
 // waitForNextState returns a command that blocks until the next state arrives
@@ -314,7 +355,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ioImporting = false
 		return m, nil
 
-	case ioImportResultMsg:
+	case ioNamesResultMsg:
 		m.ioExportMsg = msg.message
 		return m, clearExportMsg()
 
@@ -333,7 +374,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.configEditor.statusMsg = ""
 		return m, nil
 
+	case idleWatchdogTickMsg:
+		if m.idleTimeout <= 0 {
+			// Watchdog was disabled after being scheduled (shouldn't happen
+			// in practice — idleTimeout is fixed at construction — but stop
+			// rescheduling rather than looping forever if it ever does).
+			return m, nil
+		}
+		if time.Since(m.lastInput) >= m.idleTimeout {
+			m.Close()
+			return m, tea.Quit
+		}
+		return m, idleWatchdogTick()
+
+	case tea.MouseMsg:
+		m.lastInput = time.Now()
+		return m, nil
+
 	case tea.KeyMsg:
+		m.lastInput = time.Now()
 		// Handle IO import mode - intercept all keys
 		if m.ioImporting {
 			switch msg.Type {
@@ -562,9 +621,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keys.Export):
 			if m.activeTab == TabIoDebug && m.hasIoNames() {
-				exportMsg, cmd := m.doExportIoNames()
-				m.ioExportMsg = exportMsg
-				return m, cmd
+				return m, m.doExportIoNames()
 			}
 
 		case key.Matches(msg, m.keys.Import):
@@ -830,18 +887,36 @@ func (m Model) stepSelectedIoAnalog(deltaPct int) tea.Cmd {
 	}
 }
 
-// doExportIoNames writes named IO points to a JSON file, returns status message and clear cmd
-func (m Model) doExportIoNames() (string, tea.Cmd) {
+// ioNamesResultMsg carries the outcome of an asynchronous IO-name import or
+// export (see doImportIoNames / doExportIoNames). Both operations end in the
+// same "show a transient status line" behaviour, so they share one result
+// message type rather than each defining its own.
+type ioNamesResultMsg struct {
+	message string
+}
+
+// doExportIoNames returns a command that writes named IO points to a JSON
+// file off the Update goroutine. SwKitProvider.SaveIoNames calls GetState
+// (which walks every driver) and does a blocking os.WriteFile, either of
+// which can stall if a driver call hangs; it must not run synchronously
+// inside Update or it can freeze the whole session's event loop, exactly
+// like the import path below.
+func (m Model) doExportIoNames() tea.Cmd {
 	const filename = "io_names.json"
 
-	if m.ioNamesMan != nil {
-		if err := m.ioNamesMan.SaveIoNames(filename); err != nil {
-			return "Export error: " + err.Error(), clearExportMsg()
+	man := m.ioNamesMan
+	if man != nil {
+		return func() tea.Msg {
+			if err := man.SaveIoNames(filename); err != nil {
+				return ioNamesResultMsg{message: "Export error: " + err.Error()}
+			}
+			return ioNamesResultMsg{message: fmt.Sprintf("Exported to %s", filename)}
 		}
-		return fmt.Sprintf("Exported to %s", filename), clearExportMsg()
 	}
 
-	// Fallback: local session-only names
+	// Fallback: local session-only names. Snapshot the data Update currently
+	// holds now (it doesn't touch drivers, but m is about to move on), and do
+	// the marshal/write on the returned command like the manager path above.
 	type namedPoint struct {
 		Driver string `json:"driver"`
 		Type   string `json:"type"`
@@ -864,22 +939,16 @@ func (m Model) doExportIoNames() (string, tea.Cmd) {
 		}
 	}
 
-	data, err := json.MarshalIndent(points, "", "  ")
-	if err != nil {
-		return "Export error: " + err.Error(), clearExportMsg()
+	return func() tea.Msg {
+		data, err := json.MarshalIndent(points, "", "  ")
+		if err != nil {
+			return ioNamesResultMsg{message: "Export error: " + err.Error()}
+		}
+		if err := os.WriteFile(filename, data, 0644); err != nil {
+			return ioNamesResultMsg{message: "Export error: " + err.Error()}
+		}
+		return ioNamesResultMsg{message: fmt.Sprintf("Exported %d names to %s", len(points), filename)}
 	}
-
-	if err := os.WriteFile(filename, data, 0644); err != nil {
-		return "Export error: " + err.Error(), clearExportMsg()
-	}
-
-	return fmt.Sprintf("Exported %d names to %s", len(points), filename), clearExportMsg()
-}
-
-// ioImportResultMsg carries the outcome of an asynchronous IO-name import
-// (see doImportIoNames).
-type ioImportResultMsg struct {
-	message string
 }
 
 // doImportIoNames returns a command that loads names from path into the
@@ -891,12 +960,12 @@ func (m Model) doImportIoNames(path string) tea.Cmd {
 	man := m.ioNamesMan
 	return func() tea.Msg {
 		if man == nil {
-			return ioImportResultMsg{message: "Import not supported"}
+			return ioNamesResultMsg{message: "Import not supported"}
 		}
 		if err := man.LoadIoNames(path); err != nil {
-			return ioImportResultMsg{message: "Import error: " + err.Error()}
+			return ioNamesResultMsg{message: "Import error: " + err.Error()}
 		}
-		return ioImportResultMsg{message: fmt.Sprintf("Imported names from %s", path)}
+		return ioNamesResultMsg{message: fmt.Sprintf("Imported names from %s", path)}
 	}
 }
 
