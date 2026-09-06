@@ -1499,7 +1499,11 @@
     // and unaffected by whether the modal is open or closed. Built via
     // createElement/textContent only, same as buildErrorsBlock, since save
     // error strings can embed user-controlled text (device/io names).
-    function renderErrorBanner(errors) {
+    // heading (optional) overrides the default "Save failed — N error(s)"
+    // title - used for the revision-conflict case (see saveChanges), which
+    // is a distinct situation from a generic save failure and should read
+    // as one.
+    function renderErrorBanner(errors, heading) {
         const banner = document.getElementById('schema-error-banner');
         if (!banner) return;
         if (!errors || !errors.length) {
@@ -1512,7 +1516,7 @@
         banner.appendChild(closeBtn);
         const count = errors.length;
         banner.appendChild(mkEl('div', { class: 'schema-panel-section text-error' },
-            'Save failed — ' + count + ' error' + (count === 1 ? '' : 's')));
+            heading || ('Save failed — ' + count + ' error' + (count === 1 ? '' : 's'))));
         const ul = mkEl('ul', { class: 'schema-panel-list' });
         errors.forEach(function(e) { ul.appendChild(mkEl('li', { class: 'text-error' }, e)); });
         banner.appendChild(ul);
@@ -2917,10 +2921,16 @@
         setStatus('Saving…');
         try {
             const payload = sanitizeWorkingCopy(S.working);
+            // S.editData.revision is the content-hash of the config as it
+            // was when this edit session started (enterEditMode's GET) -
+            // sending it back lets the server detect a lost update: someone
+            // else (another tab, or an out-of-band config reload) saved a
+            // change since then, which this save would otherwise silently
+            // overwrite. See the 409 branch below.
             const resp = await fetch('/api/config/edit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ config: payload }),
+                body: JSON.stringify({ config: payload, revision: S.editData && S.editData.revision }),
             });
             let data;
             try {
@@ -2939,8 +2949,19 @@
                 // still also populate the modal's own error block (via
                 // renderEditPanel) for the case a *different* selection is
                 // open when the response comes back.
-                setStatus('Save failed — ' + S.saveErrors.length + ' error' + (S.saveErrors.length === 1 ? '' : 's'));
-                renderErrorBanner(S.saveErrors);
+                if (resp.status === 409) {
+                    // Revision conflict: this is not a validation/network
+                    // failure, it's "someone else changed the config" - show
+                    // that distinctly rather than the generic "Save failed —
+                    // N errors" framing, so the user knows reloading (and
+                    // re-applying their edits) is the fix, not retrying.
+                    const conflictMsg = 'Config changed elsewhere — reload to get the latest';
+                    setStatus(conflictMsg);
+                    renderErrorBanner(S.saveErrors, conflictMsg);
+                } else {
+                    setStatus('Save failed — ' + S.saveErrors.length + ' error' + (S.saveErrors.length === 1 ? '' : 's'));
+                    renderErrorBanner(S.saveErrors);
+                }
                 renderEditPanel();
                 return;
             }

@@ -39,12 +39,28 @@ func (ws *WebServer) handleApiConfigEdit(w http.ResponseWriter, r *http.Request)
 // frontend needs to build edit forms (event/action vocab, output device
 // names, configured drivers, IO suggestions).
 func (ws *WebServer) handleConfigEditGet(w http.ResponseWriter, r *http.Request) {
+	// Revision is read BEFORE the config snapshot, and the order matters.
+	// The two are separate, independently locked provider calls, so a save
+	// can land between them; reading the revision first means the revision
+	// can only ever be older than (or equal to) the snapshot it is paired
+	// with. Pairing a snapshot with an already-newer revision would be the
+	// dangerous direction: the POST's compare-and-swap would then match
+	// against a config the user never saw and silently overwrite it - the
+	// exact lost update this revision handshake exists to prevent. With
+	// this order the worst case is the harmless one: a save landing in the
+	// window makes the next POST fail its conflict check and ask the user
+	// to reload, even though the snapshot they got was already current.
+	revision := ws.opts.ConfigProvider.Revision()
 	cfg := ws.opts.ConfigProvider.GetEditableConfig()
 	state := ws.provider.GetState()
 
 	resp := apiConfigEditResponse{
 		Config: cfg,
 		Meta:   buildConfigEditMeta(cfg, state),
+		// Revision lets the frontend detect, on save, whether the config
+		// changed underneath this edit session (another tab, or an
+		// out-of-band reload) - see handleConfigEditPost.
+		Revision: revision,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -96,7 +112,31 @@ func (ws *WebServer) handleConfigEditPost(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := ws.opts.ConfigProvider.SaveConfig(body.Config); err != nil {
+	// Lost-update protection: the only client is this repo's own schema.js,
+	// which always sends back the revision it got from GET, so an
+	// empty/absent revision here means either a pre-revision client or a
+	// caller that skipped GET entirely - reject it rather than silently
+	// saving over whatever is current. This check runs after validation
+	// (above) so a payload with both an invalid field and a missing
+	// revision reports the field error, not this one - validation errors
+	// are about the payload itself and are worth surfacing regardless of
+	// staleness.
+	if strings.TrimSpace(body.Revision) == "" {
+		writeConfigEditErrors(w, http.StatusBadRequest, []string{"revision is required: reload the config editor and try again"})
+		return
+	}
+
+	// SaveConfigIfRevision checks body.Revision against the provider's
+	// current revision and saves in one atomic, lock-held operation (see
+	// SwKitConfigProvider.SaveConfigIfRevision) - that is what closes the
+	// check-then-act race on the write side; handleConfigEditGet's read
+	// order is what keeps the revision it hands out from ever being newer
+	// than the snapshot it accompanies.
+	if err := ws.opts.ConfigProvider.SaveConfigIfRevision(body.Config, body.Revision); err != nil {
+		if errors.Is(err, app.ErrConfigRevisionMismatch) {
+			writeConfigEditErrors(w, http.StatusConflict, []string{"config changed elsewhere since you loaded it (another edit session or an out-of-band reload) - reload the config editor to get the latest version, then re-apply your changes"})
+			return
+		}
 		writeConfigEditErrors(w, http.StatusInternalServerError, []string{"save failed: " + err.Error()})
 		return
 	}
@@ -564,11 +604,19 @@ func setOf(items []string) map[string]bool {
 
 type apiConfigEditPostBody struct {
 	Config app.EditableConfig `json:"config"`
+	// Revision must be the value returned by the preceding GET's Revision
+	// field. Required (empty/absent is rejected with 400) - see
+	// handleConfigEditPost.
+	Revision string `json:"revision"`
 }
 
 type apiConfigEditResponse struct {
 	Config app.EditableConfig `json:"config"`
 	Meta   apiConfigEditMeta  `json:"meta"`
+	// Revision identifies the returned Config's content; pass it back
+	// unchanged in the POST body's revision field to save. See
+	// handleConfigEditPost for the conflict check this enables.
+	Revision string `json:"revision"`
 }
 
 type apiConfigEditMeta struct {

@@ -2,7 +2,10 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +16,14 @@ import (
 )
 
 // fakeSavingConfigProvider records the config passed to SaveConfig, and can
-// be told to fail the save.
+// be told to fail the save. Revision/SaveConfigIfRevision mirror
+// SwKitConfigProvider's real content-hash + compare-and-swap behavior (see
+// config_provider.go) closely enough to exercise the handler's lost-update
+// protection: f.cfg is the "currently persisted" config, and its revision is
+// a content hash of it, recomputed fresh on every call (not cached), so a
+// direct mutation of f.cfg between calls (as a test simulating an
+// out-of-band change might do) is picked up exactly like the real provider
+// would pick up a concurrent save.
 type fakeSavingConfigProvider struct {
 	cfg       app.EditableConfig
 	saved     *app.EditableConfig
@@ -22,6 +32,18 @@ type fakeSavingConfigProvider struct {
 }
 
 func (f *fakeSavingConfigProvider) GetEditableConfig() app.EditableConfig { return f.cfg }
+
+func (f *fakeSavingConfigProvider) Revision() string { return fakeConfigRevision(f.cfg) }
+
+func fakeConfigRevision(cfg app.EditableConfig) string {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return "unknown"
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])[:16]
+}
+
 func (f *fakeSavingConfigProvider) SaveConfig(config app.EditableConfig) error {
 	f.saveCalls++
 	if f.saveErr != nil {
@@ -29,7 +51,15 @@ func (f *fakeSavingConfigProvider) SaveConfig(config app.EditableConfig) error {
 	}
 	cp := config
 	f.saved = &cp
+	f.cfg = config
 	return nil
+}
+
+func (f *fakeSavingConfigProvider) SaveConfigIfRevision(config app.EditableConfig, expectedRevision string) error {
+	if expectedRevision != f.Revision() {
+		return app.ErrConfigRevisionMismatch
+	}
+	return f.SaveConfig(config)
 }
 
 func newConfigEditTestServer(t *testing.T, state app.AppState, provider app.ConfigProvider) *WebServer {
@@ -140,6 +170,199 @@ func TestConfigEdit_GetShape(t *testing.T) {
 	}
 }
 
+// ---- Revision / lost-update protection ----
+
+func TestConfigEdit_GetIncludesRevision(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	req := httptest.NewRequest("GET", "/api/config/edit", nil)
+	w := httptest.NewRecorder()
+	ws.handleApiConfigEdit(w, req)
+
+	var resp apiConfigEditResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body: %s)", err, w.Body.String())
+	}
+	if resp.Revision == "" {
+		t.Fatal("resp.Revision is empty, want a non-empty content hash")
+	}
+	if want := provider.Revision(); resp.Revision != want {
+		t.Errorf("resp.Revision = %q, want %q (provider.Revision())", resp.Revision, want)
+	}
+}
+
+func TestConfigEdit_PostMatchingRevisionSaves(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	newCfg := app.EditableConfig{
+		Lights: []app.LightEditConfig{{Name: "Renamed", DigitalOutName: "gpio|d_out|5"}},
+	}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: newCfg, Revision: provider.Revision()})
+
+	code, resp := doConfigEditPost(t, ws, string(body))
+	if code != 200 || !resp.Ok {
+		t.Fatalf("status = %d resp = %+v, want 200 ok=true (revision matched the just-fetched config)", code, resp)
+	}
+	if provider.saved == nil || len(provider.saved.Lights) != 1 || provider.saved.Lights[0].Name != "Renamed" {
+		t.Errorf("saved = %+v, want the renamed light persisted", provider.saved)
+	}
+}
+
+func TestConfigEdit_PostStaleRevisionRejectedWithConflict(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	// Simulate a concurrent editor session (or an out-of-band config
+	// reload) landing between this session's GET and its save: the
+	// provider's underlying config changes, so the revision this POST
+	// carries (still the pre-change one) is now stale.
+	staleRevision := provider.Revision()
+	provider.cfg = app.EditableConfig{
+		Lights: []app.LightEditConfig{{Name: "Changed Elsewhere", DigitalOutName: "gpio|d_out|5"}},
+	}
+
+	newCfg := app.EditableConfig{
+		Lights: []app.LightEditConfig{{Name: "ShouldNotSave", DigitalOutName: "gpio|d_out|5"}},
+	}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: newCfg, Revision: staleRevision})
+
+	code, resp := doConfigEditPost(t, ws, string(body))
+	if code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, resp = %+v", code, resp)
+	}
+	if resp.Ok {
+		t.Errorf("resp.Ok = true, want false on a revision conflict")
+	}
+	if len(resp.Errors) == 0 {
+		t.Error("resp.Errors is empty, want a message explaining the conflict")
+	}
+	if provider.saved != nil {
+		t.Errorf("SaveConfig persisted a config despite a stale revision: %+v", provider.saved)
+	}
+	if provider.saveCalls != 0 {
+		t.Errorf("SaveConfig called %d times on a stale revision, want 0 (must not mutate the underlying config)", provider.saveCalls)
+	}
+	if len(provider.cfg.Lights) != 1 || provider.cfg.Lights[0].Name != "Changed Elsewhere" {
+		t.Errorf("underlying config changed unexpectedly: %+v, want the out-of-band change left untouched", provider.cfg)
+	}
+}
+
+// midGetChangeProvider applies a one-shot config change right after the first
+// provider read the GET handler makes, simulating another writer (a second
+// edit session, the TUI, or an out-of-band reload) landing between the
+// handler's two separate reads of Revision and GetEditableConfig.
+type midGetChangeProvider struct {
+	*fakeSavingConfigProvider
+	after   app.EditableConfig
+	applied bool
+}
+
+func (m *midGetChangeProvider) applyOnce() {
+	if m.applied {
+		return
+	}
+	m.applied = true
+	m.cfg = m.after
+}
+
+func (m *midGetChangeProvider) GetEditableConfig() app.EditableConfig {
+	cfg := m.fakeSavingConfigProvider.GetEditableConfig()
+	m.applyOnce()
+	return cfg
+}
+
+func (m *midGetChangeProvider) Revision() string {
+	rev := m.fakeSavingConfigProvider.Revision()
+	m.applyOnce()
+	return rev
+}
+
+// TestConfigEdit_GetPairingIsFailSafeUnderConcurrentSave proves the (config,
+// revision) pair the GET hands out can never be accepted by a later POST once
+// a save has landed between the handler's two provider reads. Whichever read
+// happens first is the one served from the pre-change config, so posting the
+// GET's own pair straight back must be rejected - never silently saved over
+// the change that landed. Reading the config first and the revision second
+// would fail this: the response would carry the *new* revision with the *old*
+// config, and the POST's compare-and-swap would happily match and overwrite.
+func TestConfigEdit_GetPairingIsFailSafeUnderConcurrentSave(t *testing.T) {
+	base := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	provider := &midGetChangeProvider{
+		fakeSavingConfigProvider: base,
+		after: app.EditableConfig{
+			Lights: []app.LightEditConfig{{Name: "Changed Mid GET", DigitalOutName: "gpio|d_out|5"}},
+		},
+	}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	req := httptest.NewRequest("GET", "/api/config/edit", nil)
+	w := httptest.NewRecorder()
+	ws.handleApiConfigEdit(w, req)
+
+	var got apiConfigEditResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (body: %s)", err, w.Body.String())
+	}
+	if !provider.applied {
+		t.Fatal("the simulated concurrent save never fired; the handler read neither Revision nor GetEditableConfig")
+	}
+
+	// Post the GET's own pair back, edited as a user would.
+	edited := got.Config
+	edited.Lights = []app.LightEditConfig{{Name: "User Edit", DigitalOutName: "gpio|d_out|5"}}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: edited, Revision: got.Revision})
+
+	code, resp := doConfigEditPost(t, ws, string(body))
+	if code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: the GET paired a snapshot with a revision from a different config version, so this save must be rejected, resp = %+v", code, resp)
+	}
+	if base.saveCalls != 0 || base.saved != nil {
+		t.Errorf("save persisted %+v (%d calls), want none: this is the silent overwrite the revision handshake exists to prevent", base.saved, base.saveCalls)
+	}
+}
+
+func TestConfigEdit_PostMissingRevisionRejected(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+
+	newCfg := app.EditableConfig{Lights: []app.LightEditConfig{{Name: "X", DigitalOutName: "gpio|d_out|5"}}}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: newCfg}) // Revision left zero-valued ("").
+
+	code, resp := doConfigEditPost(t, ws, string(body))
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (revision is required), resp = %+v", code, resp)
+	}
+	if provider.saveCalls != 0 {
+		t.Errorf("SaveConfig called %d times with a missing revision, want 0", provider.saveCalls)
+	}
+}
+
+func TestConfigEdit_RevisionChangesAfterSuccessfulSave(t *testing.T) {
+	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+	before := provider.Revision()
+
+	newCfg := app.EditableConfig{
+		Lights: []app.LightEditConfig{{Name: "Changed", DigitalOutName: "gpio|d_out|5"}},
+	}
+	if err := provider.SaveConfigIfRevision(newCfg, before); err != nil {
+		t.Fatalf("SaveConfigIfRevision: %v", err)
+	}
+
+	after := provider.Revision()
+	if after == before {
+		t.Errorf("Revision() unchanged after a save that altered the config: before=%q after=%q", before, after)
+	}
+
+	// The old (pre-save) revision must no longer be accepted.
+	if err := provider.SaveConfigIfRevision(newCfg, before); err == nil {
+		t.Error("SaveConfigIfRevision with the pre-save revision succeeded after a save, want ErrConfigRevisionMismatch")
+	} else if !errors.Is(err, app.ErrConfigRevisionMismatch) {
+		t.Errorf("SaveConfigIfRevision error = %v, want app.ErrConfigRevisionMismatch", err)
+	}
+}
+
 func TestConfigEdit_MethodNotAllowed(t *testing.T) {
 	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
 	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
@@ -176,7 +399,7 @@ func TestConfigEdit_PostSuccessRoundTrips(t *testing.T) {
 			{Name: "Living Room Renamed", DigitalOutName: "gpio|d_out|5"},
 		},
 	}
-	body, err := json.Marshal(apiConfigEditPostBody{Config: newCfg})
+	body, err := json.Marshal(apiConfigEditPostBody{Config: newCfg, Revision: provider.Revision()})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -201,7 +424,7 @@ func TestConfigEdit_PostSaveFailure(t *testing.T) {
 	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
 
 	newCfg := app.EditableConfig{Lights: []app.LightEditConfig{{Name: "X", DigitalOutName: "gpio|d_out|5"}}}
-	body, _ := json.Marshal(apiConfigEditPostBody{Config: newCfg})
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: newCfg, Revision: provider.Revision()})
 	code, resp := doConfigEditPost(t, ws, string(body))
 	if code != 500 {
 		t.Fatalf("status = %d, want 500", code)
@@ -381,7 +604,7 @@ func TestConfigEdit_ValidationButtonEventInputAcceptsDIn(t *testing.T) {
 	cfg := app.EditableConfig{
 		Buttons: []app.ButtonEditConfig{{Name: "Btn1", EventInputName: "shelly|d_in|dev123:0"}},
 	}
-	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: fakeConfigRevision(baseFixtureConfig())})
 	code, resp := doConfigEditPost(t, ws, string(body))
 	if code != 200 {
 		t.Fatalf("status = %d, want 200 (d_in should be accepted for EventInputName), errors=%v", code, resp.Errors)
@@ -460,7 +683,7 @@ func TestConfigEdit_ValidationControlRelationAllowsColorLightTarget(t *testing.T
 			},
 		}},
 	}
-	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: fakeConfigRevision(baseFixtureConfig())})
 	code, resp := doConfigEditPost(t, ws, string(body))
 	if code != 200 {
 		t.Fatalf("status = %d, want 200 (color light must be a valid target), errors=%v", code, resp.Errors)
@@ -592,7 +815,7 @@ func TestConfigEdit_ValidationSceneActionAllowsEarlierScene(t *testing.T) {
 			},
 		},
 	}
-	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: fakeConfigRevision(baseFixtureConfig())})
 	code, resp := doConfigEditPost(t, ws, string(body))
 	if code != 200 {
 		t.Fatalf("status = %d, want 200 (targeting an earlier scene must be allowed), errors=%v", code, resp.Errors)
@@ -687,7 +910,7 @@ func TestConfigEdit_ValidationBrightnessOnDimmableLightStillAllowed(t *testing.T
 			},
 		}},
 	}
-	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: fakeConfigRevision(baseFixtureConfig())})
 	code, resp := doConfigEditPost(t, ws, string(body))
 	if code != 200 {
 		t.Fatalf("status = %d, want 200 (dimmable light must be a valid brightness target), errors=%v", code, resp.Errors)
@@ -764,7 +987,7 @@ func TestConfigEdit_PostSameOriginAllowed(t *testing.T) {
 	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
 
 	cfg := app.EditableConfig{Lights: []app.LightEditConfig{{Name: "Kitchen", DigitalOutName: "gpio|d_out|5"}}}
-	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg})
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: provider.Revision()})
 
 	req := httptest.NewRequest("POST", "/api/config/edit", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
@@ -833,7 +1056,7 @@ func TestConfigEdit_PostSuccessRoundTripsControlRelationsAndSceneActionsByteIden
 		}},
 	}
 
-	body, err := json.Marshal(apiConfigEditPostBody{Config: cfg})
+	body, err := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: provider.Revision()})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

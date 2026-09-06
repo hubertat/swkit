@@ -178,6 +178,7 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 			DimmableLightsCount: summary.DimmableLightsCount,
 			OutletsCount:        summary.OutletsCount,
 			ButtonsCount:        summary.ButtonsCount,
+			ScenesCount:         summary.ScenesCount,
 			HomeKitEnabled:      summary.HomeKitEnabled,
 			HomeKitDevices:      summary.HomeKitDevices,
 		},
@@ -378,6 +379,7 @@ type apiSummary struct {
 	DimmableLightsCount int  `json:"dimmable_lights_count"`
 	OutletsCount        int  `json:"outlets_count"`
 	ButtonsCount        int  `json:"buttons_count"`
+	ScenesCount         int  `json:"scenes_count"`
 	HomeKitEnabled      bool `json:"homekit_enabled"`
 	HomeKitDevices      int  `json:"homekit_devices"`
 }

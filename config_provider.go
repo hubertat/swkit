@@ -1,6 +1,8 @@
 package swkit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,6 +58,43 @@ func (p *SwKitConfigProvider) Swap(sk *SwKit) {
 func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	config := p.editableConfigLocked()
+
+	// Collect output device names from all controllable device configs.
+	// This is derived metadata for the frontend's device pickers, not part
+	// of what SaveConfig persists - deliberately excluded from
+	// editableConfigLocked/Revision (see their doc comments) so it does not
+	// gate save conflicts.
+	for _, l := range p.sw.Lights {
+		config.OutputDeviceNames = append(config.OutputDeviceNames, l.Name)
+	}
+	for _, cl := range p.sw.ColorLights {
+		config.OutputDeviceNames = append(config.OutputDeviceNames, cl.Name)
+	}
+	for _, dl := range p.sw.DimmableLights {
+		config.OutputDeviceNames = append(config.OutputDeviceNames, dl.Name)
+	}
+	for _, o := range p.sw.Outlets {
+		config.OutputDeviceNames = append(config.OutputDeviceNames, o.Name)
+	}
+	// Scenes are Controllable too, so they are valid control targets.
+	for _, s := range p.sw.Scenes {
+		config.OutputDeviceNames = append(config.OutputDeviceNames, s.Name)
+	}
+
+	return config
+}
+
+// editableConfigLocked builds the persisted portion of the editable config -
+// the exact fields SaveConfig writes (Lights, DimmableLights, Outlets,
+// Buttons, Scenes) - without the derived OutputDeviceNames metadata. It
+// backs both GetEditableConfig (which adds OutputDeviceNames on top) and
+// Revision/SaveConfigIfRevision (which must not consider OutputDeviceNames,
+// since it includes ColorLights - not part of EditableConfig and not
+// editable here - so e.g. renaming a color light must not invalidate an
+// in-flight edit session's revision and cause a spurious 409 on save).
+// Callers must hold p.mu (read or write).
+func (p *SwKitConfigProvider) editableConfigLocked() app.EditableConfig {
 	config := app.EditableConfig{}
 
 	for _, l := range p.sw.Lights {
@@ -107,32 +146,62 @@ func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 		config.Scenes = append(config.Scenes, sc)
 	}
 
-	// Collect output device names from all controllable device configs
-	for _, l := range p.sw.Lights {
-		config.OutputDeviceNames = append(config.OutputDeviceNames, l.Name)
-	}
-	for _, cl := range p.sw.ColorLights {
-		config.OutputDeviceNames = append(config.OutputDeviceNames, cl.Name)
-	}
-	for _, dl := range p.sw.DimmableLights {
-		config.OutputDeviceNames = append(config.OutputDeviceNames, dl.Name)
-	}
-	for _, o := range p.sw.Outlets {
-		config.OutputDeviceNames = append(config.OutputDeviceNames, o.Name)
-	}
-	// Scenes are Controllable too, so they are valid control targets.
-	for _, s := range p.sw.Scenes {
-		config.OutputDeviceNames = append(config.OutputDeviceNames, s.Name)
-	}
-
 	return config
+}
+
+// Revision returns a stable content hash of the persisted editable config
+// (see editableConfigLocked): it changes exactly when Lights, DimmableLights,
+// Outlets, Buttons or Scenes change, and is stable across calls when the
+// content is identical. It is not a security hash - sha256 is used purely
+// for its collision resistance and speed, truncated for a shorter opaque
+// token.
+func (p *SwKitConfigProvider) Revision() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return computeRevision(p.editableConfigLocked())
+}
+
+// computeRevision hashes the canonical JSON encoding of cfg. json.Marshal of
+// a struct (no maps involved anywhere in app.EditableConfig) always emits
+// fields in a fixed, struct-defined order, so this is deterministic/stable
+// for identical content.
+func computeRevision(cfg app.EditableConfig) string {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		// EditableConfig is plain strings/ints/bools/slices/structs - it
+		// cannot fail to marshal. Fall back defensively rather than panic.
+		return "unknown"
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // SaveConfig persists the edited config, backing up the old file
 func (p *SwKitConfigProvider) SaveConfig(config app.EditableConfig) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.saveConfigLocked(config)
+}
 
+// SaveConfigIfRevision persists config only if the provider's current
+// revision (recomputed here, under the same write lock as the save itself -
+// closing the check-then-act race a separate GetEditableConfig/Revision call
+// followed by a later SaveConfig call would have) still equals
+// expectedRevision. On mismatch it returns app.ErrConfigRevisionMismatch and
+// leaves the stored/persisted config untouched.
+func (p *SwKitConfigProvider) SaveConfigIfRevision(config app.EditableConfig, expectedRevision string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if computeRevision(p.editableConfigLocked()) != expectedRevision {
+		return app.ErrConfigRevisionMismatch
+	}
+	return p.saveConfigLocked(config)
+}
+
+// saveConfigLocked does the actual persistence work shared by SaveConfig and
+// SaveConfigIfRevision. Callers must hold p.mu for writing.
+func (p *SwKitConfigProvider) saveConfigLocked(config app.EditableConfig) error {
 	// Backup existing config file
 	if err := p.backupConfig(); err != nil {
 		return fmt.Errorf("backup failed: %w", err)

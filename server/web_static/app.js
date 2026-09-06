@@ -73,11 +73,15 @@
     }
 
     function deviceIcon(type) {
+        // Kept in sync with schema.js's DEVICE_ICONS so the same device type
+        // reads the same everywhere in the UI.
         switch(type) {
             case 'light': return '\u{1F4A1}';
             case 'color_light': return '\u{1F308}';
+            case 'dimmable_light': return '\u{1F506}';
             case 'outlet': return '\u{1F50C}';
             case 'button': return '\u{1F446}';
+            case 'scene': return '\u{1F3AC}';
             default: return '?';
         }
     }
@@ -117,8 +121,10 @@
                 '<div class="card-title">\u{1F3E0} Devices</div>' +
                 '<div class="stat-row"><span class="label">\u{1F4A1} Lights</span><span class="value">' + s.lights_count + '</span></div>' +
                 (s.color_lights_count > 0 ? '<div class="stat-row"><span class="label">\u{1F308} Color Lights</span><span class="value">' + s.color_lights_count + '</span></div>' : '') +
+                (s.dimmable_lights_count > 0 ? '<div class="stat-row"><span class="label">\u{1F506} Dimmable Lights</span><span class="value">' + s.dimmable_lights_count + '</span></div>' : '') +
                 '<div class="stat-row"><span class="label">\u{1F50C} Outlets</span><span class="value">' + s.outlets_count + '</span></div>' +
                 '<div class="stat-row"><span class="label">\u{1F446} Buttons</span><span class="value">' + s.buttons_count + '</span></div>' +
+                (s.scenes_count > 0 ? '<div class="stat-row"><span class="label">\u{1F3AC} Scenes</span><span class="value">' + s.scenes_count + '</span></div>' : '') +
             '</div>' +
             '<div class="card">' +
                 '<div class="card-title">\u{1F34E} HomeKit</div>' +
@@ -147,8 +153,22 @@
 
     function formatStatusInfo(info) {
         if (!info) return '';
-        return info.replace(/(\w+):(\S+)/g, function(_, k, v) {
-            return '<span class="stat-pill"><span class="pill-key">' + escHtml(k) + '</span><span class="pill-val">' + escHtml(v) + '</span></span>';
+        // Escape the WHOLE string first, then pick out key:value fragments to
+        // wrap in pill markup. The previous version ran the regex over the
+        // raw string and only escHtml()'d the matched k/v pieces - any text
+        // that didn't match `\w+:\S+` (e.g. a bracketed list with no colon,
+        // or anything after a space inside a value) passed through into
+        // innerHTML completely unescaped. That text can be config-supplied
+        // (e.g. WagoIO.Status()'s "[%s]" module list, or a gate/broker
+        // address with a space in it), making this a stored-XSS path - see
+        // drivers/wago_driver.go's Status(). Escaping first closes that off:
+        // entities like &lt; never contain ":" so they can't spuriously
+        // create/break a match, and since escHtml is a no-op on plain
+        // alphanumeric status text, benign output is byte-for-byte the same
+        // as before.
+        const escaped = escHtml(info);
+        return escaped.replace(/(\w+):(\S+)/g, function(_, k, v) {
+            return '<span class="stat-pill"><span class="pill-key">' + k + '</span><span class="pill-val">' + v + '</span></span>';
         });
     }
 
@@ -235,8 +255,19 @@
             const ioBadge = ioCount > 0 ? ' ' + badge(ioCount + ' IOs', 'type') : '';
             const hasDetails = !!d.details;
             const isExpanded = expandedDrivers.has(d.name);
+            // JSON.stringify(d.name) is embedded inside a double-quoted HTML
+            // attribute; JSON strings are themselves double-quoted, so a raw
+            // `"` in d.name would close the attribute early and let anything
+            // after it be parsed as new attributes (e.g. onmouseover=...).
+            // escHtml() turns those quotes into &quot;, which the HTML parser
+            // resolves back to `"` only *after* correctly finding the
+            // attribute boundary - so the value the inline handler receives
+            // is unchanged, but a crafted driver name can no longer break out
+            // of the attribute. Driver names come from IoDriver.String() and
+            // aren't attacker-controlled today, but this keeps the pattern
+            // safe regardless.
             const expandBtn = hasDetails
-                ? '<button class="driver-expand-btn" onclick="swkit.toggleDriver(' + JSON.stringify(d.name) + ')">' +
+                ? '<button class="driver-expand-btn" onclick="swkit.toggleDriver(' + escHtml(JSON.stringify(d.name)) + ')">' +
                     (isExpanded ? '\u25BC' : '\u25B6') + '</button> '
                 : '';
             rows += '<tr>' +
@@ -280,8 +311,26 @@
                 } else {
                     statusBadge = '<span class="text-muted">-</span>';
                 }
+            } else if (d.type === 'scene') {
+                // A scene has N named states, not an on/off pair, so an
+                // ON/OFF badge doesn't fit. scene_state_index is omitempty
+                // (0 = the conventional "off" state), so it's absent on the
+                // wire for a scene that's currently at state 0 - `|| 0`
+                // treats that the same as an explicit 0, which is correct
+                // here since both mean "index 0".
+                const names = d.scene_state_names || [];
+                const idx = d.scene_state_index || 0;
+                const label = names[idx] || ('state ' + idx);
+                statusBadge = badge(label, idx === 0 ? 'off' : 'on');
             } else {
                 statusBadge = d.is_on ? badge('ON', 'on') : badge('OFF', 'off');
+            }
+
+            // Brightness is omitempty too (0% is absent on the wire), so
+            // `|| 0` is again just "no value means 0", not an ambiguity.
+            let brightnessBadge = '';
+            if (d.type === 'dimmable_light') {
+                brightnessBadge = badge((d.brightness || 0) + '%', 'type');
             }
 
             let healthBadge = '';
@@ -302,6 +351,9 @@
             }
             if (d.event_input_id) {
                 details += '<div class="row"><dt>Input:</dt><dd>' + escHtml(d.event_input_id) + '</dd></div>';
+            }
+            if (d.type === 'scene' && d.scene_state_names && d.scene_state_names.length > 0) {
+                details += '<div class="row"><dt>States:</dt><dd>' + escHtml(d.scene_state_names.join(', ')) + '</dd></div>';
             }
 
             // Last event for buttons
@@ -328,7 +380,7 @@
             cards += '<div class="device-card">' +
                 '<div class="device-header">' +
                     '<span class="device-name">' + deviceIcon(d.type) + ' ' + escHtml(d.name) + '</span>' +
-                    '<span>' + statusBadge + ' ' + healthBadge + ' ' + hkBadge + '</span>' +
+                    '<span>' + statusBadge + ' ' + brightnessBadge + ' ' + healthBadge + ' ' + hkBadge + '</span>' +
                 '</div>' +
                 '<div style="margin-top:2px">' + badge(d.type, 'type') + '</div>' +
                 (details ? '<div class="device-detail">' + details + '</div>' : '') +
@@ -689,24 +741,85 @@
     }
 
     // ---- Refresh loop ----
+    //
+    // A plain setInterval(refresh, ...) with an async callback can overlap:
+    // if /api/state is slow, a second (or third) fetch can start before the
+    // first resolves, and there's no guarantee they land in request order -
+    // a slow response for an older tick can render after a newer one,
+    // showing stale data. Fixed by self-scheduling: the next tick is only
+    // queued via setTimeout once the current one has fully completed
+    // (fetch + render, or the caught error), so at most one refresh cycle is
+    // ever in flight from the timer alone.
+    //
+    // refreshInFlight/refreshQueued additionally guard the one place a
+    // refresh can be triggered from outside the timer loop: navigate() and
+    // the popstate handler both call refresh() directly for an immediate
+    // update. If that lands while a timer-driven refresh is already
+    // in-flight, it's coalesced into a single follow-up run right after the
+    // current one finishes, rather than firing a second concurrent fetch.
+    let refreshActive = false;
+    let refreshInFlight = false;
+    let refreshQueued = false;
 
     async function refresh() {
+        if (refreshInFlight) {
+            refreshQueued = true;
+            return;
+        }
+        refreshInFlight = true;
         try {
-            const state = await fetchState();
-            renderPage(state);
+            const tab = getTab();
+            if (tab === 'logs') {
+                // Logs is driven entirely by its own SSE stream (see
+                // renderLogs/logsEventSource) and never reads `state` -
+                // renderPage's 'logs' case ignores its argument. Skip the
+                // /api/state fetch, but still run renderPage so nav
+                // highlighting and the logs SSE connect/close still happen
+                // on navigation into/out of this tab. The header timestamp
+                // simply stops advancing while on this tab, since it has
+                // nothing to do with logs.
+                renderPage({});
+            } else {
+                const state = await fetchState();
+                renderPage(state);
+            }
         } catch(e) {
             // silently retry on next tick
+        } finally {
+            refreshInFlight = false;
+        }
+        if (refreshQueued) {
+            refreshQueued = false;
+            refresh();
         }
     }
 
+    function scheduleRefresh() {
+        if (!refreshActive) return;
+        // Clear any timer that's still pending before replacing the handle.
+        // stopRefresh()/startRefresh() (visibilitychange) landing while a
+        // refresh is awaiting its fetch leaves the old timer callback still
+        // suspended: when it resumes it calls scheduleRefresh() again, so
+        // without this clear two self-scheduling chains would both stay
+        // alive - doubling the poll rate and leaving one of them untracked
+        // by refreshTimer, where stopRefresh() can no longer cancel it.
+        if (refreshTimer) clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(async function() {
+            await refresh();
+            scheduleRefresh();
+        }, REFRESH_INTERVAL);
+    }
+
     function startRefresh() {
-        refresh();
-        refreshTimer = setInterval(refresh, REFRESH_INTERVAL);
+        if (refreshActive) return; // already running
+        refreshActive = true;
+        refresh().then(scheduleRefresh);
     }
 
     function stopRefresh() {
+        refreshActive = false;
         if (refreshTimer) {
-            clearInterval(refreshTimer);
+            clearTimeout(refreshTimer);
             refreshTimer = null;
         }
     }

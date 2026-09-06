@@ -1,11 +1,35 @@
 package app
 
+import "errors"
+
+// ErrConfigRevisionMismatch is returned by SaveConfigIfRevision when the
+// caller's expectedRevision no longer matches the provider's current
+// Revision(): something else (a concurrent editor session, or an
+// out-of-band config reload) changed the config first. The caller must not
+// treat this as a generic save failure - the correct recovery is to reload
+// the config and let the user re-apply their edits, not retry the same
+// write.
+var ErrConfigRevisionMismatch = errors.New("config revision mismatch: config changed since it was loaded")
+
 // ConfigProvider provides access to editable configuration
 type ConfigProvider interface {
 	// GetEditableConfig returns the current editable config snapshot
 	GetEditableConfig() EditableConfig
+	// Revision returns an opaque, stable identifier for the current
+	// persisted editable config content (the same fields SaveConfig
+	// writes). It changes if and only if that content changes, so a caller
+	// can pair it with a GetEditableConfig snapshot and later detect,
+	// via SaveConfigIfRevision, whether the config changed underneath it
+	// (a lost-update / stale-save race).
+	Revision() string
 	// SaveConfig persists the edited config, backing up the old file
 	SaveConfig(config EditableConfig) error
+	// SaveConfigIfRevision persists config only if the provider's current
+	// Revision() still equals expectedRevision, checking and saving
+	// atomically with respect to other callers of this provider. It
+	// returns ErrConfigRevisionMismatch, without modifying anything, if the
+	// revision no longer matches.
+	SaveConfigIfRevision(config EditableConfig, expectedRevision string) error
 }
 
 // EditableConfig represents the editable portion of the configuration

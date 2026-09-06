@@ -191,3 +191,66 @@ func TestApiStateLiveOverlayFields(t *testing.T) {
 		t.Errorf("raw JSON: wago io_ids = %v, want [wago|a_out|2]", wagoRaw["io_ids"])
 	}
 }
+
+// TestApiSummaryScenesCount covers finding 4: app.StateSummary.ScenesCount
+// (computed by AppState.Summary from DeviceTypeScene devices) must reach the
+// client on /api/state's summary object as scenes_count, alongside the
+// dimmable_lights_count field that was already wired through. Both were
+// previously dropped when building apiSummary in handleApiState, so the
+// dashboard under-reported (or entirely omitted) these device types.
+func TestApiSummaryScenesCount(t *testing.T) {
+	fake := &fakeStateProvider{state: app.AppState{
+		Name: "Test Home",
+		Devices: []app.DeviceState{
+			{Name: "Living Room", Type: app.DeviceTypeLight},
+			{Name: "Hall", Type: app.DeviceTypeDimmableLight, Brightness: 10},
+			{Name: "Evening", Type: app.DeviceTypeScene, SceneStateNames: []string{"off", "cozy"}},
+			{Name: "Morning", Type: app.DeviceTypeScene, SceneStateNames: []string{"off", "bright"}},
+		},
+	}}
+
+	ws, err := NewWebServerWithConfig(fake, 0, log.New(nil), WebServerOptions{})
+	if err != nil {
+		t.Fatalf("NewWebServerWithConfig: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/state", nil)
+	w := httptest.NewRecorder()
+	ws.handleApiState(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+
+	var resp apiStateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v (body: %s)", err, w.Body.String())
+	}
+	if resp.Summary.ScenesCount != 2 {
+		t.Errorf("Summary.ScenesCount = %d, want 2", resp.Summary.ScenesCount)
+	}
+	if resp.Summary.DimmableLightsCount != 1 {
+		t.Errorf("Summary.DimmableLightsCount = %d, want 1", resp.Summary.DimmableLightsCount)
+	}
+	if resp.Summary.LightsCount != 1 {
+		t.Errorf("Summary.LightsCount = %d, want 1", resp.Summary.LightsCount)
+	}
+
+	// Raw JSON key-name assertion, same rationale as TestApiStateLiveOverlayFields:
+	// guards the literal wire key scenes_count that app.js's renderDashboard
+	// reads, independent of Go struct tags round-tripping through the same code.
+	var raw map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal raw response: %v (body: %s)", err, w.Body.String())
+	}
+	summaryRaw, ok := raw["summary"].(map[string]any)
+	if !ok {
+		t.Fatal("raw JSON: summary object not found")
+	}
+	if v, ok := summaryRaw["scenes_count"]; !ok || v != float64(2) {
+		t.Errorf(`raw JSON: summary["scenes_count"] = %v (present=%v), want 2`, v, ok)
+	}
+	if v, ok := summaryRaw["dimmable_lights_count"]; !ok || v != float64(1) {
+		t.Errorf(`raw JSON: summary["dimmable_lights_count"] = %v (present=%v), want 1`, v, ok)
+	}
+}

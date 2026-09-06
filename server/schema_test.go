@@ -28,7 +28,18 @@ type fakeConfigProvider struct {
 }
 
 func (f *fakeConfigProvider) GetEditableConfig() app.EditableConfig { return f.cfg }
+func (f *fakeConfigProvider) Revision() string                      { return "fake-revision" }
 func (f *fakeConfigProvider) SaveConfig(app.EditableConfig) error   { return nil }
+
+// SaveConfigIfRevision honours the revision contract even though the schema
+// tests never save: a stub that accepted any revision would silently make a
+// future lost-update test pass for the wrong reason.
+func (f *fakeConfigProvider) SaveConfigIfRevision(_ app.EditableConfig, expectedRevision string) error {
+	if expectedRevision != f.Revision() {
+		return app.ErrConfigRevisionMismatch
+	}
+	return nil
+}
 
 func nodeByID(t *testing.T, nodes []apiSchemaNode, id string) apiSchemaNode {
 	t.Helper()
