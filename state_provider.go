@@ -578,9 +578,20 @@ func isOutputHealthy(output drivers.DigitalOutput) bool {
 
 // ToggleDevice toggles the device at the given index
 func (p *SwKitProvider) ToggleDevice(index int) app.ControlResult {
+	// p.mu is held only long enough to resolve the device from p.sw (via
+	// getControllableByIndex); it is released before calling into the device
+	// below. Toggle() reaches through to driver output calls that can block
+	// indefinitely, and unlike GetState's driver calls, Toggle/SetValue take
+	// no context at all, so there is nothing a caller's cancellation could
+	// interrupt. Holding the lock across that call would block Reload's
+	// p.mu.Lock() (and any other control call) for as long as the driver
+	// call hangs. This mirrors the GetState fix; see its comment for the
+	// Reload-safety rationale. The device itself was already resolved under
+	// the lock, so calling its methods afterwards is safe: Reload only swaps
+	// p.sw, it never mutates an already-resolved device.
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 	device, deviceName, _, err := p.getControllableByIndex(index)
+	p.mu.RUnlock()
 	if err != nil {
 		return app.ControlResult{Error: err}
 	}
@@ -606,9 +617,10 @@ func (p *SwKitProvider) ToggleDevice(index int) app.ControlResult {
 
 // SetDevice sets the device at the given index to the given state
 func (p *SwKitProvider) SetDevice(index int, state bool) app.ControlResult {
+	// See ToggleDevice for why p.mu is released before the device call below.
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 	device, deviceName, _, err := p.getControllableByIndex(index)
+	p.mu.RUnlock()
 	if err != nil {
 		return app.ControlResult{Error: err}
 	}
@@ -632,9 +644,10 @@ func (p *SwKitProvider) SetDevice(index int, state bool) app.ControlResult {
 // SetDeviceBrightness sets the brightness (0-100) of the dimmable device at the
 // given index. Only dimmable lights support brightness.
 func (p *SwKitProvider) SetDeviceBrightness(index int, pct int) app.ControlResult {
+	// See ToggleDevice for why p.mu is released before the device call below.
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 	device, deviceName, _, err := p.getControllableByIndex(index)
+	p.mu.RUnlock()
 	if err != nil {
 		return app.ControlResult{Error: err}
 	}
@@ -661,9 +674,10 @@ func (p *SwKitProvider) SetDeviceBrightness(index int, pct int) app.ControlResul
 // given index by delta (relative, may be negative), clamped to 0-100. Mirrors
 // the brightness_up/brightness_down logic in applyVerb.
 func (p *SwKitProvider) AdjustDeviceBrightness(index int, delta int) app.ControlResult {
+	// See ToggleDevice for why p.mu is released before the device calls below.
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 	device, deviceName, _, err := p.getControllableByIndex(index)
+	p.mu.RUnlock()
 	if err != nil {
 		return app.ControlResult{Error: err}
 	}
@@ -697,9 +711,13 @@ func (p *SwKitProvider) AdjustDeviceBrightness(index int, delta int) app.Control
 // SetDeviceValueFor sets the controllable device at the given index to state for
 // the given duration (seconds), then reverts to its prior state.
 func (p *SwKitProvider) SetDeviceValueFor(index int, state bool, seconds int) app.ControlResult {
+	// See ToggleDevice for why p.mu is released before the device call below.
+	// sw is also captured under the lock here, since the call below goes
+	// through sw.SetDeviceValueFor rather than the device directly.
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	sw := p.sw
 	device, deviceName, _, err := p.getControllableByIndex(index)
+	p.mu.RUnlock()
 	if err != nil {
 		return app.ControlResult{Error: err}
 	}
@@ -718,7 +736,7 @@ func (p *SwKitProvider) SetDeviceValueFor(index int, state bool, seconds int) ap
 		}
 	}
 
-	p.sw.SetDeviceValueFor(device, state, time.Duration(seconds)*time.Second)
+	sw.SetDeviceValueFor(device, state, time.Duration(seconds)*time.Second)
 
 	return app.ControlResult{
 		DeviceName: device.Name(),
@@ -822,9 +840,10 @@ func actionName(state bool) string {
 
 // ToggleIoOutput toggles a raw IO output by driver name and output index
 func (p *SwKitProvider) ToggleIoOutput(driverName string, outputIndex int) error {
+	// See ToggleDevice for why p.mu is released before the driver call below.
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 	driver, ok := p.sw.ioDrivers[driverName]
+	p.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("driver %q not found", driverName)
 	}
@@ -837,9 +856,10 @@ func (p *SwKitProvider) ToggleIoOutput(driverName string, outputIndex int) error
 
 // SetIoAnalogOutput sets a raw analog IO output by driver name and output index.
 func (p *SwKitProvider) SetIoAnalogOutput(driverName string, outputIndex int, value int) error {
+	// See ToggleDevice for why p.mu is released before the driver call below.
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 	driver, ok := p.sw.ioDrivers[driverName]
+	p.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("driver %q not found", driverName)
 	}
