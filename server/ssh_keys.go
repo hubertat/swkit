@@ -6,11 +6,56 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 )
 
 const defaultHostKeyPath = ".ssh/swkit_host_key"
+
+// defaultAuthorizedKeysPath is the sibling default for the authorized_keys
+// file, alongside the default host key path.
+const defaultAuthorizedKeysPath = ".ssh/authorized_keys"
+
+// AuthDecision describes the resolved SSH public-key authentication policy.
+type AuthDecision struct {
+	// Path is the authorized_keys file that was resolved (explicit or
+	// default). Only meaningful when Enabled is true.
+	Path string
+	// Enabled is true when public-key auth should be turned on because the
+	// resolved file exists.
+	Enabled bool
+	// Explicit is true when the path came from configuration rather than
+	// the built-in default.
+	Explicit bool
+}
+
+// ResolveAuthorizedKeys implements the "keys if present, else open but warn
+// loudly" policy:
+//   - If configuredPath is set and the file exists, auth is enabled.
+//   - If configuredPath is set but the file does NOT exist, that's an
+//     error: the operator explicitly asked for auth.
+//   - If configuredPath is empty and the default file exists, auth is
+//     enabled using the default.
+//   - If configuredPath is empty and the default file does not exist, auth
+//     is disabled (server starts open) and no error is returned; the caller
+//     is expected to warn loudly about this.
+func ResolveAuthorizedKeys(configuredPath string) (AuthDecision, error) {
+	explicit := configuredPath != ""
+	path := configuredPath
+	if path == "" {
+		path = defaultAuthorizedKeysPath
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		if explicit {
+			return AuthDecision{}, errors.Join(err, fmt.Errorf("configured AuthorizedKeysPath %q not found", path))
+		}
+		return AuthDecision{Path: path, Enabled: false, Explicit: false}, nil
+	}
+
+	return AuthDecision{Path: path, Enabled: true, Explicit: explicit}, nil
+}
 
 // EnsureHostKey ensures a host key exists at the given path.
 // If the path is empty, uses the default path.

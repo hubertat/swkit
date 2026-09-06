@@ -1,6 +1,9 @@
 package agent
 
-import "os"
+import (
+	"os"
+	"time"
+)
 
 const (
 	DefaultModel = "claude-sonnet-4-20250514"
@@ -12,22 +15,45 @@ const (
 
 Be concise in responses. When controlling devices, confirm the action taken.
 If a device name is ambiguous, list matching devices and ask for clarification.`
+
+	// DefaultRequestTimeout bounds a single API request so a hung request
+	// cannot pin a session forever.
+	DefaultRequestTimeout = 120 * time.Second
 )
 
 // Config holds agent configuration
 type Config struct {
-	APIKey       string // from env ANTHROPIC_API_KEY
-	Model        string // default: claude-sonnet-4-5-20250514
-	SystemPrompt string // optional custom prompt
+	APIKey         string        // from env ANTHROPIC_API_KEY
+	Model          string        // default: claude-sonnet-4-5-20250514
+	SystemPrompt   string        // optional custom prompt
+	RequestTimeout time.Duration // default: 120s, applied per API request
 }
 
 // DefaultConfig returns configuration with defaults
 func DefaultConfig() Config {
 	return Config{
-		APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
-		Model:        DefaultModel,
-		SystemPrompt: DefaultSystemPrompt,
+		APIKey:         os.Getenv("ANTHROPIC_API_KEY"),
+		Model:          DefaultModel,
+		SystemPrompt:   DefaultSystemPrompt,
+		RequestTimeout: DefaultRequestTimeout,
 	}
+}
+
+// WithRequestTimeout sets the per-request timeout.
+func (c Config) WithRequestTimeout(d time.Duration) Config {
+	if d > 0 {
+		c.RequestTimeout = d
+	}
+	return c
+}
+
+// requestTimeout returns the effective request timeout, applying the
+// default when unset.
+func (c Config) requestTimeout() time.Duration {
+	if c.RequestTimeout <= 0 {
+		return DefaultRequestTimeout
+	}
+	return c.RequestTimeout
 }
 
 // WithAPIKey sets the API key

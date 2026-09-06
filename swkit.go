@@ -69,9 +69,14 @@ type SwKit struct {
 
 // SshServerConfig configures the SSH TUI server
 type SshServerConfig struct {
-	Enabled     bool
-	Port        int    // default 2222
-	HostKeyPath string // default ".ssh/swkit_host_key"
+	Enabled            bool
+	Port               int    // default 2222
+	HostKeyPath        string // default ".ssh/swkit_host_key"
+	BindAddress        string // default "" (all interfaces)
+	AuthorizedKeysPath string // default ".ssh/authorized_keys"
+	MaxSessions        int    // default 8
+	IdleTimeoutSeconds int    // default 900
+	MaxTimeoutSeconds  int    // default 0 (disabled)
 }
 
 // WebServerConfig configures the diagnostic web UI server

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/charmbracelet/log"
@@ -21,10 +22,12 @@ var (
 type Agent struct {
 	client     anthropic.Client
 	registry   *ToolRegistry
-	messages   []anthropic.MessageParam
 	config     Config
 	controller app.DeviceController
 	logger     *log.Logger
+
+	messagesMu sync.Mutex
+	messages   []anthropic.MessageParam
 }
 
 // NewAgent creates a new agent instance
@@ -65,7 +68,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (<-chan string, <-
 		defer close(errCh)
 
 		// Add user message to history
-		a.messages = append(a.messages, anthropic.MessageParam{
+		a.appendMessage(anthropic.MessageParam{
 			Role: anthropic.MessageParamRoleUser,
 			Content: []anthropic.ContentBlockParamUnion{
 				anthropic.NewTextBlock(userMessage),
@@ -104,7 +107,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (<-chan string, <-
 			}
 
 			// Add assistant response to history
-			a.messages = append(a.messages, anthropic.MessageParam{
+			a.appendMessage(anthropic.MessageParam{
 				Role:    anthropic.MessageParamRoleAssistant,
 				Content: assistantContent,
 			})
@@ -121,7 +124,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (<-chan string, <-
 			toolResults := a.executeTools(toolUses)
 
 			// Add tool results to history
-			a.messages = append(a.messages, anthropic.MessageParam{
+			a.appendMessage(anthropic.MessageParam{
 				Role:    anthropic.MessageParamRoleUser,
 				Content: toolResults,
 			})
@@ -133,9 +136,31 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (<-chan string, <-
 	return textCh, errCh
 }
 
+// appendMessage appends a message to the conversation history under lock.
+func (a *Agent) appendMessage(msg anthropic.MessageParam) {
+	a.messagesMu.Lock()
+	defer a.messagesMu.Unlock()
+	a.messages = append(a.messages, msg)
+}
+
+// snapshotMessages returns a copy of the current conversation history so
+// callers can send it to the API without racing further appends.
+func (a *Agent) snapshotMessages() []anthropic.MessageParam {
+	a.messagesMu.Lock()
+	defer a.messagesMu.Unlock()
+	snapshot := make([]anthropic.MessageParam, len(a.messages))
+	copy(snapshot, a.messages)
+	return snapshot
+}
+
 // sendRequest sends a message request to the API
 func (a *Agent) sendRequest(ctx context.Context) (*anthropic.Message, error) {
-	a.logger.Debug("sending request to API", "model", a.config.Model, "messages", len(a.messages))
+	messages := a.snapshotMessages()
+
+	a.logger.Debug("sending request to API", "model", a.config.Model, "messages", len(messages))
+
+	reqCtx, cancel := context.WithTimeout(ctx, a.config.requestTimeout())
+	defer cancel()
 
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(a.config.Model),
@@ -143,7 +168,7 @@ func (a *Agent) sendRequest(ctx context.Context) (*anthropic.Message, error) {
 		System: []anthropic.TextBlockParam{
 			{Text: a.config.SystemPrompt},
 		},
-		Messages: a.messages,
+		Messages: messages,
 	}
 
 	// Add tools if registered
@@ -151,7 +176,7 @@ func (a *Agent) sendRequest(ctx context.Context) (*anthropic.Message, error) {
 		params.Tools = tools
 	}
 
-	resp, err := a.client.Messages.New(ctx, params)
+	resp, err := a.client.Messages.New(reqCtx, params)
 	if err != nil {
 		return nil, err
 	}
@@ -209,11 +234,36 @@ func (a *Agent) executeTools(toolUses []anthropic.ToolUseBlock) []anthropic.Cont
 
 // Reset clears conversation history
 func (a *Agent) Reset() {
+	a.messagesMu.Lock()
 	a.messages = make([]anthropic.MessageParam, 0)
+	a.messagesMu.Unlock()
 	a.logger.Debug("conversation history cleared")
 }
 
 // MessageCount returns the number of messages in history
 func (a *Agent) MessageCount() int {
+	a.messagesMu.Lock()
+	defer a.messagesMu.Unlock()
 	return len(a.messages)
+}
+
+// NewSession returns a new Agent that shares the immutable/shared parts of a
+// (the API client, tool registry, config, controller and logger) but has its
+// own independent conversation history and its own lock. This lets each SSH
+// or local TUI session hold its own conversation without racing others.
+//
+// A nil receiver returns nil, preserving the "no agent configured" path used
+// when no API key is set.
+func (a *Agent) NewSession() *Agent {
+	if a == nil {
+		return nil
+	}
+	return &Agent{
+		client:     a.client,
+		registry:   a.registry,
+		config:     a.config,
+		controller: a.controller,
+		logger:     a.logger,
+		messages:   make([]anthropic.MessageParam, 0),
+	}
 }

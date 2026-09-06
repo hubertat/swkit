@@ -243,9 +243,21 @@ func main() {
 
 	// Start SSH TUI server if configured.
 	if sk.SshServer != nil && sk.SshServer.Enabled {
-		sshSrv, err := server.NewSshTuiServerWithAgent(provider, configProvider, ag, logging.GetBroadcaster(), sk.SshServer.Port, sk.SshServer.HostKeyPath, logger)
+		sshOpts := server.SshServerOptions{
+			BindAddress:        sk.SshServer.BindAddress,
+			AuthorizedKeysPath: sk.SshServer.AuthorizedKeysPath,
+			MaxSessions:        sk.SshServer.MaxSessions,
+			IdleTimeoutSeconds: sk.SshServer.IdleTimeoutSeconds,
+			MaxTimeoutSeconds:  sk.SshServer.MaxTimeoutSeconds,
+		}
+		sshSrv, err := server.NewSshTuiServerWithConfig(provider, configProvider, ag, logging.GetBroadcaster(),
+			sk.SshServer.Port, sk.SshServer.HostKeyPath, sshOpts, logger)
 		if err != nil {
-			logger.Error("failed to create SSH server", "err", err)
+			// The SSH server simply does not start. Notably this is also the
+			// path taken when an explicitly configured AuthorizedKeysPath is
+			// missing: refusing to serve is the safe outcome, and swkit keeps
+			// driving the hardware without remote access.
+			logger.Error("failed to create SSH server, SSH access disabled", "err", err)
 		} else {
 			go func() {
 				if err := sshSrv.Start(ctx); err != nil {
