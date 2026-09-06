@@ -350,6 +350,11 @@ func (m *Model) setActiveTab(tab Tab) tea.Cmd {
 	if tab == TabChat {
 		m.chat.Focus()
 	}
+	if tab == TabConfig {
+		// Refresh on entry rather than waiting for the next state tick, so
+		// the tab never opens showing a config the provider has moved past.
+		m.configEditor.RefreshIfStale()
+	}
 	return cmd
 }
 
@@ -524,6 +529,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// different operations that happen to both be "give me the
 			// latest config" from the user's point of view. See Reload's and
 			// TriggerReload's doc comments.
+			//
+			// TriggerReload is asynchronous, so the Reload here can only show
+			// the pre-reload config; whatever the application loads moments
+			// later is picked up by RefreshIfStale on a following state tick
+			// rather than needing a second keypress.
 			m.configEditor.Reload()
 			m.configEditor.TriggerReload()
 			return m, nil
@@ -824,13 +834,22 @@ func (m *Model) applyState(state app.AppState) {
 		m.configEditor.SetIoDisplayNames(m.ioNames)
 	}
 	m.configEditor.SetDeviceStates(state.Devices)
+	// Pick up a config that changed underneath us (an out-of-band edit, or the
+	// asynchronous application reload that Ctrl+R/Ctrl+S triggers completing
+	// after the fact). Only while the Config tab is actually being viewed, to
+	// keep the revision hash off the hot path for every other tab; entering
+	// the tab refreshes too, see setActiveTab.
+	if m.activeTab == TabConfig {
+		m.configEditor.RefreshIfStale()
+	}
 	m.state = state
 }
 
 // refreshState returns a command that fetches a fresh state snapshot off the
-// Update goroutine. GetState holds the provider's read lock for the whole
-// snapshot and can call into slow or stuck drivers, so running it inline in
-// Update would freeze keyboard handling and rendering for the session.
+// Update goroutine. GetState no longer holds the provider lock for the whole
+// snapshot (it releases it after reading the SwKit pointer), but it still
+// calls into every driver, so a slow or stuck driver would freeze keyboard
+// handling and rendering for the session if this ran inline in Update.
 func (m Model) refreshState() tea.Cmd {
 	provider := m.provider
 	return func() tea.Msg {

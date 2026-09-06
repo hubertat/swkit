@@ -340,3 +340,64 @@ func TestConfigEditorEditAfterConflictClearsSaveConflict(t *testing.T) {
 		t.Fatal("markDirty must still leave the editor dirty")
 	}
 }
+
+// TestRefreshIfStalePicksUpOutOfBandChange covers the asynchronous-reload gap:
+// TriggerReload signals main.go's reload loop and returns, so the Reload issued
+// alongside it necessarily reads the pre-reload config. RefreshIfStale must
+// pick the new config up on a later tick without a second keypress.
+func TestRefreshIfStalePicksUpOutOfBandChange(t *testing.T) {
+	prov := &fakeRevisionConfigProvider{
+		cfg: app.EditableConfig{Lights: []app.LightEditConfig{{Name: "Kitchen"}}},
+	}
+	ce := NewConfigEditor(prov, DefaultTheme())
+
+	// Nothing changed yet: refreshing must be a no-op.
+	before := ce.revision
+	ce.RefreshIfStale()
+	if ce.revision != before {
+		t.Fatal("RefreshIfStale reloaded despite an unchanged revision")
+	}
+
+	// The application reload lands after the fact, changing what the provider
+	// holds behind the editor's back.
+	prov.cfg = app.EditableConfig{Lights: []app.LightEditConfig{{Name: "Kitchen Reloaded"}}}
+
+	ce.RefreshIfStale()
+	if got := ce.config.Lights[0].Name; got != "Kitchen Reloaded" {
+		t.Fatalf("RefreshIfStale did not pick up the out-of-band change: got %q", got)
+	}
+	if ce.revision != prov.Revision() {
+		t.Fatal("RefreshIfStale left the revision out of sync with the config it loaded")
+	}
+}
+
+// TestRefreshIfStaleLeavesDirtyEditsAlone is the safety half: self-healing must
+// never silently replace edits that exist only in ce.config. A user with
+// unsaved work goes through Save (and, on conflict, the discard confirmation)
+// instead.
+func TestRefreshIfStaleLeavesDirtyEditsAlone(t *testing.T) {
+	prov := &fakeRevisionConfigProvider{
+		cfg: app.EditableConfig{Lights: []app.LightEditConfig{{Name: "Kitchen"}}},
+	}
+	ce := NewConfigEditor(prov, DefaultTheme())
+
+	ce.config.Lights[0].Name = "Kitchen (being edited)"
+	ce.markDirty()
+
+	prov.cfg = app.EditableConfig{Lights: []app.LightEditConfig{{Name: "Changed Elsewhere"}}}
+	ce.RefreshIfStale()
+
+	if got := ce.config.Lights[0].Name; got != "Kitchen (being edited)" {
+		t.Fatalf("RefreshIfStale discarded in-progress edits: got %q", got)
+	}
+	if !ce.dirty {
+		t.Fatal("RefreshIfStale cleared dirty")
+	}
+
+	// Same guarantee once a save has already failed with a conflict.
+	ce.saveConflict = true
+	ce.RefreshIfStale()
+	if got := ce.config.Lights[0].Name; got != "Kitchen (being edited)" {
+		t.Fatalf("RefreshIfStale discarded edits while a save conflict was outstanding: got %q", got)
+	}
+}

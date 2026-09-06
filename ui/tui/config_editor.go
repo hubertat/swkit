@@ -288,6 +288,30 @@ func (ce *ConfigEditor) Reload() {
 	ce.rebuildItems()
 }
 
+// RefreshIfStale reloads the editor's snapshot when the provider's persisted
+// config has moved on since this editor loaded it, which keeps the editor
+// self-healing rather than dependent on the user pressing reload at the right
+// moment. It is needed because TriggerReload is asynchronous: it signals
+// main.go's reload loop, which re-reads the file and swaps the provider some
+// time later, so a Reload issued alongside TriggerReload necessarily reads the
+// pre-reload config. Polling the revision means the new config is picked up
+// on a subsequent tick instead, with no second keypress.
+//
+// It is deliberately a no-op while dirty or while a save conflict is
+// outstanding: in both cases the user has edits that only exist in ce.config,
+// and silently replacing them is exactly the data loss the conflict handling
+// is there to prevent. Those users go through Save (or the discard
+// confirmation) instead.
+func (ce *ConfigEditor) RefreshIfStale() {
+	if ce.provider == nil || ce.dirty || ce.saveConflict {
+		return
+	}
+	if ce.provider.Revision() == ce.revision {
+		return
+	}
+	ce.Reload()
+}
+
 // discardAndReload discards any in-progress edits and refreshes from the
 // provider. Unlike Reload, it does not refuse a dirty editor - it is only
 // ever called (see tui.go) after the user has already been told a save hit
