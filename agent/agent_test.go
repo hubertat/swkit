@@ -152,7 +152,7 @@ func TestToolRegistry(t *testing.T) {
 	tool := Tool{
 		Name:        "test_tool",
 		Description: "A test tool",
-		Execute: func(input json.RawMessage) (string, error) {
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 			return "executed", nil
 		},
 	}
@@ -233,7 +233,7 @@ func TestDeviceTools(t *testing.T) {
 
 	// Test get_device_state
 	getTool, _ := registry.Get("get_device_state")
-	result, err := getTool.Execute(json.RawMessage(`{"name": "Kitchen Light"}`))
+	result, err := getTool.Execute(context.Background(), json.RawMessage(`{"name": "Kitchen Light"}`))
 	if err != nil {
 		t.Fatalf("get_device_state failed: %v", err)
 	}
@@ -254,14 +254,14 @@ func TestDeviceTools(t *testing.T) {
 		Name: "Desk Lamp", Type: app.DeviceTypeDimmableLight, IsOn: true, IsHealthy: true, Brightness: 40,
 	})
 	adjTool, _ := registry.Get("adjust_brightness")
-	if _, err := adjTool.Execute(json.RawMessage(`{"name": "Desk Lamp", "delta": 15}`)); err != nil {
+	if _, err := adjTool.Execute(context.Background(), json.RawMessage(`{"name": "Desk Lamp", "delta": 15}`)); err != nil {
 		t.Fatalf("adjust_brightness failed: %v", err)
 	}
 	if got := ctrl.state.Devices[len(ctrl.state.Devices)-1].Brightness; got != 55 {
 		t.Errorf("expected brightness 55 after +15, got %d", got)
 	}
 	// Clamp at 0 when dimming past the floor.
-	if _, err := adjTool.Execute(json.RawMessage(`{"name": "Desk Lamp", "delta": -100}`)); err != nil {
+	if _, err := adjTool.Execute(context.Background(), json.RawMessage(`{"name": "Desk Lamp", "delta": -100}`)); err != nil {
 		t.Fatalf("adjust_brightness failed: %v", err)
 	}
 	if got := ctrl.state.Devices[len(ctrl.state.Devices)-1].Brightness; got != 0 {
@@ -269,7 +269,7 @@ func TestDeviceTools(t *testing.T) {
 	}
 
 	// get_device_state should include brightness for dimmable lights.
-	result, err = getTool.Execute(json.RawMessage(`{"name": "Desk Lamp"}`))
+	result, err = getTool.Execute(context.Background(), json.RawMessage(`{"name": "Desk Lamp"}`))
 	if err != nil {
 		t.Fatalf("get_device_state failed: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestInfoTools(t *testing.T) {
 
 	// Test list_devices
 	listTool, _ := registry.Get("list_devices")
-	result, err := listTool.Execute(json.RawMessage(`{}`))
+	result, err := listTool.Execute(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("list_devices failed: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestInfoTools(t *testing.T) {
 	}
 
 	// Test list_devices with type filter
-	result, err = listTool.Execute(json.RawMessage(`{"type": "light"}`))
+	result, err = listTool.Execute(context.Background(), json.RawMessage(`{"type": "light"}`))
 	if err != nil {
 		t.Fatalf("list_devices with filter failed: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestInfoTools(t *testing.T) {
 
 	// Test get_system_status
 	statusTool, _ := registry.Get("get_system_status")
-	result, err = statusTool.Execute(json.RawMessage(`{}`))
+	result, err = statusTool.Execute(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("get_system_status failed: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestInfoTools(t *testing.T) {
 
 	// Test get_homekit_status
 	hkTool, _ := registry.Get("get_homekit_status")
-	result, err = hkTool.Execute(json.RawMessage(`{}`))
+	result, err = hkTool.Execute(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("get_homekit_status failed: %v", err)
 	}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -98,8 +99,12 @@ type getDeviceInput struct {
 	Name string `json:"name"`
 }
 
-func makeToggleDevice(controller app.DeviceController) func(json.RawMessage) (string, error) {
-	return func(input json.RawMessage) (string, error) {
+func makeToggleDevice(controller app.DeviceController) func(context.Context, json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		var in toggleInput
 		if err := json.Unmarshal(input, &in); err != nil {
 			return "", fmt.Errorf("invalid input: %w", err)
@@ -108,6 +113,10 @@ func makeToggleDevice(controller app.DeviceController) func(json.RawMessage) (st
 		// Find device by name
 		idx, device, err := findDeviceByName(controller, in.Name)
 		if err != nil {
+			return "", err
+		}
+
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
 
@@ -125,8 +134,12 @@ func makeToggleDevice(controller app.DeviceController) func(json.RawMessage) (st
 	}
 }
 
-func makeSetDevice(controller app.DeviceController) func(json.RawMessage) (string, error) {
-	return func(input json.RawMessage) (string, error) {
+func makeSetDevice(controller app.DeviceController) func(context.Context, json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		var in setDeviceInput
 		if err := json.Unmarshal(input, &in); err != nil {
 			return "", fmt.Errorf("invalid input: %w", err)
@@ -135,6 +148,10 @@ func makeSetDevice(controller app.DeviceController) func(json.RawMessage) (strin
 		// Find device by name
 		idx, device, err := findDeviceByName(controller, in.Name)
 		if err != nil {
+			return "", err
+		}
+
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
 
@@ -152,8 +169,12 @@ func makeSetDevice(controller app.DeviceController) func(json.RawMessage) (strin
 	}
 }
 
-func makeAdjustBrightness(controller app.DeviceController) func(json.RawMessage) (string, error) {
-	return func(input json.RawMessage) (string, error) {
+func makeAdjustBrightness(controller app.DeviceController) func(context.Context, json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		var in adjustBrightnessInput
 		if err := json.Unmarshal(input, &in); err != nil {
 			return "", fmt.Errorf("invalid input: %w", err)
@@ -161,6 +182,10 @@ func makeAdjustBrightness(controller app.DeviceController) func(json.RawMessage)
 
 		idx, device, err := findDeviceByName(controller, in.Name)
 		if err != nil {
+			return "", err
+		}
+
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
 
@@ -178,8 +203,12 @@ func makeAdjustBrightness(controller app.DeviceController) func(json.RawMessage)
 	}
 }
 
-func makeGetDeviceState(controller app.DeviceController) func(json.RawMessage) (string, error) {
-	return func(input json.RawMessage) (string, error) {
+func makeGetDeviceState(controller app.DeviceController) func(context.Context, json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		var in getDeviceInput
 		if err := json.Unmarshal(input, &in); err != nil {
 			return "", fmt.Errorf("invalid input: %w", err)

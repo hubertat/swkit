@@ -14,11 +14,37 @@ import (
 	"github.com/hubertat/swkit/agent"
 )
 
+// maxChatMessages caps how many messages ChatView keeps in scrollback.
+// Beyond this, the oldest messages are discarded first. A few hundred is
+// plenty for a terminal session and keeps updateViewportContent's
+// per-render work bounded.
+const maxChatMessages = 300
+
 // ChatMessage represents a message in the chat
 type ChatMessage struct {
 	Role    string // "user", "assistant", or "system"
 	Content string
 	Time    time.Time
+
+	// rendered caches this message's fully-formatted block (role prefix,
+	// markdown-rendered body, trailing spacing) as produced by
+	// renderMessageBlock, so updateViewportContent need not re-render
+	// unchanged history on every update. renderedWidth records the
+	// viewport width the cache was built for; renderMessageBlock output is
+	// width-dependent (word wrap), so a width change invalidates it.
+	rendered      string
+	renderedWidth int
+	renderedValid bool
+}
+
+// appendCapped appends msg to messages, discarding the oldest entries first
+// so the list never grows past maxChatMessages.
+func appendCapped(messages []ChatMessage, msg ChatMessage) []ChatMessage {
+	messages = append(messages, msg)
+	if len(messages) > maxChatMessages {
+		messages = messages[len(messages)-maxChatMessages:]
+	}
+	return messages
 }
 
 // ChatResponseMsg is sent when an agent response arrives
@@ -152,7 +178,7 @@ func (c ChatView) Update(msg tea.Msg) (ChatView, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ChatResponseMsg:
 		if msg.Error != nil {
-			c.messages = append(c.messages, ChatMessage{
+			c.messages = appendCapped(c.messages, ChatMessage{
 				Role:    "system",
 				Content: fmt.Sprintf("Error: %v", msg.Error),
 				Time:    time.Now(),
@@ -165,7 +191,7 @@ func (c ChatView) Update(msg tea.Msg) (ChatView, tea.Cmd) {
 				responseContent = c.currentMsg.String()
 			}
 			if responseContent != "" {
-				c.messages = append(c.messages, ChatMessage{
+				c.messages = appendCapped(c.messages, ChatMessage{
 					Role:    "assistant",
 					Content: responseContent,
 					Time:    time.Now(),
@@ -196,7 +222,7 @@ func (c ChatView) Update(msg tea.Msg) (ChatView, tea.Cmd) {
 			}
 
 			// Add user message
-			c.messages = append(c.messages, ChatMessage{
+			c.messages = appendCapped(c.messages, ChatMessage{
 				Role:    "user",
 				Content: text,
 				Time:    time.Now(),
@@ -212,7 +238,7 @@ func (c ChatView) Update(msg tea.Msg) (ChatView, tea.Cmd) {
 		case "ctrl+l":
 			// Clear chat history
 			c.messages = c.messages[:0]
-			c.messages = append(c.messages, ChatMessage{
+			c.messages = appendCapped(c.messages, ChatMessage{
 				Role:    "system",
 				Content: "Chat cleared.",
 				Time:    time.Now(),
@@ -281,40 +307,18 @@ func (c *ChatView) updateViewportContent() {
 		maxWidth = 20
 	}
 
-	for _, msg := range c.messages {
-		switch msg.Role {
-		case "user":
-			wrappedStyle := c.theme.Primary.Width(maxWidth)
-			line := wrappedStyle.Render("You: " + msg.Content)
-			content.WriteString(line)
-			content.WriteString("\n\n")
-
-		case "assistant":
-			// Render markdown for assistant messages
-			content.WriteString(c.theme.Secondary.Render("AI:"))
-			content.WriteString("\n")
-			if c.mdRenderer != nil {
-				rendered, err := c.mdRenderer.Render(msg.Content)
-				if err == nil {
-					// Trim extra newlines that glamour adds
-					content.WriteString(strings.TrimSpace(rendered))
-				} else {
-					// Fallback to plain text if rendering fails
-					wrappedStyle := c.theme.Secondary.Width(maxWidth)
-					content.WriteString(wrappedStyle.Render(msg.Content))
-				}
-			} else {
-				wrappedStyle := c.theme.Secondary.Width(maxWidth)
-				content.WriteString(wrappedStyle.Render(msg.Content))
-			}
-			content.WriteString("\n\n")
-
-		case "system":
-			wrappedStyle := c.theme.Muted.Width(maxWidth)
-			line := wrappedStyle.Render(msg.Content)
-			content.WriteString(line)
-			content.WriteString("\n\n")
+	// Reuse each message's cached rendered block instead of re-running
+	// glamour over the entire history on every update. The cache is keyed
+	// by the width it was rendered at, so a width change (via SetSize)
+	// transparently invalidates and re-renders just that message.
+	for i := range c.messages {
+		msg := &c.messages[i]
+		if !msg.renderedValid || msg.renderedWidth != maxWidth {
+			msg.rendered = c.renderMessageBlock(msg.Role, msg.Content, maxWidth)
+			msg.renderedWidth = maxWidth
+			msg.renderedValid = true
 		}
+		content.WriteString(msg.rendered)
 	}
 
 	// Show streaming content
@@ -341,6 +345,49 @@ func (c *ChatView) updateViewportContent() {
 	}
 
 	c.viewport.SetContent(content.String())
+}
+
+// renderMessageBlock renders a single message's full display block (role
+// prefix, markdown-rendered body for assistant messages, trailing blank
+// line) at the given width. It is pure with respect to c.theme/c.mdRenderer
+// and maxWidth, which is what makes the per-message cache in
+// updateViewportContent safe.
+func (c *ChatView) renderMessageBlock(role, text string, maxWidth int) string {
+	var b strings.Builder
+
+	switch role {
+	case "user":
+		wrappedStyle := c.theme.Primary.Width(maxWidth)
+		b.WriteString(wrappedStyle.Render("You: " + text))
+		b.WriteString("\n\n")
+
+	case "assistant":
+		// Render markdown for assistant messages
+		b.WriteString(c.theme.Secondary.Render("AI:"))
+		b.WriteString("\n")
+		if c.mdRenderer != nil {
+			rendered, err := c.mdRenderer.Render(text)
+			if err == nil {
+				// Trim extra newlines that glamour adds
+				b.WriteString(strings.TrimSpace(rendered))
+			} else {
+				// Fallback to plain text if rendering fails
+				wrappedStyle := c.theme.Secondary.Width(maxWidth)
+				b.WriteString(wrappedStyle.Render(text))
+			}
+		} else {
+			wrappedStyle := c.theme.Secondary.Width(maxWidth)
+			b.WriteString(wrappedStyle.Render(text))
+		}
+		b.WriteString("\n\n")
+
+	case "system":
+		wrappedStyle := c.theme.Muted.Width(maxWidth)
+		b.WriteString(wrappedStyle.Render(text))
+		b.WriteString("\n\n")
+	}
+
+	return b.String()
 }
 
 // View renders the chat view

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -56,8 +57,12 @@ type listDevicesInput struct {
 	Type string `json:"type"`
 }
 
-func makeListDevices(controller app.DeviceController) func(json.RawMessage) (string, error) {
-	return func(input json.RawMessage) (string, error) {
+func makeListDevices(controller app.DeviceController) func(context.Context, json.RawMessage) (string, error) {
+	return func(ctx context.Context, input json.RawMessage) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		var in listDevicesInput
 		if err := json.Unmarshal(input, &in); err != nil {
 			// Ignore parse error, treat as no filter
@@ -99,8 +104,12 @@ func makeListDevices(controller app.DeviceController) func(json.RawMessage) (str
 	}
 }
 
-func makeListDrivers(controller app.DeviceController) func(json.RawMessage) (string, error) {
-	return func(_ json.RawMessage) (string, error) {
+func makeListDrivers(controller app.DeviceController) func(context.Context, json.RawMessage) (string, error) {
+	return func(ctx context.Context, _ json.RawMessage) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		state := controller.GetState()
 
 		type driverInfo struct {
@@ -126,8 +135,12 @@ func makeListDrivers(controller app.DeviceController) func(json.RawMessage) (str
 	}
 }
 
-func makeGetSystemStatus(controller app.DeviceController) func(json.RawMessage) (string, error) {
-	return func(_ json.RawMessage) (string, error) {
+func makeGetSystemStatus(controller app.DeviceController) func(context.Context, json.RawMessage) (string, error) {
+	return func(ctx context.Context, _ json.RawMessage) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		state := controller.GetState()
 		summary := state.Summary()
 
@@ -161,8 +174,12 @@ func makeGetSystemStatus(controller app.DeviceController) func(json.RawMessage) 
 	}
 }
 
-func makeGetHomeKitStatus(controller app.DeviceController) func(json.RawMessage) (string, error) {
-	return func(_ json.RawMessage) (string, error) {
+func makeGetHomeKitStatus(controller app.DeviceController) func(context.Context, json.RawMessage) (string, error) {
+	return func(ctx context.Context, _ json.RawMessage) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
 		state := controller.GetState()
 
 		hkStatus := map[string]any{

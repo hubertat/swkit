@@ -1,17 +1,24 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/anthropics/anthropic-sdk-go"
 )
 
-// Tool defines a callable tool for the agent
+// Tool defines a callable tool for the agent.
+//
+// Execute receives the per-call context so a handler can check for
+// cancellation before doing hardware work. The agent loop also bounds each
+// call with a timeout (see Config.ToolTimeout / executeTools) and abandons
+// handlers that ignore ctx and run past it — see the comment on
+// Agent.runToolWithTimeout for what that guarantees and what it does not.
 type Tool struct {
 	Name        string
 	Description string
 	InputSchema anthropic.ToolInputSchemaParam
-	Execute     func(input json.RawMessage) (string, error)
+	Execute     func(ctx context.Context, input json.RawMessage) (string, error)
 }
 
 // ToolRegistry manages available tools

@@ -121,7 +121,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (<-chan string, <-
 			}
 
 			// Execute tool calls
-			toolResults := a.executeTools(toolUses)
+			toolResults := a.executeTools(ctx, toolUses)
 
 			// Add tool results to history
 			a.appendMessage(anthropic.MessageParam{
@@ -136,11 +136,83 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (<-chan string, <-
 	return textCh, errCh
 }
 
-// appendMessage appends a message to the conversation history under lock.
+// appendMessage appends a message to the conversation history under lock,
+// then trims the oldest whole turns if the history has grown past the
+// configured cap.
 func (a *Agent) appendMessage(msg anthropic.MessageParam) {
 	a.messagesMu.Lock()
 	defer a.messagesMu.Unlock()
 	a.messages = append(a.messages, msg)
+	a.trimHistoryLocked()
+}
+
+// isTurnStart reports whether msg begins a new conversation turn: a user
+// message carrying plain (non tool_result) content. A tool_result is also
+// sent with Role user, as a continuation of the turn that issued the
+// matching tool_use, so it must not be mistaken for a turn boundary.
+func isTurnStart(msg anthropic.MessageParam) bool {
+	if msg.Role != anthropic.MessageParamRoleUser {
+		return false
+	}
+	for _, block := range msg.Content {
+		if block.OfToolResult != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// trimHistoryLocked drops the oldest whole conversation turns until the
+// history is at or under a.config.maxHistoryMessages(). Callers must hold
+// messagesMu.
+//
+// The Anthropic API rejects a conversation whose first message is a
+// tool_result, or one that contains a tool_result with no preceding
+// tool_use. Slicing off the oldest N messages could easily produce exactly
+// that (e.g. cutting between a tool_use and its tool_result), so instead we
+// trim in whole turns: a turn starts at a user text message (see
+// isTurnStart) and runs through every following message up to, but not
+// including, the next such message. Dropping only whole turns keeps every
+// tool_use paired with its tool_result and keeps the retained history
+// starting on a plain user message.
+//
+// At least one turn (the most recent) is always kept, even if it alone
+// exceeds the cap - there is nothing shorter to fall back to.
+func (a *Agent) trimHistoryLocked() {
+	max := a.config.maxHistoryMessages()
+	if len(a.messages) <= max {
+		return
+	}
+
+	var turnStarts []int
+	for i, msg := range a.messages {
+		if isTurnStart(msg) {
+			turnStarts = append(turnStarts, i)
+		}
+	}
+	if len(turnStarts) <= 1 {
+		return
+	}
+
+	// Find the earliest turn boundary whose suffix already fits the cap;
+	// dropping everything before it removes as many oldest turns as
+	// possible while keeping as much recent history as the cap allows.
+	keepFrom := turnStarts[len(turnStarts)-1] // always keep at least the last turn
+	for i := 0; i < len(turnStarts)-1; i++ {
+		boundary := turnStarts[i+1]
+		if len(a.messages)-boundary <= max {
+			keepFrom = boundary
+			break
+		}
+	}
+
+	if keepFrom == 0 {
+		return
+	}
+
+	trimmed := make([]anthropic.MessageParam, len(a.messages)-keepFrom)
+	copy(trimmed, a.messages[keepFrom:])
+	a.messages = trimmed
 }
 
 // snapshotMessages returns a copy of the current conversation history so
@@ -185,11 +257,23 @@ func (a *Agent) sendRequest(ctx context.Context) (*anthropic.Message, error) {
 	return resp, nil
 }
 
-// executeTools runs tool calls and returns results
-func (a *Agent) executeTools(toolUses []anthropic.ToolUseBlock) []anthropic.ContentBlockParamUnion {
+// executeTools runs tool calls and returns results. It checks ctx before
+// each call and bounds every handler with a.config.toolTimeout(), so a
+// blocked handler cannot pin the agent loop (or the chat goroutine reading
+// its channels) forever.
+func (a *Agent) executeTools(ctx context.Context, toolUses []anthropic.ToolUseBlock) []anthropic.ContentBlockParamUnion {
 	results := make([]anthropic.ContentBlockParamUnion, 0, len(toolUses))
 
 	for _, use := range toolUses {
+		if err := ctx.Err(); err != nil {
+			results = append(results, anthropic.NewToolResultBlock(
+				use.ID,
+				fmt.Sprintf("error: cancelled before executing tool %q: %v", use.Name, err),
+				true,
+			))
+			continue
+		}
+
 		a.logger.Debug("executing tool", "name", use.Name, "id", use.ID)
 
 		tool, ok := a.registry.Get(use.Name)
@@ -213,8 +297,8 @@ func (a *Agent) executeTools(toolUses []anthropic.ToolUseBlock) []anthropic.Cont
 			continue
 		}
 
-		// Execute tool
-		result, err := tool.Execute(inputJSON)
+		// Execute tool, bounded by the per-tool timeout.
+		result, err := a.runToolWithTimeout(ctx, tool, use.Name, inputJSON)
 		if err != nil {
 			a.logger.Debug("tool execution failed", "name", use.Name, "error", err)
 			results = append(results, anthropic.NewToolResultBlock(
@@ -230,6 +314,46 @@ func (a *Agent) executeTools(toolUses []anthropic.ToolUseBlock) []anthropic.Cont
 	}
 
 	return results
+}
+
+// toolExecResult carries a tool handler's outcome back from the goroutine
+// it runs in.
+type toolExecResult struct {
+	result string
+	err    error
+}
+
+// runToolWithTimeout runs tool.Execute in its own goroutine, bounded by
+// a.config.toolTimeout() and by ctx. If the handler doesn't return before
+// the bound expires, the call is abandoned: this function returns a timeout
+// error immediately so the agent loop, Chat, and the session all recover.
+//
+// Be honest about what this does and does not do: Go has no way to forcibly
+// stop a running goroutine. A handler that ignores its context keeps
+// running - and keeps its own goroutine alive - until it eventually returns
+// on its own, however long that takes; that goroutine is simply leaked from
+// this call's point of view. What this function guarantees is that nothing
+// downstream ever blocks on it: resCh is buffered (size 1), so the
+// abandoned goroutine can still deliver its eventual result and exit
+// cleanly instead of leaking a blocked send, and no one is left reading
+// from resCh by the time it does.
+func (a *Agent) runToolWithTimeout(ctx context.Context, tool Tool, name string, input json.RawMessage) (string, error) {
+	toolCtx, cancel := context.WithTimeout(ctx, a.config.toolTimeout())
+	defer cancel()
+
+	resCh := make(chan toolExecResult, 1)
+	go func() {
+		result, err := tool.Execute(toolCtx, input)
+		resCh <- toolExecResult{result: result, err: err}
+	}()
+
+	select {
+	case res := <-resCh:
+		return res.result, res.err
+	case <-toolCtx.Done():
+		a.logger.Debug("tool execution timed out or cancelled", "name", name, "error", toolCtx.Err())
+		return "", fmt.Errorf("tool %q timed out: %w", name, toolCtx.Err())
+	}
 }
 
 // Reset clears conversation history
