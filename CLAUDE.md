@@ -181,11 +181,40 @@ The application uses JSON configuration (`config.json` by default) with structur
   "Shelly": {
     "MqttBroker": "mqtt://192.168.1.100:1883",
     "MqttClientId": "swkit-main"
+  },
+  "SshServer": {
+    "Enabled": true,
+    "Port": 2222,
+    "BindAddress": "",
+    "AuthorizedKeysPath": "",
+    "MaxSessions": 8,
+    "IdleTimeoutSeconds": 900,
+    "MaxTimeoutSeconds": 0
   }
 }
 ```
 
 Control device format: `<event>:<action>:<device_name>` where action is `on`, `off`, or `toggle`.
+
+### SSH server configuration (security-relevant)
+
+Every `SshServer` field is backward compatible at its zero value, which means
+the defaults are permissive. Read this before exposing the port:
+
+- `BindAddress`: empty binds **all interfaces** (`:port`). Set `"127.0.0.1"` to
+  restrict to loopback.
+- `AuthorizedKeysPath`: empty means `.ssh/authorized_keys`. If that file
+  exists, public-key auth is enforced. **If it does not exist, the server
+  starts with no authentication at all** and logs a warning at startup and per
+  connection. An explicitly configured path that does not exist is a hard
+  error, so asking for auth never silently degrades to open access.
+- `MaxSessions` (default 8) caps concurrent sessions; over-cap connections are
+  refused before a TUI program is allocated.
+- `IdleTimeoutSeconds` (default 900) is enforced by the TUI as real key-input
+  inactivity. A transport-level deadline cannot do this, because the TUI
+  repaints roughly once a second on its own and that refreshes it.
+- `MaxTimeoutSeconds` (default 0, disabled) is the only unconditional cap on
+  total session lifetime.
 
 ## Development Notes
 
@@ -236,3 +265,36 @@ Control device format: `<event>:<action>:<device_name>` where action is `on`, `o
 6. **Context cancellation**: Drivers with goroutines must respect context cancellation and clean up in `Close()`.
 
 7. **Shelly button inputs**: Despite buttons using `GetPushEventEmitter()`, you must configure them with `d_in` IO type (`shelly|d_in|...`), not `push_event`. The Setup method doesn't handle `IoTypePushEventEmitter`.
+
+## Accepted Open Issues (Known — Do Not Re-report as New)
+
+Both of these have been reviewed and deliberately left open. They are recorded
+here so they are not repeatedly rediscovered.
+
+1. **SSH may run unauthenticated (accepted configuration risk).** With no
+   `authorized_keys` file present, the SSH server serves the full TUI — hardware
+   control, config save/reload, the AI agent — to any client that can reach the
+   port, by default on all interfaces. This is a deliberate backward-compatibility
+   choice, not an oversight; auth engages with no code change as soon as a key
+   file exists, and the fail-open path warns loudly at startup and per connection.
+   Session caps and idle expiry bound *resource* use only, never access. See the
+   SSH server configuration section above for how to close it.
+
+2. **Orphaned goroutines are bounded per call, not process-wide.** A driver or
+   tool call that blocks forever cannot be interrupted — Go cannot kill a running
+   goroutine — so an abandoned caller lingers until the callee returns. Every such
+   site is made *safe* rather than eliminated: the stranded goroutine always has a
+   private buffered channel to deliver into and exit, so it can never panic on a
+   closed channel or corrupt live state, and nothing downstream waits on it. What
+   is unbounded is the cumulative total: each new `Subscribe` (so each SSH
+   reconnect) can strand one poll, manual refresh and IO-name export have no
+   in-flight guard, and each tool timeout strands one handler. A permanently
+   wedged driver therefore grows goroutines slowly over time.
+
+   **When adding code that calls into a driver**, follow the established pattern:
+   resolve what you need under `SwKitProvider.mu`, release the lock, and only then
+   make the blocking call (see `GetState` and `ToggleDevice` for the canonical
+   comments). Never hold `p.mu` across a driver call — `Reload` needs the write
+   lock, and a wedged call would block config hot reload process-wide. The real
+   fix for the residual leak is deadlines pushed down into the driver and
+   controller interfaces themselves, which do not currently take a context.
