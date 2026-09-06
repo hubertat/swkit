@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -111,12 +112,19 @@ type Model struct {
 	timedPrompt    bool // true when the "on for N seconds" duration input is active
 	timedInput     textinput.Model
 	timedTarget    int // device index being timed-controlled
-	ctx            context.Context
-	cancel         context.CancelFunc
-	chat           ChatView
-	logs           *LogsView
-	agent          *agent.Agent
-	configEditor   ConfigEditor
+
+	// configDiscardConfirm is true while the "discard your edits and load
+	// the latest config?" modal is up, offered after Ctrl+S/Ctrl+R hits a
+	// save conflict (see ConfigEditor.saveConflict) while the editor is
+	// dirty. Only an explicit "y" here calls ConfigEditor.discardAndReload -
+	// see the ConfigSaveMsg and confirmation-key handling below.
+	configDiscardConfirm bool
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	chat                 ChatView
+	logs                 *LogsView
+	agent                *agent.Agent
+	configEditor         ConfigEditor
 
 	// idleTimeout, when non-zero, is the period of no user input after
 	// which the session's idle watchdog quits it. Only key (and mouse)
@@ -360,11 +368,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, clearExportMsg()
 
 	case ConfigSaveMsg:
-		if msg.Error != nil {
-			m.configEditor.statusMsg = "Save error: " + msg.Error.Error()
-		} else {
+		switch {
+		case msg.Error == nil:
 			m.configEditor.statusMsg = "Saved, reloading..."
 			m.configEditor.dirty = false
+			m.configEditor.saveConflict = false
+			// Refresh the editor's own config/revision snapshot to match what
+			// was just persisted (Reload is a no-op while dirty, but dirty was
+			// just cleared above). This is separate from TriggerReload/the
+			// app-level config reload below and elsewhere: it just keeps this
+			// editor's revision from going stale on its very next edit.
+			m.configEditor.Reload()
+		case errors.Is(msg.Error, app.ErrConfigRevisionMismatch):
+			// Do NOT clear dirty here: the user's edits are still only held
+			// in ce.config and would otherwise be lost with no recovery. This
+			// message fades after 3s like any other status message (see
+			// configSaveClearMsg below), but that is only cosmetic:
+			// saveConflict itself does not expire, so Ctrl+R/Ctrl+S still
+			// opens the discard-confirmation prompt (see configDiscardConfirm)
+			// whenever the user gets back to it, whether that's now or later.
+			m.configEditor.statusMsg = "Config changed elsewhere since you loaded it - your edits are kept, but not saved. Press Ctrl+R/Ctrl+S again to be asked whether to discard them and load the latest version."
+			m.configEditor.saveConflict = true
+		default:
+			m.configEditor.statusMsg = "Save error: " + msg.Error.Error()
+			m.configEditor.saveConflict = false
 		}
 		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
 			return configSaveClearMsg{}
@@ -456,20 +483,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Global Ctrl+S: save (if dirty) then reload; or just reload if not dirty
-		if msg.String() == "ctrl+s" {
-			if m.configEditor.IsDirty() {
-				return m, m.configEditor.Save()
+		// Discard-conflict confirmation - intercept all keys. Entered only
+		// from the Ctrl+S/Ctrl+R handler below when a save has already
+		// failed with a revision conflict; only "y" is destructive. Enter
+		// (the no-input default), "n" and Esc all cancel, leaving the dirty
+		// editor and its edits untouched - see the "y/N" convention in the
+		// prompt text below.
+		if m.configDiscardConfirm {
+			switch msg.String() {
+			case "y", "Y":
+				m.configDiscardConfirm = false
+				m.configEditor.discardAndReload()
+				m.configEditor.TriggerReload()
+			default:
+				m.configDiscardConfirm = false
 			}
-			m.configEditor.TriggerReload()
 			return m, nil
 		}
 
-		// Global Ctrl+R: save (if dirty) then reload; works over SSH where ctrl+s is intercepted
-		if msg.String() == "ctrl+r" {
+		// Global Ctrl+S / Ctrl+R: save (if dirty) then reload; or just reload
+		// if not dirty. Ctrl+R duplicates Ctrl+S because it works over SSH
+		// where ctrl+s is intercepted (XOFF) by some terminals.
+		if msg.String() == "ctrl+s" || msg.String() == "ctrl+r" {
 			if m.configEditor.IsDirty() {
+				if m.configEditor.HasSaveConflict() {
+					// A previous Save in this session already failed with a
+					// stale revision; retrying with that same revision would
+					// only fail again. Rather than acting immediately (which
+					// is exactly the trap that lost edits before), open an
+					// explicit confirmation - see the configDiscardConfirm
+					// handling above.
+					m.configDiscardConfirm = true
+					return m, nil
+				}
 				return m, m.configEditor.Save()
 			}
+			// Not dirty: refresh this editor's own config/revision snapshot
+			// (ConfigEditor.Reload) and separately ask the app to reload the
+			// whole SwKit instance from disk (TriggerReload) - the two are
+			// different operations that happen to both be "give me the
+			// latest config" from the user's point of view. See Reload's and
+			// TriggerReload's doc comments.
+			m.configEditor.Reload()
 			m.configEditor.TriggerReload()
 			return m, nil
 		}
@@ -1044,6 +1099,9 @@ func (m Model) ioDebugByType(filter IoDebugFilter) []app.IoPointDebugState {
 func (m Model) View() string {
 	header := m.theme.Header.Render(IconHome + " swkit - " + m.state.Name)
 	top := header + "\n\n" + m.renderTabBar() + "\n\n"
+	if m.configDiscardConfirm {
+		top += m.theme.Error.Render("Discard your edits and load the latest config? [y/N]") + "\n\n"
+	}
 	bottom := "\n" + m.renderHelp()
 
 	// Compute how many lines are available for the tab content so lists can

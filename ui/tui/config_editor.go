@@ -98,8 +98,20 @@ type ConfigSaveMsg struct {
 type ConfigEditor struct {
 	provider app.ConfigProvider
 	config   app.EditableConfig
-	dirty    bool
-	mode     ConfigMode
+	// revision is the provider's Revision() paired with config at the
+	// moment it was loaded (NewConfigEditor or Reload). Save passes it to
+	// SaveConfigIfRevision so a concurrent/out-of-band change to the config
+	// underneath this editor is detected instead of silently clobbered.
+	revision string
+	// saveConflict is set when the last Save failed with
+	// app.ErrConfigRevisionMismatch: the provider's config moved on since
+	// this editor loaded it, so a plain retry with the same revision would
+	// only fail again. tui.go uses this to change what a repeated
+	// Ctrl+R/Ctrl+S press does - see the ConfigSaveMsg handler and
+	// discardAndReload.
+	saveConflict bool
+	dirty        bool
+	mode         ConfigMode
 
 	// List mode
 	cursor int
@@ -162,6 +174,14 @@ func NewConfigEditor(provider app.ConfigProvider, theme Theme) ConfigEditor {
 	}
 
 	if provider != nil {
+		// Revision is read before the config snapshot so the revision can
+		// only ever be as-old-or-older than the snapshot it is paired with
+		// (a save landing in between just makes the eventual Save fail its
+		// conflict check and ask the user to reload, rather than pairing a
+		// snapshot with an already-newer revision and risking a silent
+		// overwrite) - same reasoning as server/config_edit.go's
+		// handleConfigEditGet.
+		ce.revision = provider.Revision()
 		ce.config = provider.GetEditableConfig()
 		ce.rebuildItems()
 	}
@@ -229,24 +249,73 @@ func (ce *ConfigEditor) IsDirty() bool {
 	return ce.dirty
 }
 
-// Reload reloads config from provider
+// markDirty marks the editor dirty for a new edit. If a save previously
+// failed with a revision conflict (saveConflict), that flag is cleared: the
+// user chose to keep editing rather than respond to the conflict, so the
+// next Ctrl+S/Ctrl+R should attempt an ordinary save again (see tui.go)
+// instead of immediately reopening the discard-confirmation prompt, which
+// would be a non sequitur right after unrelated new edits. If the same
+// stale revision is still the problem, SaveConfigIfRevision simply reports
+// the conflict again and saveConflict gets re-armed from there.
+func (ce *ConfigEditor) markDirty() {
+	ce.dirty = true
+	ce.saveConflict = false
+}
+
+// Reload refreshes ce.config and ce.revision from the provider. This is
+// distinct from TriggerReload: TriggerReload asks the *application* to
+// reload the whole SwKit instance (drivers included) from the config file
+// on disk, which happens asynchronously off in main.go's reload loop and is
+// invisible to this editor; Reload only refreshes this editor's own
+// in-memory snapshot of whatever the provider currently holds, so the
+// revision it tracks matches what it displays again and a subsequent Save
+// stops being rejected as stale.
+//
+// If the editor is dirty (unsaved edits in progress), Reload is a
+// deliberate no-op: overwriting ce.config here would silently discard those
+// edits with no way to get them back. Losing a stale revision - the save
+// just fails once more with ErrConfigRevisionMismatch and says so - is far
+// less surprising than losing typed-in edits, so callers that truly want to
+// discard dirty edits must go through discardAndReload instead, which makes
+// that intent explicit.
 func (ce *ConfigEditor) Reload() {
-	if ce.provider == nil {
+	if ce.provider == nil || ce.dirty {
 		return
 	}
+	ce.revision = ce.provider.Revision()
 	ce.config = ce.provider.GetEditableConfig()
-	ce.dirty = false
+	ce.saveConflict = false
 	ce.rebuildItems()
 }
 
-// Save persists the current config
+// discardAndReload discards any in-progress edits and refreshes from the
+// provider. Unlike Reload, it does not refuse a dirty editor - it is only
+// ever called (see tui.go) after the user has already been told a save hit
+// a revision conflict and has pressed the reload key again anyway, which is
+// treated as their explicit confirmation that they want the latest config
+// rather than their unsaved edits.
+func (ce *ConfigEditor) discardAndReload() {
+	ce.dirty = false
+	ce.Reload()
+}
+
+// HasSaveConflict reports whether the last Save failed because the
+// provider's config changed underneath this editor (see saveConflict).
+func (ce *ConfigEditor) HasSaveConflict() bool {
+	return ce.saveConflict
+}
+
+// Save persists the current config, failing with app.ErrConfigRevisionMismatch
+// (via SaveConfigIfRevision) if the provider's config changed since this
+// editor loaded it - see the revision field.
 func (ce *ConfigEditor) Save() tea.Cmd {
 	if ce.provider == nil {
 		return nil
 	}
 	config := ce.config
+	revision := ce.revision
 	return func() tea.Msg {
-		err := ce.provider.SaveConfig(config)
+		err := ce.provider.SaveConfigIfRevision(config, revision)
 		return ConfigSaveMsg{Error: err}
 	}
 }
@@ -478,7 +547,7 @@ func (ce *ConfigEditor) setCursorToItem(itemType configListItemType, index int) 
 // addDeviceOfType adds a new device of the given type and opens the edit view
 // with the Name field focused so the user can enter a name immediately.
 func (ce *ConfigEditor) addDeviceOfType(itemType configListItemType) tea.Cmd {
-	ce.dirty = true
+	ce.markDirty()
 	ce.fieldCursor = 0
 	switch itemType {
 	case configItemLight:
@@ -559,7 +628,7 @@ func (ce *ConfigEditor) deleteItem() tea.Cmd {
 		ce.config.Buttons = append(ce.config.Buttons[:item.index], ce.config.Buttons[item.index+1:]...)
 	}
 
-	ce.dirty = true
+	ce.markDirty()
 	ce.rebuildItems()
 	if ce.cursor >= len(ce.items) && ce.cursor > 0 {
 		ce.cursor--
@@ -626,7 +695,7 @@ func (ce *ConfigEditor) updateEditLight(msg tea.Msg) tea.Cmd {
 	case " ":
 		if ce.fieldCursor == 2 { // DisableHomekit
 			light.DisableHomekit = !light.DisableHomekit
-			ce.dirty = true
+			ce.markDirty()
 		}
 	case "esc":
 		ce.mode = ConfigModeList
@@ -650,7 +719,7 @@ func (ce *ConfigEditor) startEditingLightField(light *app.LightEditConfig) tea.C
 		return textinput.Blink
 	case 2: // DisableHomekit (toggle)
 		light.DisableHomekit = !light.DisableHomekit
-		ce.dirty = true
+		ce.markDirty()
 	}
 	return nil
 }
@@ -699,7 +768,7 @@ func (ce *ConfigEditor) updateEditDimmableLight(msg tea.Msg) tea.Cmd {
 	case " ":
 		if ce.fieldCursor == 4 { // DisableHomekit
 			dl.DisableHomekit = !dl.DisableHomekit
-			ce.dirty = true
+			ce.markDirty()
 		}
 	case "esc":
 		ce.mode = ConfigModeList
@@ -733,7 +802,7 @@ func (ce *ConfigEditor) startEditingDimmableLightField(dl *app.DimmableLightEdit
 		return textinput.Blink
 	case 4: // DisableHomekit (toggle)
 		dl.DisableHomekit = !dl.DisableHomekit
-		ce.dirty = true
+		ce.markDirty()
 	}
 	return nil
 }
@@ -747,15 +816,15 @@ func (ce *ConfigEditor) handleDimmableTextEditing(msg tea.KeyMsg, dl *app.Dimmab
 		case 0:
 			if value != "" {
 				dl.Name = value
-				ce.dirty = true
+				ce.markDirty()
 				ce.rebuildItems()
 			}
 		case 1:
 			dl.DigitalOutName = value
-			ce.dirty = true
+			ce.markDirty()
 		case 2:
 			dl.AnalogOutName = value
-			ce.dirty = true
+			ce.markDirty()
 		case 3:
 			if v, err := strconv.Atoi(value); err == nil {
 				if v < 0 {
@@ -764,7 +833,7 @@ func (ce *ConfigEditor) handleDimmableTextEditing(msg tea.KeyMsg, dl *app.Dimmab
 					v = 100
 				}
 				dl.DefaultSetpoint = v
-				ce.dirty = true
+				ce.markDirty()
 			}
 		}
 		ce.editing = false
@@ -821,7 +890,7 @@ func (ce *ConfigEditor) updateEditOutlet(msg tea.Msg) tea.Cmd {
 	case " ":
 		if ce.fieldCursor == 2 { // DisableHomekit
 			outlet.DisableHomekit = !outlet.DisableHomekit
-			ce.dirty = true
+			ce.markDirty()
 		}
 	case "esc":
 		ce.mode = ConfigModeList
@@ -845,7 +914,7 @@ func (ce *ConfigEditor) startEditingOutletField(outlet *app.OutletEditConfig) te
 		return textinput.Blink
 	case 2: // DisableHomekit (toggle)
 		outlet.DisableHomekit = !outlet.DisableHomekit
-		ce.dirty = true
+		ce.markDirty()
 	}
 	return nil
 }
@@ -859,12 +928,12 @@ func (ce *ConfigEditor) handleOutletTextEditing(msg tea.KeyMsg, outlet *app.Outl
 		case 0:
 			if value != "" {
 				outlet.Name = value
-				ce.dirty = true
+				ce.markDirty()
 				ce.rebuildItems()
 			}
 		case 1:
 			outlet.DigitalOutName = value
-			ce.dirty = true
+			ce.markDirty()
 		}
 		ce.editing = false
 		ce.textInput.Blur()
@@ -890,24 +959,24 @@ func (ce *ConfigEditor) handleTextEditing(msg tea.KeyMsg, light *app.LightEditCo
 			case 0:
 				if value != "" {
 					light.Name = value
-					ce.dirty = true
+					ce.markDirty()
 					ce.rebuildItems()
 				}
 			case 1:
 				light.DigitalOutName = value
-				ce.dirty = true
+				ce.markDirty()
 			}
 		} else if ce.mode == ConfigModeEditButton && button != nil {
 			switch ce.fieldCursor {
 			case 0:
 				if value != "" {
 					button.Name = value
-					ce.dirty = true
+					ce.markDirty()
 					ce.rebuildItems()
 				}
 			case 1:
 				button.EventInputName = value
-				ce.dirty = true
+				ce.markDirty()
 			}
 		}
 		ce.editing = false
@@ -982,7 +1051,7 @@ func (ce *ConfigEditor) updateEditButton(msg tea.Msg) tea.Cmd {
 	case " ":
 		if ce.fieldCursor == 2 { // DisableHomekit
 			button.DisableHomekit = !button.DisableHomekit
-			ce.dirty = true
+			ce.markDirty()
 		}
 	case "a":
 		// Add control device when cursor is in control devices section or at DisableHomekit
@@ -995,14 +1064,14 @@ func (ce *ConfigEditor) updateEditButton(msg tea.Msg) tea.Cmd {
 				newCtrl.DeviceName = ce.config.OutputDeviceNames[0]
 			}
 			button.ControlDevices = append(button.ControlDevices, newCtrl)
-			ce.dirty = true
+			ce.markDirty()
 			ce.fieldCursor = buttonBaseFieldCount() + len(button.ControlDevices) - 1
 		}
 	case "d", "delete":
 		ctrlIdx := ce.fieldCursor - buttonBaseFieldCount()
 		if ctrlIdx >= 0 && ctrlIdx < len(button.ControlDevices) {
 			button.ControlDevices = append(button.ControlDevices[:ctrlIdx], button.ControlDevices[ctrlIdx+1:]...)
-			ce.dirty = true
+			ce.markDirty()
 			if ce.fieldCursor >= buttonBaseFieldCount()+len(button.ControlDevices) && ce.fieldCursor > 0 {
 				ce.fieldCursor--
 			}
@@ -1029,7 +1098,7 @@ func (ce *ConfigEditor) startEditingButtonField(button *app.ButtonEditConfig) te
 		return textinput.Blink
 	case 2: // DisableHomekit (toggle)
 		button.DisableHomekit = !button.DisableHomekit
-		ce.dirty = true
+		ce.markDirty()
 	}
 	return nil
 }
@@ -1053,19 +1122,19 @@ func (ce *ConfigEditor) updateCtrlDeviceEdit(msg tea.KeyMsg, button *app.ButtonE
 		}
 	case "left", "h":
 		ce.cycleCtrlField(ctrl, -1)
-		ce.dirty = true
+		ce.markDirty()
 	case "right", "l":
 		ce.cycleCtrlField(ctrl, 1)
-		ce.dirty = true
+		ce.markDirty()
 	case "+", "=":
 		if app.IsBrightnessVerb(ctrl.Action) {
 			ctrl.Level = adjustBrightnessLevel(ctrl.Level, 1)
-			ce.dirty = true
+			ce.markDirty()
 		}
 	case "-", "_":
 		if app.IsBrightnessVerb(ctrl.Action) {
 			ctrl.Level = adjustBrightnessLevel(ctrl.Level, -1)
-			ce.dirty = true
+			ce.markDirty()
 		}
 	case "enter", "esc":
 		ce.ctrlEditing = false
@@ -1157,26 +1226,26 @@ func (ce *ConfigEditor) applyIoSelection(ioId string) {
 	case configItemLight:
 		if ce.ioPickerField == 1 {
 			ce.config.Lights[item.index].DigitalOutName = ioId
-			ce.dirty = true
+			ce.markDirty()
 		}
 	case configItemDimmableLight:
 		switch ce.ioPickerField {
 		case 1:
 			ce.config.DimmableLights[item.index].DigitalOutName = ioId
-			ce.dirty = true
+			ce.markDirty()
 		case 2:
 			ce.config.DimmableLights[item.index].AnalogOutName = ioId
-			ce.dirty = true
+			ce.markDirty()
 		}
 	case configItemOutlet:
 		if ce.ioPickerField == 1 {
 			ce.config.Outlets[item.index].DigitalOutName = ioId
-			ce.dirty = true
+			ce.markDirty()
 		}
 	case configItemButton:
 		if ce.ioPickerField == 1 {
 			ce.config.Buttons[item.index].EventInputName = ioId
-			ce.dirty = true
+			ce.markDirty()
 		}
 	}
 }
@@ -1348,7 +1417,7 @@ func (ce *ConfigEditor) confirmWizard(events []app.DeviceState) tea.Cmd {
 		DeviceName: ce.wizardTargetDeviceName,
 	}
 	ce.config.Buttons[buttonIdx].ControlDevices = append(ce.config.Buttons[buttonIdx].ControlDevices, newCtrl)
-	ce.dirty = true
+	ce.markDirty()
 	ce.statusMsg = fmt.Sprintf("Added: %s %s → %s → %s", selected.Name, eventType, ce.wizardActionLabel(), ce.wizardTargetDeviceName)
 	ce.mode = ConfigModeList
 	return nil
@@ -1416,7 +1485,7 @@ func (ce *ConfigEditor) executeClear() {
 		}
 		ce.statusMsg = fmt.Sprintf("Cleared %d control relations", cleared)
 	}
-	ce.dirty = true
+	ce.markDirty()
 	ce.refreshOutputDeviceNames()
 	ce.rebuildItems()
 	ce.cursor = 0
