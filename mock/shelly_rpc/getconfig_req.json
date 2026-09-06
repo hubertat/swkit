@@ -1,0 +1,5 @@
+{
+  "id": 6,
+  "src": "mbpm3",
+  "method": "Shelly.GetConfig"
+}

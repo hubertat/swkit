@@ -1,0 +1,206 @@
+{
+  "id": 6,
+  "src": "shellypro4pm-083af2be0f68",
+  "dst": "mbpm3",
+  "result": {
+    "ble": {
+      "enable": true,
+      "rpc": {
+        "enable": true
+      },
+      "observer": {
+        "enable": false
+      }
+    },
+    "cloud": {
+      "enable": false,
+      "server": "iot.shelly.cloud:6012/jrpc"
+    },
+    "eth": {
+      "enable": true,
+      "ipv4mode": "dhcp",
+      "ip": null,
+      "netmask": null,
+      "gw": null,
+      "nameserver": null
+    },
+    "input:0": {
+      "id": 0,
+      "name": null,
+      "type": "switch",
+      "enable": true,
+      "invert": false
+    },
+    "input:1": {
+      "id": 1,
+      "name": null,
+      "type": "switch",
+      "enable": true,
+      "invert": false
+    },
+    "input:2": {
+      "id": 2,
+      "name": null,
+      "type": "switch",
+      "enable": true,
+      "invert": false
+    },
+    "input:3": {
+      "id": 3,
+      "name": null,
+      "type": "switch",
+      "enable": true,
+      "invert": false
+    },
+    "mqtt": {
+      "enable": true,
+      "server": "10.100.80.44",
+      "client_id": "shellypro4pm-083af2be0f68",
+      "user": null,
+      "topic_prefix": "shellypro4pm-083af2be0f68",
+      "rpc_ntf": true,
+      "status_ntf": false,
+      "use_client_cert": false,
+      "enable_rpc": true,
+      "enable_control": true
+    },
+    "switch:0": {
+      "id": 0,
+      "name": null,
+      "in_mode": "follow",
+      "initial_state": "restore_last",
+      "auto_on": false,
+      "auto_on_delay": 60,
+      "auto_off": false,
+      "auto_off_delay": 60,
+      "power_limit": 4480,
+      "voltage_limit": 280,
+      "undervoltage_limit": 0,
+      "autorecover_voltage_errors": false,
+      "current_limit": 16
+    },
+    "switch:1": {
+      "id": 1,
+      "name": null,
+      "in_mode": "follow",
+      "initial_state": "restore_last",
+      "auto_on": false,
+      "auto_on_delay": 60,
+      "auto_off": false,
+      "auto_off_delay": 60,
+      "power_limit": 4480,
+      "voltage_limit": 280,
+      "undervoltage_limit": 0,
+      "autorecover_voltage_errors": false,
+      "current_limit": 16
+    },
+    "switch:2": {
+      "id": 2,
+      "name": null,
+      "in_mode": "follow",
+      "initial_state": "restore_last",
+      "auto_on": false,
+      "auto_on_delay": 60,
+      "auto_off": false,
+      "auto_off_delay": 60,
+      "power_limit": 4480,
+      "voltage_limit": 280,
+      "undervoltage_limit": 0,
+      "autorecover_voltage_errors": false,
+      "current_limit": 16
+    },
+    "switch:3": {
+      "id": 3,
+      "name": null,
+      "in_mode": "follow",
+      "initial_state": "restore_last",
+      "auto_on": false,
+      "auto_on_delay": 60,
+      "auto_off": false,
+      "auto_off_delay": 60,
+      "power_limit": 4480,
+      "voltage_limit": 280,
+      "undervoltage_limit": 0,
+      "autorecover_voltage_errors": false,
+      "current_limit": 16
+    },
+    "sys": {
+      "device": {
+        "name": null,
+        "mac": "083AF2BE0F68",
+        "fw_id": "20231106-160215/1.0.8-gdba0ee3",
+        "discoverable": true,
+        "eco_mode": false
+      },
+      "location": {
+        "tz": "Europe/Warsaw",
+        "lat": 52.40641,
+        "lon": 16.92519
+      },
+      "debug": {
+        "level": 2,
+        "file_level": null,
+        "mqtt": {
+          "enable": false
+        },
+        "websocket": {
+          "enable": true
+        },
+        "udp": {
+          "addr": null
+        }
+      },
+      "ui_data": {},
+      "rpc_udp": {
+        "dst_addr": null,
+        "listen_port": null
+      },
+      "sntp": {
+        "server": "time.google.com"
+      },
+      "cfg_rev": 14
+    },
+    "ui": {
+      "idle_brightness": 30
+    },
+    "wifi": {
+      "ap": {
+        "ssid": "ShellyPro4PM-083AF2BE0F68",
+        "is_open": true,
+        "enable": false,
+        "range_extender": {
+          "enable": false
+        }
+      },
+      "sta": {
+        "ssid": null,
+        "is_open": true,
+        "enable": false,
+        "ipv4mode": "dhcp",
+        "ip": null,
+        "netmask": null,
+        "gw": null,
+        "nameserver": null
+      },
+      "sta1": {
+        "ssid": null,
+        "is_open": true,
+        "enable": false,
+        "ipv4mode": "dhcp",
+        "ip": null,
+        "netmask": null,
+        "gw": null,
+        "nameserver": null
+      },
+      "roam": {
+        "rssi_thr": -80,
+        "interval": 60
+      }
+    },
+    "ws": {
+      "enable": false,
+      "server": null,
+      "ssl_ca": "ca.pem"
+    }
+  }
+}

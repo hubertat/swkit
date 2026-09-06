@@ -1,3 +1,10 @@
+// OUTDATED: Switch has not been updated to the current device architecture and is not wired into SwKit.
+// To bring it up to date it needs:
+//   - Constructor injection (NewSwitch(...) taking a drivers.DigitalInput) instead of Init(driver)
+//   - InitHk() *accessory.A instead of GetHk()
+//   - Sync(force bool) error signature (currently missing the force parameter)
+//   - Registration in SwKit.Setup(), getHkThings(), getDevices(), and a state-provider builder
+//   - A config struct (SwitchConfig) and a Switches []SwitchConfig field on SwKit
 package swkit
 
 import (
@@ -16,7 +23,7 @@ type Switch struct {
 	Name           string
 	State          bool
 	DriverName     string
-	InPin          uint16
+	IoName         string
 	DisableHomekit bool
 	IsFaulty       bool
 
@@ -44,7 +51,7 @@ func (swb *Switch) GetUniqueId() uint64 {
 }
 
 func (swb *Switch) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.NameId(), swb.DriverName) {
+	if !strings.EqualFold(driver.String(), swb.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
 
@@ -55,7 +62,7 @@ func (swb *Switch) Init(driver drivers.IoDriver) error {
 	var err error
 
 	swb.driver = driver
-	swb.input, err = driver.GetInput(swb.InPin)
+	swb.input, err = driver.GetDigitalInput(swb.IoName)
 	if err != nil {
 		return errors.Wrap(err, "Init failed")
 	}
@@ -66,7 +73,7 @@ func (swb *Switch) Init(driver drivers.IoDriver) error {
 
 	info := accessory.Info{
 		Name:         swb.Name,
-		SerialNumber: fmt.Sprintf("switch:%s:%02d", swb.DriverName, swb.InPin),
+		SerialNumber: fmt.Sprintf("switch:%s:%s", swb.DriverName, swb.IoName),
 	}
 	swb.hk = accessory.NewSwitch(info)
 

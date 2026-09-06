@@ -4,3 +4,5 @@ swkit_*
 **/.DS_Store
 rel
 rel/*
+.crush
+.claude

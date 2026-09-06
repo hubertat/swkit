@@ -26,9 +26,9 @@ type SwitchConfig struct {
 }
 
 type SwitchStatus struct {
-	ID     int    `json:"id"`
-	Source string `json:"source,omitempty"`
-	Output bool   `json:"output,omitempty"`
+	ID     int     `json:"-"`
+	Source *string `json:"source,omitempty"`
+	Output *bool   `json:"output,omitempty"`
 
 	TimerStartedAt *int `json:"timer_started_at,omitempty"`
 	TimerDuration  *int `json:"timer_duration,omitempty"`
@@ -43,6 +43,72 @@ type SwitchStatus struct {
 	Temperature *Temperature `json:"temperature,omitempty"`
 
 	Errors *[]string `json:"errors,omitempty"`
+}
+
+func (ss *SwitchStatus) Update(newS SwitchStatus) bool {
+	changed := false
+
+	if newS.Source != nil {
+		ss.Source = newS.Source
+		changed = true
+	}
+
+	if newS.Output != nil {
+		ss.Output = newS.Output
+		changed = true
+	}
+
+	if newS.TimerStartedAt != nil {
+		ss.TimerStartedAt = newS.TimerStartedAt
+		changed = true
+	}
+
+	if newS.TimerDuration != nil {
+		ss.TimerDuration = newS.TimerDuration
+		changed = true
+	}
+
+	if newS.APower != nil {
+		ss.APower = newS.APower
+		changed = true
+	}
+
+	if newS.Voltage != nil {
+		ss.Voltage = newS.Voltage
+		changed = true
+	}
+
+	if newS.Current != nil {
+		ss.Current = newS.Current
+		changed = true
+	}
+
+	if newS.Pf != nil {
+		ss.Pf = newS.Pf
+		changed = true
+	}
+
+	if newS.Freq != nil {
+		ss.Freq = newS.Freq
+		changed = true
+	}
+
+	if newS.AEnergy != nil {
+		ss.AEnergy = newS.AEnergy
+		changed = true
+	}
+
+	if newS.Temperature != nil {
+		ss.Temperature = newS.Temperature
+		changed = true
+	}
+
+	if newS.Errors != nil {
+		ss.Errors = newS.Errors
+		changed = true
+	}
+
+	return changed
 }
 
 type EnergyStats struct {

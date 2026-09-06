@@ -1,0 +1,1484 @@
+/* swkit web ui - diagnostic dashboard */
+
+:root {
+    --bg: #1a1b26;
+    --bg-surface: #24283b;
+    --bg-surface-hover: #292e42;
+    --bg-card: #1f2335;
+    --border: #3b4261;
+    --border-active: #7aa2f7;
+
+    --text: #c0caf5;
+    --text-secondary: #a9b1d6;
+    --text-muted: #565f89;
+    --text-heading: #7dcfff;
+
+    --accent: #7aa2f7;
+    --success: #9ece6a;
+    --error: #f7768e;
+    --warning: #e0af68;
+    --on: #e0af68;
+    --off: #565f89;
+    --event: #ff9e64;
+    --info: #2ac3de;
+
+    --radius: 8px;
+    --radius-lg: 12px;
+    --shadow: 0 2px 8px rgba(0,0,0,0.3);
+    --transition: 0.2s ease;
+}
+
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+}
+
+/* ---- Layout ---- */
+
+.app {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 16px;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+}
+
+.header h1 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--text-heading);
+}
+
+.header h1 .icon { margin-right: 6px; }
+
+.version-badge {
+    font-size: 0.7rem;
+    opacity: 0.6;
+    font-weight: normal;
+    margin-left: 6px;
+}
+
+.header-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+/* ---- Navigation ---- */
+
+.nav {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.nav a {
+    text-decoration: none;
+    color: var(--text-muted);
+    padding: 10px 16px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    transition: color var(--transition), border-color var(--transition);
+    white-space: nowrap;
+}
+
+.nav-key {
+    opacity: 0.5;
+    font-size: 0.7rem;
+    margin-right: 3px;
+}
+
+.nav a:hover {
+    color: var(--text-secondary);
+}
+
+.nav a.active {
+    color: var(--text-heading);
+    border-bottom-color: var(--accent);
+}
+
+/* ---- Cards ---- */
+
+.card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow);
+}
+
+.card-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-heading);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* ---- Dashboard grid ---- */
+
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+}
+
+.stat-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.stat-label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+}
+
+.stat-row + .stat-row {
+    border-top: 1px solid var(--border);
+}
+
+.stat-row .label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.stat-row .value {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+/* ---- Status badges ---- */
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.badge-ready {
+    background: rgba(158, 206, 106, 0.15);
+    color: var(--success);
+}
+
+.badge-not-ready {
+    background: rgba(247, 118, 142, 0.15);
+    color: var(--error);
+}
+
+.badge-on {
+    background: rgba(224, 175, 104, 0.15);
+    color: var(--on);
+}
+
+.badge-off {
+    background: rgba(86, 95, 137, 0.15);
+    color: var(--off);
+}
+
+.badge-healthy {
+    background: rgba(158, 206, 106, 0.15);
+    color: var(--success);
+}
+
+.badge-faulty {
+    background: rgba(247, 118, 142, 0.15);
+    color: var(--error);
+}
+
+.badge-event {
+    background: rgba(255, 158, 100, 0.2);
+    color: var(--event);
+}
+
+.badge-type {
+    background: rgba(122, 162, 247, 0.1);
+    color: var(--accent);
+}
+
+/* ---- Status info pills ---- */
+
+.stat-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 4px;
+    overflow: hidden;
+    font-size: 0.75rem;
+    margin: 2px 3px 2px 0;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.pill-key {
+    background: rgba(122, 162, 247, 0.12);
+    color: var(--text-muted);
+    padding: 2px 5px;
+}
+
+.pill-val {
+    background: rgba(122, 162, 247, 0.06);
+    color: var(--text-secondary);
+    padding: 2px 6px;
+}
+
+/* ---- Tables ---- */
+
+.table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+th {
+    text-align: left;
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+
+tr:last-child td {
+    border-bottom: none;
+}
+
+tr:hover td {
+    background: var(--bg-surface-hover);
+}
+
+td.mono {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.8rem;
+}
+
+/* ---- IO Debug ---- */
+
+.io-filters {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+
+.io-filter-btn {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.io-filter-btn:hover {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.io-filter-btn.active {
+    background: rgba(122, 162, 247, 0.15);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.io-state-indicator {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 4px;
+}
+
+.io-state-on {
+    background: var(--on);
+    box-shadow: 0 0 6px rgba(224, 175, 104, 0.5);
+}
+
+.io-state-off {
+    background: var(--off);
+}
+
+.io-state-event {
+    background: var(--event);
+    box-shadow: 0 0 8px rgba(255, 158, 100, 0.6);
+    animation: pulse 1s ease-in-out;
+}
+
+.io-recently-active {
+    outline: 2px solid rgba(255, 158, 100, 0.45);
+    outline-offset: 2px;
+    border-radius: 50%;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.io-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+/* ---- Devices ---- */
+
+.device-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 12px;
+}
+
+.device-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    transition: border-color var(--transition);
+}
+
+.device-card:hover {
+    border-color: var(--border-active);
+}
+
+.device-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.device-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.device-detail {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+
+.device-detail dt {
+    color: var(--text-secondary);
+    font-weight: 500;
+    display: inline;
+}
+
+.device-detail dd {
+    display: inline;
+    margin-left: 4px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.75rem;
+}
+
+.device-detail .row {
+    margin-bottom: 3px;
+}
+
+.control-relations {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+}
+
+.control-rel {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 0.8rem;
+    padding: 2px 0;
+}
+
+.control-rel .event-type {
+    color: var(--text-muted);
+    min-width: 80px;
+}
+
+.control-rel .action {
+    color: var(--on);
+    font-weight: 500;
+}
+
+.control-rel .target {
+    color: var(--text-secondary);
+}
+
+/* ---- Driver detail expand ---- */
+
+.driver-expand-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.6rem;
+    cursor: pointer;
+    vertical-align: middle;
+    transition: border-color var(--transition), color var(--transition);
+    margin-right: 4px;
+}
+
+.driver-expand-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.driver-detail-row td {
+    padding: 0 !important;
+    border-bottom: 1px solid var(--border);
+}
+
+.driver-detail-panel {
+    padding: 10px 14px 12px 14px;
+    background: var(--bg-card);
+    border-top: 1px solid var(--border);
+}
+
+.driver-detail-meta {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.driver-detail-panel table {
+    font-size: 0.78rem;
+}
+
+.driver-detail-panel th {
+    font-size: 0.7rem;
+    padding: 5px 8px;
+}
+
+.driver-detail-panel td {
+    padding: 6px 8px;
+}
+
+.driver-detail-raw {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+}
+
+/* ---- Logs ---- */
+
+.logs-toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.logs-toolbar .text-muted {
+    margin-left: auto;
+    font-size: 0.75rem;
+}
+
+.logs-level-filters {
+    display: flex;
+    gap: 4px;
+}
+
+.logs-text-filter {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text);
+    font-size: 0.8rem;
+    width: 160px;
+    transition: border-color var(--transition);
+    outline: none;
+}
+
+.logs-text-filter::placeholder {
+    color: var(--text-muted);
+}
+
+.logs-text-filter:focus {
+    border-color: var(--accent);
+}
+
+.logs-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    height: calc(100vh - 220px);
+    min-height: 200px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.logs-container pre {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+}
+
+/* ---- Config ---- */
+
+.config-display {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    overflow-x: auto;
+}
+
+.config-display pre {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.config-display .key {
+    color: var(--accent);
+}
+
+.config-display .string {
+    color: var(--success);
+}
+
+.config-display .number {
+    color: var(--warning);
+}
+
+.config-display .bool {
+    color: var(--event);
+}
+
+.config-display .null {
+    color: var(--text-muted);
+}
+
+/* ---- Auto-refresh bar ---- */
+
+.refresh-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.refresh-indicator {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--success);
+    transition: opacity 0.3s;
+}
+
+.refresh-indicator.fetching {
+    animation: blink 0.5s ease-in-out infinite;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
+}
+
+/* ---- Empty state ---- */
+
+.empty-state {
+    text-align: center;
+    padding: 40px 16px;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+/* ---- Responsive ---- */
+
+@media (max-width: 768px) {
+    .app {
+        padding: 10px;
+    }
+
+    .header h1 {
+        font-size: 1.1rem;
+    }
+
+    .nav a {
+        padding: 8px 12px;
+        font-size: 0.8rem;
+    }
+
+    .io-columns {
+        grid-template-columns: 1fr;
+    }
+
+    .device-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-grid {
+        grid-template-columns: 1fr;
+    }
+
+    table {
+        font-size: 0.78rem;
+    }
+
+    th, td {
+        padding: 8px;
+    }
+
+    .card {
+        padding: 12px;
+    }
+}
+
+@media (max-width: 480px) {
+    .header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+    }
+
+    .nav {
+        gap: 2px;
+    }
+
+    .nav a {
+        padding: 6px 10px;
+        font-size: 0.75rem;
+    }
+
+    .stat-value {
+        font-size: 1.4rem;
+    }
+}
+
+/* ---- Utility ---- */
+
+.text-success { color: var(--success); }
+.text-error { color: var(--error); }
+.text-warning { color: var(--warning); }
+.text-muted { color: var(--text-muted); }
+.text-accent { color: var(--accent); }
+.fw-600 { font-weight: 600; }
+.mt-8 { margin-top: 8px; }
+.mt-16 { margin-top: 16px; }
+.mb-8 { margin-bottom: 8px; }
+
+/* ---- Schema ---- */
+
+.schema-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.schema-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.schema-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+
+.schema-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.schema-legend-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 3px;
+    border-radius: 2px;
+}
+
+/* schema-error-banner (finding 1): save-validation feedback that must stay
+   visible regardless of the edit modal's open/closed state - lives in the
+   card's normal document flow, directly under the toolbar/legend and above
+   the diagram, so the backdrop (z-index 70, fixed) can never cover it and it
+   never depends on the modal being open to be seen. */
+.schema-error-banner {
+    background: rgba(247, 118, 142, 0.1);
+    border: 1px solid var(--error);
+    border-radius: var(--radius-lg);
+    padding: 10px 16px;
+    margin-bottom: 16px;
+}
+
+.schema-error-banner .schema-panel-close {
+    float: right;
+}
+
+.schema-error-banner .schema-panel-section {
+    margin-top: 0;
+}
+
+.schema-error-banner .schema-panel-list li {
+    border-bottom: none;
+    padding: 2px 0;
+}
+
+.schema-diagram-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: 16px;
+}
+
+#schema-diagram {
+    min-width: 600px;
+    padding: 8px 4px;
+}
+
+.schema-svg {
+    display: block;
+}
+
+.schema-bg {
+    pointer-events: all;
+}
+
+.schema-node {
+    cursor: pointer;
+    transition: opacity var(--transition);
+}
+
+.schema-node.dim {
+    opacity: 0.22;
+}
+
+.schema-node-rect {
+    fill: var(--bg-surface);
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.schema-node-dashed {
+    stroke-dasharray: 5, 4;
+}
+
+.schema-node-missing {
+    stroke: var(--error);
+}
+
+/* Scene group box (item 2): repurposed from the old fixed-height scene node
+   rect's border color (this was a literal #9ece6a - var(--success)'s hex -
+   now written as the variable itself). Scenes no longer render via
+   buildDeviceNode/.schema-node-rect at all; see buildSceneGroupNode.
+   Compounded with .schema-group-rect below (finding F3): the rect carries
+   both classes, and .schema-group-rect's own stroke has equal (0,1,0)
+   specificity, so whichever rule happens to come later in this file wins -
+   silently reverting every scene box to the driver-box border the moment
+   the two get reordered. Compounding the selector raises this rule to
+   (0,2,0) so it wins on its own merits, independent of source order. */
+.schema-group-rect.schema-scene-group-rect {
+    stroke: var(--success);
+}
+
+.schema-node-accent {
+    pointer-events: none;
+}
+
+.schema-node-label {
+    fill: var(--text);
+    font-size: 12.5px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.schema-node-marker {
+    font-size: 11px;
+}
+
+.schema-fault-dot {
+    fill: var(--error);
+}
+
+/* ---- Live state overlay (round-2 item 3) ---- */
+/* State dot + brightness/event/scene-state label, seeded from the initial
+   /api/schema snapshot and then only ever updated in place (class/text) on
+   every 1s /api/state poll - see setDotState/updateDeviceOverlay in
+   schema.js. Reuses the existing --on/--off vars (same language as the rest
+   of the diagnostic UI's on/off indicators). */
+.schema-state-dot {
+    transition: fill var(--transition), stroke var(--transition), filter var(--transition);
+}
+
+.schema-state-dot.off {
+    fill: none;
+    stroke: var(--off);
+    stroke-width: 1.5;
+}
+
+.schema-state-dot.on {
+    fill: var(--on);
+    stroke: none;
+    filter: drop-shadow(0 0 3px var(--on));
+}
+
+.schema-state-dot.event-flash {
+    fill: var(--event);
+    stroke: none;
+    filter: drop-shadow(0 0 4px var(--event));
+}
+
+.schema-state-extra {
+    fill: var(--text-muted);
+    font-size: 9px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.schema-state-extra.visible {
+    opacity: 1;
+}
+
+/* Recency ring: a soft accent glow on a device node whose state changed
+   recently, fading across 3 age buckets (<10s / <30s / <90s); applied to the
+   node's outer <g> so it wraps the whole shape (rect + accent bar + dot). */
+.schema-recency-strong {
+    filter: drop-shadow(0 0 6px rgba(122, 162, 247, 0.85));
+}
+
+.schema-recency-medium {
+    filter: drop-shadow(0 0 5px rgba(122, 162, 247, 0.55));
+}
+
+.schema-recency-faint {
+    filter: drop-shadow(0 0 4px rgba(122, 162, 247, 0.28));
+}
+
+.schema-group-rect {
+    fill: var(--bg-card);
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.schema-group-invalid {
+    stroke: var(--text-muted);
+}
+
+.schema-group-header {
+    cursor: pointer;
+}
+
+.schema-group-title {
+    fill: var(--text-heading);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.schema-group-count {
+    fill: var(--text-muted);
+    font-size: 10px;
+}
+
+.schema-ready-dot-on {
+    fill: var(--success);
+}
+
+.schema-ready-dot-off {
+    fill: var(--error);
+}
+
+/* ---- Schema: column headers (item 6) ---- */
+.schema-col-header {
+    fill: var(--text-muted);
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ---- Schema: scene group boxes (item 2) ---- */
+/* A scene renders as a container (buildDriverGroup's idiom, see
+   buildSceneGroupNode) instead of a fixed-height node rect: a header row
+   plus one sub-row per configured state, so scene membership - which state
+   fires which action - reads as containment instead of only as edges. */
+.schema-scene-state-rect {
+    fill: var(--bg);
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.schema-scene-state-label {
+    fill: var(--text-secondary);
+    font-size: 10px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.schema-scene-state-empty {
+    fill: var(--text-muted);
+    font-size: 10px;
+    font-style: italic;
+}
+
+/* Active-state highlight: toggled class-only (never recreated) both at
+   initial build (buildSceneGroupNode, from the schema snapshot) and on every
+   live /api/state poll thereafter (updateDeviceOverlay's scene branch) - see
+   schema.js. rgba() below is the decimal form of var(--success) (#9ece6a),
+   same manual-sync convention as .schema-io-pill-rect.schema-io-off and
+   .schema-error-banner elsewhere in this file - there is no rgb-channel
+   custom property to blend an alpha value against a var() color directly. */
+.schema-scene-state-row.schema-scene-state-active .schema-scene-state-rect {
+    stroke: var(--success);
+    stroke-width: 1.5;
+    fill: rgba(158, 206, 106, 0.16);
+}
+
+.schema-scene-state-row.schema-scene-state-active .schema-scene-state-label {
+    fill: var(--success);
+}
+
+.schema-io-pill-rect {
+    fill: var(--bg);
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.schema-io-pill-label {
+    fill: var(--text-secondary);
+    font-size: 10px;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.schema-io-pill-rect.schema-io-on {
+    stroke: var(--on);
+    stroke-width: 1.5;
+}
+
+/* Finding 8: previously stroke: var(--border), identical to the unstyled
+   .schema-io-pill-rect default - a pill with confirmed-off live data was
+   visually indistinguishable from one with no live data at all. Give it a
+   dimmed fill (a faint --off tint) plus the --off stroke so "known off" reads
+   as its own state rather than "no live data yet". */
+.schema-io-pill-rect.schema-io-off {
+    stroke: var(--off);
+    fill: rgba(86, 95, 137, 0.18);
+}
+
+.schema-edge {
+    fill: none;
+    transition: opacity var(--transition);
+}
+
+.schema-edge-rel {
+    stroke-width: 2px;
+    opacity: 0.9;
+}
+
+.schema-edge-io {
+    stroke-width: 1px;
+    opacity: 0.55;
+}
+
+.schema-edge.dim {
+    opacity: 0.1;
+}
+
+.schema-edge-active {
+    opacity: 1;
+}
+
+.schema-tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    color: var(--text);
+    opacity: 0;
+    transition: opacity 0.1s;
+    z-index: 60;
+    white-space: nowrap;
+}
+
+.schema-tooltip.visible {
+    opacity: 1;
+}
+
+/* schema-detail-dock: round-2 item 2 - a real-layout bottom dock under the
+   diagram card (not an overlay), so it can never cover the SVG. Collapsed to
+   zero height/padding when empty; sliding it open is a plain max-height
+   transition (simple CSS transition, per the round-2 spec) rather than a
+   fixed-position slide-in. */
+.schema-detail-dock {
+    max-height: 0;
+    overflow: hidden;
+    background: var(--bg-surface);
+    /* Finding 6: border-width and margin are zeroed here (not just
+       max-height) so a closed dock leaves no visible trace at all - with a
+       standing 1px border and 16px margin-bottom, "collapsed" still drew a
+       flat bordered strip under the diagram even though its content area
+       was zero height. Both are restored in .open below. */
+    border: 0 solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: 0;
+    padding: 0 18px;
+    transition: max-height var(--transition), padding var(--transition),
+        border-width var(--transition), margin-bottom var(--transition);
+}
+
+.schema-detail-dock.open {
+    max-height: 360px;
+    overflow-y: auto;
+    padding: 14px 18px 16px;
+    border-width: 1px;
+    margin-bottom: 16px;
+}
+
+.schema-dock-header {
+    margin-bottom: 8px;
+}
+
+/* Horizontal, wrapping grid of compact fact groups (identity/type, IO
+   bindings, relations, state) instead of one tall vertical list. */
+.schema-dock-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 32px;
+}
+
+.schema-dock-group {
+    min-width: 180px;
+    flex: 1 1 200px;
+}
+
+.schema-dock-subhead {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+
+/* schema-modal-backdrop/.schema-modal: round-2 item 1 - the edit panel is a
+   centered modal dialog instead of a right-edge panel. The backdrop dims the
+   page and is the click-outside-to-close target; it stays fully transparent
+   to clicks/hit-testing while closed (pointer-events: none) so it never
+   traps clicks meant for the diagram, toast or a confirm() dialog. */
+.schema-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(10, 11, 20, 0.6);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--transition);
+    z-index: 70;
+}
+
+.schema-modal-backdrop.open {
+    opacity: 1;
+    pointer-events: all;
+}
+
+.schema-modal {
+    width: min(640px, 92vw);
+    max-height: 85vh;
+    overflow-y: auto;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px 22px;
+    box-shadow: var(--shadow);
+    transform: translateY(8px);
+    transition: transform var(--transition);
+}
+
+.schema-modal-backdrop.open .schema-modal {
+    transform: translateY(0);
+}
+
+.schema-panel-close {
+    float: right;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 2px 4px;
+}
+
+.schema-panel-close:hover {
+    color: var(--text);
+}
+
+.schema-panel-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-heading);
+    margin-bottom: 10px;
+}
+
+.schema-panel-section {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-muted);
+    margin-top: 12px;
+    margin-bottom: 4px;
+}
+
+.schema-panel-list {
+    list-style: none;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.schema-panel-list li {
+    padding: 3px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.schema-panel-list li:last-child {
+    border-bottom: none;
+}
+
+.schema-detail-dock .row,
+.schema-modal .row {
+    font-size: 0.82rem;
+    margin-bottom: 4px;
+}
+
+.schema-detail-dock .row dt,
+.schema-modal .row dt {
+    display: inline;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.schema-detail-dock .row dd,
+.schema-modal .row dd {
+    display: inline;
+    margin-left: 4px;
+}
+
+.schema-detail-dock .mono,
+.schema-modal .mono {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+}
+
+@media (max-width: 768px) {
+    .schema-detail-dock.open {
+        max-height: 55vh;
+    }
+
+    .schema-modal {
+        padding: 16px;
+    }
+}
+
+/* ---- Schema: edit mode (stage 2) ---- */
+
+.schema-unsaved-dot {
+    fill: var(--warning);
+}
+
+.schema-add-wrap {
+    position: relative;
+    display: inline-block;
+}
+
+.schema-add-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    min-width: 170px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+}
+
+.schema-add-menu-item {
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--transition);
+}
+
+.schema-add-menu-item:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text);
+}
+
+.schema-panel-actions {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.schema-delete-btn {
+    color: var(--error);
+    border-color: var(--error);
+}
+
+.schema-delete-btn:hover {
+    background: rgba(247, 118, 142, 0.12);
+}
+
+.schema-panel-errors {
+    margin-top: 12px;
+}
+
+.schema-panel-errors .schema-panel-list li {
+    border-bottom: none;
+    padding: 2px 0;
+}
+
+.edit-field {
+    margin-bottom: 12px;
+}
+
+.edit-label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.edit-input,
+.edit-select,
+.edit-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text);
+    font-size: 0.82rem;
+    outline: none;
+    transition: border-color var(--transition);
+}
+
+.edit-input.mono {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+}
+
+.edit-input:focus,
+.edit-select:focus,
+.edit-textarea:focus {
+    border-color: var(--accent);
+}
+
+.edit-textarea {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+    resize: vertical;
+}
+
+.edit-field-error {
+    color: var(--error);
+    font-size: 0.72rem;
+    margin-top: 4px;
+}
+
+.edit-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    cursor: pointer;
+}
+
+.edit-relation-list,
+.edit-state-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+/* Was a 3-column grid (1fr 1fr auto), but a row can legitimately hold up to
+   6 children now (scene action rows: verb select, optional level input,
+   target select, up/down/remove buttons) - a fixed 3-track grid either
+   clipped or mis-sized whatever didn't fit those 3 slots (the button-relation
+   row, at 4 children, already overflowed it). Flex-wrap handles any child
+   count: selects/inputs share the available width and wrap to a second line
+   together, while the (fixed-size) buttons never grow or shrink. */
+.edit-relation-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    padding: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.edit-relation-row .edit-select,
+.edit-relation-row .edit-input {
+    flex: 1 1 110px;
+    min-width: 0;
+}
+
+.edit-relation-row .io-filter-btn {
+    flex: 0 0 auto;
+}
+
+/* The malformed-action raw-input fallback (buildSceneActionRow) wraps its
+   input+error in a .edit-field, which elsewhere in the form is a block-level
+   child with its own bottom margin (see .edit-field above) - correct outside
+   a flex row, but here it sits beside the row's fixed-size up/down/remove
+   buttons and, without an explicit flex-basis, shrinks to its intrinsic
+   (unwrapped) width instead of growing to fill the row like every other
+   field (finding F10). Also drops the standalone-field bottom margin, which
+   inside the row just read as a stray gap above the row's own padding. */
+.edit-relation-row > .edit-field {
+    flex: 1 1 100%;
+    margin-bottom: 0;
+}
+
+.edit-state-row {
+    padding: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.schema-row-remove {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+}
+
+.schema-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(12px);
+    background: var(--bg-surface);
+    border: 1px solid var(--success);
+    color: var(--text);
+    padding: 10px 18px;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    font-size: 0.85rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--transition), transform var(--transition);
+    z-index: 100;
+}
+
+.schema-toast.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+#schema-edit-btn:disabled,
+#schema-refresh-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}

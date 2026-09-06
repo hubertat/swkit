@@ -3,27 +3,29 @@ package swkit
 import (
 	"fmt"
 	"hash/fnv"
-	"strings"
 	"sync"
 
 	"github.com/brutella/hap/accessory"
 	"github.com/brutella/hap/characteristic"
+	"github.com/charmbracelet/log"
 	drivers "github.com/hubertat/swkit/drivers"
 	"github.com/pkg/errors"
 )
 
-type Outlet struct {
+type OutletConfig struct {
 	Name           string
-	State          bool
-	DriverName     string
-	OutPin         uint16
+	DigitalOutName string
 	DisableHomekit bool
-	IsFaulty       bool
+}
 
-	ControlBy []ControllingDevice
+type Outlet struct {
+	name           string
+	disableHomekit bool
+	isFaulty       bool
 
-	output drivers.DigitalOutput
-	driver drivers.IoDriver
+	output       drivers.DigitalOutput
+	withCallback bool
+	logger       *log.Logger
 
 	hk    *accessory.Outlet
 	fault *characteristic.StatusFault
@@ -31,39 +33,37 @@ type Outlet struct {
 	lock sync.Mutex
 }
 
-func (ou *Outlet) GetDriverName() string {
-	return ou.DriverName
+func NewOutlet(config OutletConfig, dOut drivers.DigitalOutput, logger *log.Logger) *Outlet {
+	logger.Debug("outlet created", "name", config.Name, "output", dOut.String())
+	return &Outlet{
+		name:           config.Name,
+		disableHomekit: config.DisableHomekit,
+		output:         dOut,
+		logger:         logger,
+		lock:           sync.Mutex{},
+	}
+}
+
+// Name returns the name of the outlet object
+func (ou *Outlet) Name() string {
+	return ou.name
 }
 
 func (ou *Outlet) GetUniqueId() uint64 {
 	hash := fnv.New64()
-	hash.Write([]byte("Outlet_" + ou.Name))
+	hash.Write([]byte("Outlet_" + ou.name))
 	return hash.Sum64()
 }
 
-func (ou *Outlet) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.NameId(), ou.DriverName) {
-		return fmt.Errorf("Init failed, mismatched or incorrect driver")
-	}
-
-	if !driver.IsReady() {
-		return fmt.Errorf("Init failed, driver not ready")
-	}
-	ou.lock = sync.Mutex{}
-	var err error
-
-	ou.driver = driver
-	ou.output, err = driver.GetOutput(ou.OutPin)
-	if err != nil {
-		return errors.Wrap(err, "Init failed")
-	}
-
-	if ou.DisableHomekit {
+func (ou *Outlet) InitHk() *accessory.A {
+	if ou.disableHomekit {
+		ou.logger.Debug("homekit disabled for outlet", "name", ou.name)
 		return nil
 	}
+
 	info := accessory.Info{
-		Name:         ou.Name,
-		SerialNumber: fmt.Sprintf("outlet:%s:%02d", ou.DriverName, ou.OutPin),
+		Name:         ou.name,
+		SerialNumber: fmt.Sprintf("outlet:%s", ou.output.String()),
 	}
 	ou.hk = accessory.NewOutlet(info)
 
@@ -72,54 +72,73 @@ func (ou *Outlet) Init(driver drivers.IoDriver) error {
 	ou.hk.Outlet.AddC(ou.fault.C)
 
 	ou.hk.Outlet.On.OnValueRemoteUpdate(ou.SetValue)
-	return nil
-}
 
-func (ou *Outlet) Sync() error {
-	ou.lock.Lock()
-	defer ou.lock.Unlock()
-	var err error
+	ou.withCallback = ou.output.SetOnStateUpdate(ou.hk.Outlet.On.SetValue) == nil
 
-	oldState := ou.State
-	ou.State, err = ou.output.GetState()
-
-	if ou.hk != nil {
-		if err != nil {
-			ou.fault.SetValue(characteristic.StatusFaultGeneralFault)
-			ou.IsFaulty = true
-		} else {
-			ou.fault.SetValue(characteristic.StatusFaultNoFault)
-			ou.IsFaulty = false
-		}
-	}
-
-	if err != nil {
-		return errors.Wrap(err, "Sync failed")
-	}
-
-	if oldState != ou.State && ou.hk != nil {
-		ou.hk.Outlet.On.SetValue(ou.State)
-	}
-
-	return nil
-}
-
-func (ou *Outlet) GetControllers() []ControllingDevice {
-	return ou.ControlBy
-}
-
-func (ou *Outlet) GetHk() *accessory.A {
-	if ou.hk == nil {
-		return nil
-	}
+	ou.logger.Debug("homekit accessory initialized", "outlet", ou.name, "withCallback", ou.withCallback)
 	return ou.hk.A
 }
 
+func (ou *Outlet) Sync(force bool) error {
+	if ou.disableHomekit {
+		return nil
+	}
+
+	if ou.withCallback && !force {
+		if ou.output.IsHealthy() {
+			if ou.isFaulty {
+				ou.logger.Debug("outlet health restored", "outlet", ou.name)
+			}
+			ou.isFaulty = false
+			ou.fault.SetValue(characteristic.StatusFaultNoFault)
+		} else {
+			if !ou.isFaulty {
+				ou.logger.Debug("outlet became faulty", "outlet", ou.name)
+			}
+			ou.isFaulty = true
+			ou.fault.SetValue(characteristic.StatusFaultGeneralFault)
+		}
+		return nil
+	}
+
+	ou.lock.Lock()
+	defer ou.lock.Unlock()
+
+	onState, err := ou.output.GetState()
+	if err != nil {
+		ou.fault.SetValue(characteristic.StatusFaultGeneralFault)
+		ou.isFaulty = true
+		ou.logger.Debug("sync failed to get state", "outlet", ou.name, "err", err)
+		return errors.Wrap(err, "Sync failed for Outlet, GetState failed")
+	}
+
+	ou.fault.SetValue(characteristic.StatusFaultNoFault)
+	ou.isFaulty = false
+
+	if onState != ou.hk.Outlet.On.Value() {
+		ou.logger.Debug("sync detected state mismatch, updating homekit", "outlet", ou.name, "hwState", onState, "hkState", ou.hk.Outlet.On.Value())
+		ou.hk.Outlet.On.SetValue(onState)
+	}
+
+	return nil
+}
+
+// GetState reports the current on/off state from the digital output.
+func (ou *Outlet) GetState() (bool, error) {
+	return ou.output.GetState()
+}
+
 func (ou *Outlet) SetValue(state bool) {
-	ou.State = state
-	ou.output.Set(ou.State)
+	ou.logger.Debug("setting outlet value", "outlet", ou.name, "state", state)
+	ou.output.Set(state)
 }
 
 func (ou *Outlet) Toggle() {
-	ou.SetValue(!ou.State)
+	oldState, err := ou.output.GetState()
+	if err != nil {
+		ou.logger.Debug("toggle failed to get current state", "outlet", ou.name, "err", err)
+		return
+	}
+	ou.logger.Debug("toggling outlet", "outlet", ou.name, "oldState", oldState, "newState", !oldState)
+	ou.SetValue(!oldState)
 }

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{.Name}} — Control</title>
+<link rel="stylesheet" href="{{.Endpoint}}/static/control.css">
+<script>window.__ENDPOINT = {{.Endpoint}};</script>
+</head>
+<body>
+<div class="app">
+  <header class="header">
+    <div class="header-left">
+      <h1>{{.Name}}</h1>
+      <span class="header-sub">Device Control</span>
+    </div>
+    <div class="header-right">
+      <span id="status-indicator" class="status-dot" title="Polling status"></span>
+      <button id="theme-toggle" class="icon-btn" title="Toggle dark/light mode" aria-label="Toggle theme">&#9728;</button>
+    </div>
+  </header>
+  <main id="content">
+    <div class="loading">Loading devices…</div>
+  </main>
+</div>
+<script src="{{.Endpoint}}/static/control.js"></script>
+</body>
+</html>

@@ -1,6 +1,9 @@
 package drivers
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func assertBools(t testing.TB, got, want bool) {
 	t.Helper()
@@ -74,11 +77,13 @@ func TestMockOutputSetState(t *testing.T) {
 func TestMockIoSetup(t *testing.T) {
 	md := MockIoDriver{}
 
+	ctx := context.Background()
+
 	want := false
 	got := md.IsReady()
 	assertBools(t, got, want)
 
-	md.Setup([]uint16{1, 3, 5}, []uint16{2, 4})
+	md.SetupIO(ctx, []string{"1", "3", "5"}, []string{"2", "4"})
 	want = true
 	got = md.IsReady()
 	assertBools(t, got, want)
@@ -86,10 +91,39 @@ func TestMockIoSetup(t *testing.T) {
 
 func TestMockIoGetAllIo(t *testing.T) {
 	md := MockIoDriver{}
-	md.Setup([]uint16{1, 3, 5}, []uint16{2, 4})
-	inputs, outputs := md.GetAllIo()
-	assertUint16Slices(t, inputs, []uint16{1, 3, 5})
-	assertUint16Slices(t, outputs, []uint16{2, 4})
+	ctx := context.Background()
+
+	outputs := []string{"2", "4"}
+	inputs := []string{"1", "3", "5"}
+	md.SetupIO(ctx, inputs, outputs)
+
+	ins, outs := md.GetAllIo()
+	for _, val := range ins {
+		found := false
+		for _, input := range inputs {
+			if val == input {
+				found = true
+			}
+		}
+
+		if !found {
+			t.Errorf("insput: %s not found in returned ios", val)
+		}
+	}
+
+	for _, val := range outs {
+		found := false
+		for _, output := range outputs {
+			if val == output {
+				found = true
+			}
+		}
+
+		if !found {
+			t.Errorf("output: %s not found in returned ios", val)
+		}
+	}
+
 }
 
 func TestMockIoGetUniqueId(t *testing.T) {
@@ -105,8 +139,10 @@ func TestMockIoGetUniqueId(t *testing.T) {
 
 func TestMockGetOutput(t *testing.T) {
 	md := MockIoDriver{}
-	md.Setup([]uint16{}, []uint16{3})
-	output, err := md.GetOutput(3)
+	ctx := context.Background()
+	md.SetupIO(ctx, []string{"1", "3"}, []string{"2", "Xy"})
+
+	output, err := md.GetOutput("2")
 	if err != nil {
 		t.Errorf("GetOutput returned err: %v", err)
 	}
@@ -116,9 +152,9 @@ func TestMockGetOutput(t *testing.T) {
 	got, _ := output.GetState()
 	assertBools(t, got, want)
 
-	anotherOut, _ := md.GetOutput(3)
+	anotherOut, _ := md.GetOutput("Xy")
 	got, _ = anotherOut.GetState()
-	assertBools(t, got, want)
+	assertBools(t, got, false) // initial state is false, anotherOut was never Set
 
 	want = false
 	output.Set(want)

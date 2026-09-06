@@ -1,3 +1,10 @@
+// OUTDATED: MotionSensor has not been updated to the current device architecture and is not wired into SwKit.
+// To bring it up to date it needs:
+//   - Constructor injection (NewMotionSensor(...) taking a drivers.DigitalInput) instead of Init(driver)
+//   - InitHk() *accessory.A instead of GetHk()
+//   - Sync(force bool) error signature (currently missing the force parameter)
+//   - Registration in SwKit.Setup(), getHkThings(), getDevices(), and a state-provider builder
+//   - A config struct (MotionSensorConfig) and a MotionSensors []MotionSensorConfig field on SwKit
 package swkit
 
 import (
@@ -16,7 +23,7 @@ type MotionSensor struct {
 	Name           string
 	State          bool
 	DriverName     string
-	InPin          uint16
+	IoName         string
 	DisableHomekit bool
 
 	input       drivers.DigitalInput
@@ -37,7 +44,7 @@ func (ms *MotionSensor) GetUniqueId() uint64 {
 }
 
 func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
-	if !strings.EqualFold(driver.NameId(), ms.DriverName) {
+	if !strings.EqualFold(driver.String(), ms.DriverName) {
 		return fmt.Errorf("Init failed, mismatched or incorrect driver")
 	}
 
@@ -48,7 +55,7 @@ func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
 	var err error
 
 	ms.driver = driver
-	ms.input, err = driver.GetInput(ms.InPin)
+	ms.input, err = driver.GetDigitalInput(ms.IoName)
 	if err != nil {
 		return errors.Wrap(err, "Init failed on getting input")
 	}
@@ -64,7 +71,7 @@ func (ms *MotionSensor) Init(driver drivers.IoDriver) error {
 
 	info := accessory.Info{
 		Name:         ms.Name,
-		SerialNumber: fmt.Sprintf("motion_sensor:%s:%02d", ms.DriverName, ms.InPin),
+		SerialNumber: fmt.Sprintf("motion_sensor:%s:%s", ms.DriverName, ms.IoName),
 	}
 
 	ms.hkAccessory = accessory.New(info, accessory.TypeSensor)

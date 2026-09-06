@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"time"
 
+	"github.com/charmbracelet/log"
+
 	"github.com/hubertat/swkit"
 	"github.com/hubertat/swkit/drivers"
+	"github.com/hubertat/swkit/logging"
 )
 
 var (
@@ -18,64 +20,43 @@ var (
 func main() {
 	var err error
 
-	log.Println("swkit started")
-	log.Println("mock instance for testing puproses, should work on MacOs")
+	logging.Init(logging.Config{
+		Writer:            os.Stderr,
+		Level:             log.DebugLevel,
+		BroadcastRingSize: logging.DefaultRingSize,
+	})
+	loggerFactory := logging.NewFactory(nil)
+	logger := loggerFactory.Logger(logging.PrefixMock)
 
-	syncDuration := 250 * time.Millisecond
-	log.Println("syncDuration is ", syncDuration)
-	sensorsSyncDuration := 2 * time.Minute
-	log.Println("sensorSyncDuration is ", sensorsSyncDuration)
+	logger.Info("swkit started")
+	logger.Info("mock instance for testing purposes, should work on MacOS")
 
-	sk := &swkit.SwKit{}
+	ctx := context.Background()
 
-	sk.HkPin = "88008800"
+	sk := &swkit.SwKit{
+		HkPin: "88008800",
+		Lights: []swkit.LightConfig{
+			{Name: "mock light", DigitalOutName: "mock_driver|d_out|1"},
+		},
+		Outlets: []swkit.OutletConfig{
+			{Name: "fake outlet", DigitalOutName: "mock_driver|d_out|2"},
+		},
+		FakeDriver: &drivers.MockIoDriver{},
+	}
 
-	sk.Lights = append(sk.Lights, &swkit.Light{Name: "fake light", DriverName: "mock_driver", OutPin: 1})
-	sk.Outlets = append(sk.Outlets, &swkit.Outlet{Name: "fake outlet", DriverName: "mock_driver", OutPin: 2})
-	sk.FakeDriver = &drivers.MockIoDriver{}
-
-	log.Println("will init swkit drivers...")
-	err = sk.InitDrivers()
+	logger.Info("will setup swkit...")
+	err = sk.Setup(ctx, logger)
+	if err != nil {
+		logger.Fatal("failed to setup swkit", "err", err)
+	}
 	defer sk.Close()
-	if err != nil {
-		panic(err)
-	}
-	log.Println("will init swkit IOs...")
-	err = sk.InitIos()
-	if err != nil {
-		panic(err)
-	}
-	log.Println("will init swkit sensors...")
-	err = sk.InitSensors()
-	if err != nil {
-		panic(err)
-	}
-
-	log.Printf("drivers OK!\nwill try to MatchControllers:\n")
-	err = sk.MatchControllers()
-	if err != nil {
-		log.Printf("Matching Controllers returned error: %v\n we will proceed...", err)
-	} else {
-		log.Println("MatchControllers OK!")
-	}
-
-	log.Println("trying to match thermostats:")
-	err = sk.MatchSensors()
-	if err != nil {
-		log.Println(err)
-	} else {
-		log.Printf("\tOK\n")
-	}
 
 	sk.FakeDriver.MonitorStateChanges(os.Stdout)
 
-	sk.PrintIoStatus(os.Stdout)
-
-	log.Println("starting mock with HomeKit service")
-
-	go sk.StartTicker(syncDuration, sensorsSyncDuration)
-
 	sk.HkDirectory = "./mock_homekit"
-	log.Fatal(sk.StartHomeKit(context.Background(), "mock: "+Version))
 
+	logger.Info("starting mock with HomeKit service")
+	go sk.StartTicker(ctx, 250*time.Millisecond, 10)
+
+	logger.Fatal(sk.StartHomeKit(ctx, "mock: "+Version))
 }
