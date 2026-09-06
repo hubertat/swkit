@@ -30,6 +30,11 @@ type ChatResponseMsg struct {
 
 // ChatView is the chat UI component
 type ChatView struct {
+	// ctx bounds outgoing agent.Chat requests to the model's lifetime, so an
+	// SSH disconnect (or any other session teardown) cancels an in-flight
+	// request instead of leaving it, and the command goroutine reading its
+	// channels, stuck until the request finishes on its own.
+	ctx        context.Context
 	agent      *agent.Agent
 	messages   []ChatMessage
 	input      textinput.Model
@@ -44,8 +49,12 @@ type ChatView struct {
 	mdRenderer *glamour.TermRenderer
 }
 
-// NewChatView creates a new chat view
-func NewChatView(ag *agent.Agent, theme Theme) ChatView {
+// NewChatView creates a new chat view. ctx bounds the lifetime of requests
+// sent to the agent (a nil ctx behaves as context.Background).
+func NewChatView(ctx context.Context, ag *agent.Agent, theme Theme) ChatView {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ti := textinput.New()
 	ti.Placeholder = "Type a message..."
 	ti.CharLimit = 500
@@ -61,6 +70,7 @@ func NewChatView(ag *agent.Agent, theme Theme) ChatView {
 	)
 
 	cv := ChatView{
+		ctx:        ctx,
 		agent:      ag,
 		messages:   make([]ChatMessage, 0),
 		input:      ti,
@@ -232,15 +242,16 @@ func (c ChatView) Update(msg tea.Msg) (ChatView, tea.Cmd) {
 
 // sendMessage sends a message to the agent
 func (c *ChatView) sendMessage(text string) tea.Cmd {
+	ctx := c.ctx
+	agentRef := c.agent
 	return func() tea.Msg {
-		if c.agent == nil {
+		if agentRef == nil {
 			return ChatResponseMsg{
 				Error: fmt.Errorf("agent not configured (ANTHROPIC_API_KEY not set)"),
 			}
 		}
 
-		ctx := context.Background()
-		textCh, errCh := c.agent.Chat(ctx, text)
+		textCh, errCh := agentRef.Chat(ctx, text)
 
 		// Read response
 		var response strings.Builder

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"sync"
@@ -12,6 +13,12 @@ import (
 	"github.com/hubertat/swkit/app"
 	"github.com/hubertat/swkit/drivers"
 )
+
+// maxIoNamesFileSize caps the size of a file LoadIoNames will read. Import is
+// reachable over SSH via the TUI's IO-name import prompt, so the read must
+// reject huge or endlessly-growing input rather than exhaust memory; 1 MB is
+// generously large for a names file (JSON records of driver/type/index/name).
+const maxIoNamesFileSize = 1 << 20 // 1 MB
 
 // SwKitProvider implements app.StateProvider for SwKit
 type SwKitProvider struct {
@@ -64,11 +71,41 @@ func (p *SwKitProvider) GetIoNames() map[string]string {
 }
 
 // LoadIoNames reads a JSON file of named IO points and populates the names map.
+// Only regular files up to maxIoNamesFileSize are accepted: this rejects
+// FIFOs and other special files that could block the read forever, and bounds
+// memory use even if the file grows between the stat and the read.
 func (p *SwKitProvider) LoadIoNames(path string) error {
-	data, err := os.ReadFile(path)
+	// Stat the path (not an opened handle) before opening it: opening a FIFO
+	// for read blocks until a writer connects, so the regular-file check must
+	// happen first or this call inherits exactly the hang it's meant to
+	// reject. There is a narrow TOCTOU window if path is replaced with a
+	// special file between this stat and the Open below; that is accepted
+	// (no sandboxing/allowlist is in scope here), same as any other stat-then-open.
+	info, err := os.Stat(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("stat io names file %q: %w", path, err)
 	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("io names file %q is not a regular file (mode %s)", path, info.Mode())
+	}
+	if info.Size() > maxIoNamesFileSize {
+		return fmt.Errorf("io names file %q is %d bytes, exceeds %d byte limit", path, info.Size(), maxIoNamesFileSize)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open io names file %q: %w", path, err)
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxIoNamesFileSize+1))
+	if err != nil {
+		return fmt.Errorf("read io names file %q: %w", path, err)
+	}
+	if len(data) > maxIoNamesFileSize {
+		return fmt.Errorf("io names file %q exceeds %d byte limit", path, maxIoNamesFileSize)
+	}
+
 	type entry struct {
 		Driver string `json:"driver"`
 		Type   string `json:"type"`
@@ -77,7 +114,7 @@ func (p *SwKitProvider) LoadIoNames(path string) error {
 	}
 	var entries []entry
 	if err := json.Unmarshal(data, &entries); err != nil {
-		return err
+		return fmt.Errorf("parse io names file %q: %w", path, err)
 	}
 	p.namesMu.Lock()
 	defer p.namesMu.Unlock()

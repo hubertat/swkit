@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"context"
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,53 +18,105 @@ type LogLineMsg struct {
 }
 
 // LogsView displays live log output in a scrollable viewport.
+//
+// The broadcaster subscription is opened lazily (Start) only while the Logs
+// tab is active, and closed (Stop) when the user navigates away, so idle
+// sessions parked on another tab neither consume nor render every log line
+// the process emits. ch/unsub are guarded by mu because they are touched both
+// from the Bubble Tea update goroutine (tab switches, WaitForLogLine) and
+// from the ctx-watcher goroutine started in NewModelFromOptions, which calls
+// Close on session teardown.
 type LogsView struct {
-	viewport    viewport.Model
-	lines       []string
+	mu          sync.Mutex
 	broadcaster *logging.Broadcaster
 	unsub       func()
 	ch          <-chan []byte
-	theme       Theme
-	ready       bool
-	autoScroll  bool
-	width       int
-	height      int
+	// ctx bounds the session; subCtx bounds the current subscription and is
+	// cancelled by Close/Stop. Subscriber channels are never closed by unsub
+	// (the broadcaster just drops the map entry), so WaitForLogLine must also
+	// select on a context — otherwise a command left in flight across a
+	// Stop/Close blocks on that channel receive forever. It selects on subCtx
+	// rather than ctx so leaving the Logs tab releases the waiting goroutine
+	// (and the unsubscribed channel's buffered replay lines) immediately,
+	// instead of accumulating one orphan per tab visit until the session ends.
+	ctx       context.Context
+	subCtx    context.Context
+	subCancel context.CancelFunc
+
+	viewport   viewport.Model
+	lines      []string
+	theme      Theme
+	ready      bool
+	autoScroll bool
+	width      int
+	height     int
 }
 
 // NewLogsView creates a new logs view. If bc is nil, logs are unavailable.
-func NewLogsView(bc *logging.Broadcaster, theme Theme) *LogsView {
+// It does not subscribe to the broadcaster; call Start when the Logs tab
+// becomes active. ctx bounds the view's lifetime (a nil ctx behaves as
+// context.Background, i.e. WaitForLogLine only returns when a line arrives).
+func NewLogsView(ctx context.Context, bc *logging.Broadcaster, theme Theme) *LogsView {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
 
-	lv := &LogsView{
+	return &LogsView{
 		viewport:    vp,
 		lines:       make([]string, 0, maxLogLines),
 		broadcaster: bc,
 		theme:       theme,
 		autoScroll:  true,
+		ctx:         ctx,
 	}
-
-	if bc != nil {
-		ch, unsub := bc.Subscribe(logging.FormatANSI)
-		lv.ch = ch
-		lv.unsub = unsub
-	}
-
-	return lv
 }
 
-// WaitForLogLine returns a tea.Cmd that blocks until a log line arrives.
+// Start subscribes to the broadcaster if not already subscribed, and returns
+// a command that waits for the next log line. Safe to call repeatedly (e.g.
+// every time the Logs tab is entered): if already subscribed it just returns
+// a fresh wait command. The broadcaster replays its ring buffer to new
+// subscribers, so re-entering the tab after Stop still shows recent history.
+func (lv *LogsView) Start() tea.Cmd {
+	lv.mu.Lock()
+	if lv.broadcaster != nil && lv.ch == nil {
+		ch, unsub := lv.broadcaster.Subscribe(logging.FormatANSI)
+		lv.ch = ch
+		lv.unsub = unsub
+		lv.subCtx, lv.subCancel = context.WithCancel(lv.ctx)
+	}
+	lv.mu.Unlock()
+	return lv.WaitForLogLine()
+}
+
+// Stop unsubscribes from the broadcaster. It is equivalent to Close, named
+// for the Start/Stop pairing used when the Logs tab loses focus; a later
+// Start resubscribes (with ring-buffer replay).
+func (lv *LogsView) Stop() {
+	lv.Close()
+}
+
+// WaitForLogLine returns a tea.Cmd that blocks until a log line arrives, or
+// nil if there is no active subscription.
 func (lv *LogsView) WaitForLogLine() tea.Cmd {
-	if lv.ch == nil {
+	lv.mu.Lock()
+	ch := lv.ch
+	ctx := lv.subCtx
+	lv.mu.Unlock()
+	if ch == nil || ctx == nil {
 		return nil
 	}
-	ch := lv.ch
 	return func() tea.Msg {
-		line, ok := <-ch
-		if !ok {
+		select {
+		case line, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			return LogLineMsg{Line: line}
+		case <-ctx.Done():
 			return nil
 		}
-		return LogLineMsg{Line: line}
 	}
 }
 
@@ -110,14 +164,29 @@ func (lv *LogsView) ClearLines() {
 	lv.updateContent()
 }
 
-// Update handles a log line message and returns a command to wait for the next one.
+// Update handles a log line message, draining any additional lines already
+// buffered in the channel (non-blocking, bounded to the ring size) so a burst
+// of log activity costs one viewport rebuild and one repaint instead of one
+// per line. Returns a command to wait for the next line.
 func (lv *LogsView) Update(msg LogLineMsg) tea.Cmd {
-	// Trim trailing newline for display.
-	line := strings.TrimRight(string(msg.Line), "\n")
-	lv.lines = append(lv.lines, line)
-	if len(lv.lines) > maxLogLines {
-		lv.lines = lv.lines[len(lv.lines)-maxLogLines:]
+	lv.mu.Lock()
+	ch := lv.ch
+	lv.mu.Unlock()
+
+	lv.appendLine(msg.Line)
+	for i := 0; i < logging.DefaultRingSize && ch != nil; i++ {
+		select {
+		case line, ok := <-ch:
+			if !ok {
+				ch = nil
+				break
+			}
+			lv.appendLine(line)
+		default:
+			ch = nil
+		}
 	}
+
 	lv.updateContent()
 	if lv.autoScroll {
 		lv.viewport.GotoBottom()
@@ -125,8 +194,19 @@ func (lv *LogsView) Update(msg LogLineMsg) tea.Cmd {
 	return lv.WaitForLogLine()
 }
 
+// appendLine trims the trailing newline and appends a line to the buffer,
+// trimming the buffer to maxLogLines. It does not refresh the viewport
+// content — callers batch that after appending one or more lines.
+func (lv *LogsView) appendLine(raw []byte) {
+	line := strings.TrimRight(string(raw), "\n")
+	lv.lines = append(lv.lines, line)
+	if len(lv.lines) > maxLogLines {
+		lv.lines = lv.lines[len(lv.lines)-maxLogLines:]
+	}
+}
+
 // View renders the logs view.
-func (lv LogsView) View() string {
+func (lv *LogsView) View() string {
 	if lv.broadcaster == nil {
 		return lv.theme.Muted.Render("Log broadcasting not available")
 	}
@@ -145,11 +225,25 @@ func (lv LogsView) View() string {
 	return box + "\n" + status
 }
 
-// Close unsubscribes from the broadcaster.
+// Close unsubscribes from the broadcaster. Safe to call repeatedly and
+// concurrently (e.g. from both an explicit quit and the ctx-watcher
+// goroutine racing to tear the session down).
 func (lv *LogsView) Close() {
-	if lv.unsub != nil {
-		lv.unsub()
-		lv.unsub = nil
+	lv.mu.Lock()
+	unsub := lv.unsub
+	cancel := lv.subCancel
+	lv.unsub = nil
+	lv.subCancel = nil
+	lv.subCtx = nil
+	lv.ch = nil
+	lv.mu.Unlock()
+	if unsub != nil {
+		unsub()
+	}
+	// Release any WaitForLogLine command still parked on the now-unsubscribed
+	// channel, which would otherwise never receive again.
+	if cancel != nil {
+		cancel()
 	}
 }
 

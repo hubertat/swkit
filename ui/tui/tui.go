@@ -150,9 +150,43 @@ func NewModelWithRendererAndAgent(provider app.StateProvider, renderer *lipgloss
 	return NewModelWithOptions(provider, nil, ag, renderer, bc)
 }
 
+// Options carries all optional dependencies for a Model.
+type Options struct {
+	Provider       app.StateProvider
+	ConfigProvider app.ConfigProvider
+	Agent          *agent.Agent
+	Renderer       *lipgloss.Renderer
+	Broadcaster    *logging.Broadcaster
+	// Ctx bounds the model lifetime (e.g. an SSH session context). All
+	// background work started by the model is tied to it, so cancelling Ctx
+	// tears the session down. Nil means context.Background().
+	Ctx context.Context
+}
+
 // NewModelWithOptions creates a new TUI model with all optional dependencies.
 func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigProvider, ag *agent.Agent, renderer *lipgloss.Renderer, bc *logging.Broadcaster) Model {
-	ctx, cancel := context.WithCancel(context.Background())
+	return NewModelFromOptions(Options{
+		Provider:       provider,
+		ConfigProvider: configProvider,
+		Agent:          ag,
+		Renderer:       renderer,
+		Broadcaster:    bc,
+	})
+}
+
+// NewModelFromOptions creates a new TUI model from opts.
+func NewModelFromOptions(opts Options) Model {
+	provider := opts.Provider
+	configProvider := opts.ConfigProvider
+	ag := opts.Agent
+	renderer := opts.Renderer
+	bc := opts.Broadcaster
+
+	parent := opts.Ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
 	var theme Theme
 	if renderer != nil {
 		theme = ThemeWithRenderer(renderer)
@@ -174,35 +208,100 @@ func NewModelWithOptions(provider app.StateProvider, configProvider app.ConfigPr
 		ctx:            ctx,
 		cancel:         cancel,
 		agent:          ag,
-		chat:           NewChatView(ag, theme),
-		logs:           NewLogsView(bc, theme),
+		chat:           NewChatView(ctx, ag, theme),
+		logs:           NewLogsView(ctx, bc, theme),
 		configEditor:   NewConfigEditor(configProvider, theme),
 	}
 	if man, ok := provider.(app.IoNamesManager); ok {
 		m.ioNamesMan = man
 	}
 	m.stateCh = provider.Subscribe(ctx, 500*time.Millisecond)
+
+	// Disconnects, panics, and server shutdown all kill the Bubble Tea
+	// program without running any Update branch, so the explicit-quit key
+	// handlers are not a reliable place to release resources. The derived
+	// ctx is: it is cancelled on every teardown path (the caller cancels the
+	// parent, or Model.Close cancels it directly). Release the log
+	// subscription here so an abandoned session doesn't keep every future
+	// log line queued for it forever; the state subscription already
+	// selects on this same ctx.
+	logsView := m.logs
+	go func() {
+		<-ctx.Done()
+		logsView.Close()
+	}()
+
 	return m
 }
 
-// Init initializes the model
+// Init initializes the model. It does not subscribe to logs — the Logs tab
+// does that lazily via LogsView.Start when the user actually views it.
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.waitForNextState()}
-	if cmd := m.logs.WaitForLogLine(); cmd != nil {
-		cmds = append(cmds, cmd)
-	}
-	return tea.Batch(cmds...)
+	return m.waitForNextState()
 }
 
-// waitForNextState returns a command that blocks until the next state arrives on the shared channel.
+// waitForNextState returns a command that blocks until the next state arrives
+// on the shared channel, or the model's context is cancelled (session
+// teardown), so a killed program never leaves this goroutine parked forever.
 func (m Model) waitForNextState() tea.Cmd {
+	ctx := m.ctx
+	ch := m.stateCh
 	return func() tea.Msg {
-		state, ok := <-m.stateCh
-		if !ok {
+		select {
+		case state, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			return StateUpdateMsg{State: state}
+		case <-ctx.Done():
 			return nil
 		}
-		return StateUpdateMsg{State: state}
 	}
+}
+
+// Close tears down the model's background work: it cancels the model's
+// context — stopping the state subscription and unblocking any goroutine
+// waiting on it — and releases the log broadcaster subscription. Idempotent
+// and safe to call concurrently (context.CancelFunc and LogsView.Close both
+// are), including racing with the ctx-watcher goroutine started above.
+func (m Model) Close() {
+	m.cancel()
+	m.logs.Close()
+}
+
+// nextTab returns the tab after the active one, wrapping around.
+func (m Model) nextTab() Tab {
+	return (m.activeTab + 1) % Tab(len(AllTabs()))
+}
+
+// prevTab returns the tab before the active one, wrapping around.
+func (m Model) prevTab() Tab {
+	if m.activeTab == 0 {
+		return Tab(len(AllTabs()) - 1)
+	}
+	return m.activeTab - 1
+}
+
+// setActiveTab switches to tab, resetting the list cursor, focusing chat when
+// entering it, and managing the log subscription lifecycle: leaving TabLogs
+// unsubscribes (so an idle session on another tab does no work for every log
+// line the process emits) and entering it subscribes, returning the command
+// that starts the wait for the next line. The broadcaster replays its ring
+// buffer to new subscribers, so re-entering Logs still shows recent history.
+func (m *Model) setActiveTab(tab Tab) tea.Cmd {
+	if m.activeTab == TabLogs && tab != TabLogs {
+		m.logs.Stop()
+	}
+	var cmd tea.Cmd
+	if tab == TabLogs && m.activeTab != TabLogs {
+		cmd = m.logs.Start()
+	}
+	m.activeTab = tab
+	m.cursor = 0
+	if tab == TabChat {
+		m.chat.Focus()
+	}
+	return cmd
 }
 
 // Update handles messages
@@ -214,6 +313,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ioExportMsg = ""
 		m.ioImporting = false
 		return m, nil
+
+	case ioImportResultMsg:
+		m.ioExportMsg = msg.message
+		return m, clearExportMsg()
 
 	case ConfigSaveMsg:
 		if msg.Error != nil {
@@ -239,8 +342,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if path == "" {
 					path = "io_names.json"
 				}
-				importMsg, cmd := m.doImportIoNames(path)
-				m.ioExportMsg = importMsg
+				cmd := m.doImportIoNames(path)
 				m.ioImporting = false
 				m.ioImportInput.Blur()
 				return m, cmd
@@ -318,25 +420,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Only capture tab switching and quit from config
 			switch {
 			case key.Matches(msg, m.keys.Tab):
-				m.activeTab = (m.activeTab + 1) % Tab(len(AllTabs()))
-				m.cursor = 0
-				if m.activeTab == TabChat {
-					m.chat.Focus()
-				}
-				return m, nil
+				return m, m.setActiveTab(m.nextTab())
 			case key.Matches(msg, m.keys.ShiftTab):
-				if m.activeTab == 0 {
-					m.activeTab = Tab(len(AllTabs()) - 1)
-				} else {
-					m.activeTab--
-				}
-				m.cursor = 0
-				if m.activeTab == TabChat {
-					m.chat.Focus()
-				}
-				return m, nil
+				return m, m.setActiveTab(m.prevTab())
 			case key.Matches(msg, m.keys.Quit):
-				m.cancel()
+				m.Close()
 				return m, tea.Quit
 			case key.Matches(msg, m.keys.Help):
 				m.showHelp = !m.showHelp
@@ -353,18 +441,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch {
 			case key.Matches(msg, m.keys.Tab):
 				m.chat.Blur()
-				m.activeTab = (m.activeTab + 1) % Tab(len(AllTabs()))
-				m.cursor = 0
-				return m, nil
+				return m, m.setActiveTab(m.nextTab())
 			case key.Matches(msg, m.keys.ShiftTab):
 				m.chat.Blur()
-				if m.activeTab == 0 {
-					m.activeTab = Tab(len(AllTabs()) - 1)
-				} else {
-					m.activeTab--
-				}
-				m.cursor = 0
-				return m, nil
+				return m, m.setActiveTab(m.prevTab())
 			case msg.String() == "esc":
 				m.chat.Blur()
 				return m, nil
@@ -380,27 +460,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activeTab == TabLogs {
 			switch {
 			case key.Matches(msg, m.keys.Quit):
-				m.logs.Close()
-				m.cancel()
+				m.Close()
 				return m, tea.Quit
 			case key.Matches(msg, m.keys.Tab):
-				m.activeTab = (m.activeTab + 1) % Tab(len(AllTabs()))
-				m.cursor = 0
-				if m.activeTab == TabChat {
-					m.chat.Focus()
-				}
-				return m, nil
+				return m, m.setActiveTab(m.nextTab())
 			case key.Matches(msg, m.keys.ShiftTab):
-				if m.activeTab == 0 {
-					m.activeTab = Tab(len(AllTabs()) - 1)
-				} else {
-					m.activeTab--
-				}
-				m.cursor = 0
-				if m.activeTab == TabChat {
-					m.chat.Focus()
-				}
-				return m, nil
+				return m, m.setActiveTab(m.prevTab())
 			case key.Matches(msg, m.keys.Up):
 				m.logs.ScrollUp(3)
 				return m, nil
@@ -428,29 +493,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch {
 		case key.Matches(msg, m.keys.Quit):
-			m.logs.Close()
-			m.cancel()
+			m.Close()
 			return m, tea.Quit
 
 		case key.Matches(msg, m.keys.Tab):
-			m.activeTab = (m.activeTab + 1) % Tab(len(AllTabs()))
-			m.cursor = 0
-			if m.activeTab == TabChat {
-				m.chat.Focus()
-			}
-			return m, nil
+			return m, m.setActiveTab(m.nextTab())
 
 		case key.Matches(msg, m.keys.ShiftTab):
-			if m.activeTab == 0 {
-				m.activeTab = Tab(len(AllTabs()) - 1)
-			} else {
-				m.activeTab--
-			}
-			m.cursor = 0
-			if m.activeTab == TabChat {
-				m.chat.Focus()
-			}
-			return m, nil
+			return m, m.setActiveTab(m.prevTab())
 
 		case key.Matches(msg, m.keys.Up):
 			if m.cursor > 0 {
@@ -487,8 +537,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, m.keys.Refresh):
-			m.state = m.provider.GetState()
-			return m, nil
+			return m, m.refreshState()
 
 		case key.Matches(msg, m.keys.Filter):
 			if m.activeTab == TabIoDebug {
@@ -625,16 +674,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case StateUpdateMsg:
-		m.detectIoStateChanges(msg.State.IoDebug)
-		m.configEditor.SetIoPoints(msg.State.IoDebug)
-		if m.ioNamesMan != nil {
-			m.configEditor.SetIoDisplayNames(m.ioNamesMan.GetIoNames())
-		} else {
-			m.configEditor.SetIoDisplayNames(m.ioNames)
-		}
-		m.configEditor.SetDeviceStates(msg.State.Devices)
-		m.state = msg.State
+		m.applyState(msg.State)
 		return m, m.waitForNextState()
+
+	case RefreshStateMsg:
+		// Manual refresh result (see refreshState). Unlike StateUpdateMsg this
+		// does not chain another waitForNextState — that wait is already
+		// pending on the long-lived subscription channel, and starting a
+		// second one here would race it for the same channel receive.
+		m.applyState(msg.State)
+		return m, nil
 
 	case ControlResultMsg:
 		// Control operation completed - state will update on next poll
@@ -643,6 +692,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// RefreshStateMsg carries the result of a manual state refresh triggered by
+// the Refresh key (see refreshState).
+type RefreshStateMsg struct {
+	State app.AppState
+}
+
+// applyState updates the model and dependent views from a freshly fetched
+// state snapshot, regardless of whether it arrived via the subscription
+// (StateUpdateMsg) or a manual refresh (RefreshStateMsg).
+func (m *Model) applyState(state app.AppState) {
+	m.detectIoStateChanges(state.IoDebug)
+	m.configEditor.SetIoPoints(state.IoDebug)
+	if m.ioNamesMan != nil {
+		m.configEditor.SetIoDisplayNames(m.ioNamesMan.GetIoNames())
+	} else {
+		m.configEditor.SetIoDisplayNames(m.ioNames)
+	}
+	m.configEditor.SetDeviceStates(state.Devices)
+	m.state = state
+}
+
+// refreshState returns a command that fetches a fresh state snapshot off the
+// Update goroutine. GetState holds the provider's read lock for the whole
+// snapshot and can call into slow or stuck drivers, so running it inline in
+// Update would freeze keyboard handling and rendering for the session.
+func (m Model) refreshState() tea.Cmd {
+	provider := m.provider
+	return func() tea.Msg {
+		return RefreshStateMsg{State: provider.GetState()}
+	}
 }
 
 // commitTimedPrompt sets the targeted device on for the entered number of
@@ -795,15 +876,28 @@ func (m Model) doExportIoNames() (string, tea.Cmd) {
 	return fmt.Sprintf("Exported %d names to %s", len(points), filename), clearExportMsg()
 }
 
-// doImportIoNames loads names from the given file into the manager.
-func (m Model) doImportIoNames(path string) (string, tea.Cmd) {
-	if m.ioNamesMan == nil {
-		return "Import not supported", clearExportMsg()
+// ioImportResultMsg carries the outcome of an asynchronous IO-name import
+// (see doImportIoNames).
+type ioImportResultMsg struct {
+	message string
+}
+
+// doImportIoNames returns a command that loads names from path into the
+// manager off the Update goroutine. LoadIoNames reads a file from disk (now
+// capped and regular-file-only, see SwKitProvider.LoadIoNames, but still a
+// blocking syscall) and must not run synchronously inside Update or it can
+// stall the whole session's event loop.
+func (m Model) doImportIoNames(path string) tea.Cmd {
+	man := m.ioNamesMan
+	return func() tea.Msg {
+		if man == nil {
+			return ioImportResultMsg{message: "Import not supported"}
+		}
+		if err := man.LoadIoNames(path); err != nil {
+			return ioImportResultMsg{message: "Import error: " + err.Error()}
+		}
+		return ioImportResultMsg{message: fmt.Sprintf("Imported names from %s", path)}
 	}
-	if err := m.ioNamesMan.LoadIoNames(path); err != nil {
-		return "Import error: " + err.Error(), clearExportMsg()
-	}
-	return fmt.Sprintf("Imported names from %s", path), clearExportMsg()
 }
 
 func clearExportMsg() tea.Cmd {
