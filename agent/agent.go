@@ -75,16 +75,54 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (<-chan string, <-
 			},
 		})
 
-		// Run agent loop until we get a final text response
+		// turnCtx bounds the whole turn (this call to a final text reply) to
+		// a.config.turnDeadline(), derived from the caller's ctx so that
+		// both session cancellation and the turn deadline surface as
+		// turnCtx.Done(), and so the deadline also bounds the requests and
+		// tool calls made inside the turn (they are called with turnCtx,
+		// not ctx, below).
+		turnCtx, cancel := context.WithTimeout(ctx, a.config.turnDeadline())
+		defer cancel()
+
+		// Run agent loop until we get a final text response, a bound is
+		// hit, or an error occurs.
+		iterations := 0
 		for {
+			// Both new bounds (like the pre-existing ctx.Done() check they
+			// replace) are enforced here, at the top of the loop, and
+			// nowhere else. At this point in the loop the history always
+			// ends either on a plain user message or on a complete
+			// assistant tool_use plus its tool_result blocks (appended
+			// together, at the bottom of the previous iteration) - never on
+			// an assistant tool_use alone. That means it is always valid to
+			// send as-is, so returning here can never leave the
+			// API-rejecting gap of a tool_use with no matching tool_result.
+			// The other early return below (sendRequest error) shares that
+			// same property: it fires before the assistant message for
+			// this iteration is appended. Nothing between an appendMessage
+			// of an assistant message and the matching appendMessage of its
+			// tool results may return early.
 			select {
-			case <-ctx.Done():
-				errCh <- ctx.Err()
+			case <-turnCtx.Done():
+				if ctx.Err() != nil {
+					// Session cancellation takes precedence in the
+					// reported cause even if the turn deadline expired at
+					// the same moment.
+					errCh <- ctx.Err()
+				} else {
+					errCh <- fmt.Errorf("agent turn exceeded deadline of %s", a.config.turnDeadline())
+				}
 				return
 			default:
 			}
 
-			resp, err := a.sendRequest(ctx)
+			iterations++
+			if iterations > a.config.maxToolIterations() {
+				errCh <- fmt.Errorf("agent turn exceeded max tool iterations (%d): assistant kept requesting tools", a.config.maxToolIterations())
+				return
+			}
+
+			resp, err := a.sendRequest(turnCtx)
 			if err != nil {
 				errCh <- fmt.Errorf("API error: %w", err)
 				return
@@ -121,7 +159,7 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (<-chan string, <-
 			}
 
 			// Execute tool calls
-			toolResults := a.executeTools(ctx, toolUses)
+			toolResults := a.executeTools(turnCtx, toolUses)
 
 			// Add tool results to history
 			a.appendMessage(anthropic.MessageParam{
