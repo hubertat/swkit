@@ -56,16 +56,19 @@ func (o *digitalOut) String() string {
 	return drivers.GetIoIdString(DriverName, drivers.IoTypeDigitalOutput, o.dev.name)
 }
 
-// SetOnStateUpdate registers the callback fired, outside the driver's locks,
-// whenever the ring's on state changes: from a poll (for example after an HTTP
-// /set/toggle on the device) or from an accepted command. One callback per
-// device; a later registration replaces the earlier one.
+// SetOnStateUpdate adds a callback fired, with no driver lock held, whenever
+// the ring's on state changes: from a poll (for example after an HTTP
+// /set/toggle on the device) or from an accepted command. Every registered
+// callback is kept, so several consumers of one ring all get updates.
 func (o *digitalOut) SetOnStateUpdate(f func(bool)) error {
 	if f == nil {
 		return errors.New("rpixel driver: onStateUpdate function cannot be nil")
 	}
 	o.d.mu.Lock()
-	o.dev.onStateUpdate = f
+	// Copy on write: notify iterates a snapshot outside the lock.
+	cbs := make([]func(bool), len(o.dev.onStateUpdates), len(o.dev.onStateUpdates)+1)
+	copy(cbs, o.dev.onStateUpdates)
+	o.dev.onStateUpdates = append(cbs, f)
 	o.d.mu.Unlock()
 	return nil
 }

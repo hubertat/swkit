@@ -421,10 +421,11 @@ func EncodeStatusRequest(reqId uint16) []byte {
 	return mustEncodeFrame(TypeStatusRequest, binary.BigEndian.AppendUint16(nil, reqId))
 }
 
-// ParseAck parses an R payload, which must be exactly 4 bytes.
+// ParseAck parses an R payload. Bytes after the known 4 are ignored, since
+// later revisions may append fields without changing the protocol version.
 func ParseAck(payload []byte) (Ack, error) {
-	if len(payload) != ackPayloadLen {
-		return Ack{}, fmt.Errorf("%w: R payload is %d bytes, want %d", ErrInvalidPayload, len(payload), ackPayloadLen)
+	if len(payload) < ackPayloadLen {
+		return Ack{}, fmt.Errorf("%w: R payload is %d bytes, want at least %d", ErrInvalidPayload, len(payload), ackPayloadLen)
 	}
 	return Ack{
 		ReqId:  binary.BigEndian.Uint16(payload),

@@ -239,10 +239,15 @@ func TestParseAck(t *testing.T) {
 	if a != (Ack{ReqId: 0x1234, Status: AckRejected, Detail: 12}) {
 		t.Fatalf("ack = %+v", a)
 	}
-	for _, n := range []int{0, 3, 5} {
+	for _, n := range []int{0, 3} {
 		if _, err := ParseAck(make([]byte, n)); !errors.Is(err, ErrInvalidPayload) {
 			t.Errorf("%d-byte R: err = %v, want ErrInvalidPayload", n, err)
 		}
+	}
+	// Appended fields are ignored.
+	longer, err := ParseAck(append(append([]byte(nil), f.Payload...), 0xde, 0xad))
+	if err != nil || longer != a {
+		t.Fatalf("R with trailing bytes: %+v, %v", longer, err)
 	}
 }
 

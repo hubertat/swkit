@@ -21,6 +21,7 @@ const DriverName = "rpixel"
 
 const (
 	defaultPollIntervalMs   = 2000
+	maxPollIntervalMs       = 3600000 // 1 h; keeps the Duration far from overflow
 	defaultBroadcastAddress = "255.255.255.255"
 	defaultFadeMs           = 500
 	defaultWipeMs           = 2400 // matches the firmware's own HTTP on/off wipe
@@ -68,7 +69,7 @@ func defaultTiming() *timing {
 // save round-trips exactly what the user wrote.
 type Driver struct {
 	Devices          []DeviceConfig
-	PollIntervalMs   uint   `json:",omitempty"` // default 2000
+	PollIntervalMs   uint   `json:",omitempty"` // default 2000, at most 3600000 (1 h)
 	BroadcastAddress string `json:",omitempty"` // default "255.255.255.255"; host or host:port, used only for DeviceId discovery
 
 	logger *log.Logger
@@ -98,9 +99,11 @@ type DeviceConfig struct {
 	// Name is the IO name: rpixel|d_out|<Name>. Required and unique. It may
 	// not contain ':' (reserved for a future ring-segment suffix) or '|'.
 	Name string
-	// Address is a host name, IP, or host:port (default port 8888), for
-	// example "rpxl-e6614103e7452d2f.local". Resolved with the system
-	// resolver, so .local names work where nss-mdns is installed.
+	// Address is an IPv4 address, host name, or either with ":port" (default
+	// port 8888). Prefer an IP address, or leave Address empty and use
+	// DeviceId discovery. A "rpxl-<id>.local" name only resolves in cgo builds
+	// on hosts with nss-mdns: the release builds (CGO_ENABLED=0) use Go's
+	// pure resolver, which does no mDNS.
 	Address string `json:",omitempty"`
 	// DeviceId is the optional 16 hex digit board ID. When set, every S must
 	// carry it. Required when Address is empty: the device is then found by
@@ -164,27 +167,29 @@ type device struct {
 	// request, but never together with Driver.mu.
 	cmdMu sync.Mutex
 
-	// notifyMu serialises on-state callbacks so they always end on the
-	// latest state; lastNotified is guarded by it.
-	notifyMu     sync.Mutex
-	notified     bool
-	lastNotified bool
+	// notifyMu guards the notification fields below; it is never held while
+	// a callback runs (see notify).
+	notifyMu      sync.Mutex
+	notifyRunning bool
+	notifyPending bool
+	notified      bool
+	lastNotified  bool
 
 	// Guarded by Driver.mu.
-	addr          *net.UDPAddr
-	lastResolve   time.Time
-	lastSeen      time.Time // last accepted S; zero when never seen
-	reportedId    *DeviceId
-	rejected      string // why the last S was rejected; empty when it was accepted
-	pollFailing   bool
-	disp          display
-	onColour      Colour // colour memory for "on"; zero means defaultOnColour
-	briMemory     uint8  // last non-zero brightness; zero means defaultBri
-	onChanged     time.Time
-	briChanged    time.Time
-	cmdGen        uint64 // bumped by every command
-	cmdInFlight   bool
-	onStateUpdate func(bool)
+	addr           *net.UDPAddr
+	lastResolve    time.Time
+	lastSeen       time.Time // last accepted S; zero when never seen
+	reportedId     *DeviceId
+	rejected       string // why the last S was rejected; empty when it was accepted
+	pollFailing    bool
+	disp           display
+	onColour       Colour // colour memory for "on"; zero means defaultOnColour
+	briMemory      uint8  // last non-zero brightness; zero means defaultBri
+	onChanged      time.Time
+	briChanged     time.Time
+	cmdGen         uint64 // bumped by every command
+	cmdInFlight    bool
+	onStateUpdates []func(bool)
 
 	dOut *digitalOut
 	aOut *analogOut
@@ -274,10 +279,16 @@ wait:
 
 // buildDevices validates the config and fills the immutable runtime fields.
 func (d *Driver) buildDevices() error {
+	if d.PollIntervalMs > maxPollIntervalMs {
+		return fmt.Errorf("rpixel driver: PollIntervalMs %d exceeds %d (1 h)", d.PollIntervalMs, maxPollIntervalMs)
+	}
 	d.pollInterval = time.Duration(d.PollIntervalMs) * time.Millisecond
 	if d.PollIntervalMs == 0 {
 		d.pollInterval = defaultPollIntervalMs * time.Millisecond
 	}
+	// Note: with the default 2 s poll this is 6 s, shorter than the ~15 s a
+	// ring can go quiet while it rejoins Wi-Fi, so HomeKit may briefly show a
+	// fault during a rejoin. Polling recovers it without intervention.
 	d.offlineAfter = max(3*d.pollInterval, d.timing.offlineMin)
 
 	needBroadcast := false
@@ -573,6 +584,9 @@ func (d *Driver) resolve(ctx context.Context, dev *device) (*net.UDPAddr, error)
 	}
 	if dev.addr == nil || !dev.addr.IP.Equal(found.IP) || dev.addr.Port != found.Port {
 		d.logger.Info("device address resolved", "device", dev.name, "address", found)
+		// A new address has not proven its DeviceId yet: commands are refused
+		// until an S from it verifies (see commandSerialised).
+		dev.reportedId = nil
 	}
 	dev.addr = found
 	return copyAddr(found), nil
@@ -676,8 +690,10 @@ func (d *Driver) applyStatus(dev *device, st Status, gen uint64) {
 }
 
 // applyDisplayLocked sets dev's settled state and updates the brightness and
-// colour memories. A mixed or zero colour leaves the colour memory alone, per
-// the spec's client guidance. Callers hold d.mu.
+// colour memories. The colour memory only learns from a display that is on
+// with one colour: a mixed display (per the spec's client guidance), the zero
+// colour, or a dark display (e.g. brightness 0) leaves it alone, so a colour
+// stored while off survives. Callers hold d.mu.
 func (d *Driver) applyDisplayLocked(dev *device, next display, now time.Time) {
 	if next.on != dev.disp.on {
 		dev.onChanged = now
@@ -689,26 +705,45 @@ func (d *Driver) applyDisplayLocked(dev *device, next display, now time.Time) {
 	if next.brightness != 0 {
 		dev.briMemory = next.brightness
 	}
-	if !next.mixed && !next.colour.IsZero() {
+	if next.on && !next.mixed && !next.colour.IsZero() {
 		dev.onColour = next.colour
 	}
 }
 
-// notify fires dev's on-state callback when the on state differs from the
-// last one reported. It runs outside d.mu, and notifyMu keeps concurrent
-// notifications ordered so the last callback always carries the latest state.
+// notify fires dev's on-state callbacks when the on state differs from the
+// last one reported. Callbacks run with no driver mutex held, so they may call
+// back into the driver (e.g. Set). Only one caller at a time delivers: a
+// notify arriving while another delivers (including one made from inside a
+// callback) just flags a re-check and returns, and the delivering caller loops
+// until the state is settled. Delivery is therefore ordered and always ends on
+// the latest state.
 func (d *Driver) notify(dev *device) {
 	dev.notifyMu.Lock()
-	defer dev.notifyMu.Unlock()
-
-	d.mu.RLock()
-	on, cb := dev.disp.on, dev.onStateUpdate
-	d.mu.RUnlock()
-	if cb == nil || (dev.notified && dev.lastNotified == on) {
+	dev.notifyPending = true
+	if dev.notifyRunning {
+		dev.notifyMu.Unlock()
 		return
 	}
-	dev.notified, dev.lastNotified = true, on
-	cb(on)
+	dev.notifyRunning = true
+	for dev.notifyPending {
+		dev.notifyPending = false
+
+		d.mu.RLock()
+		on, cbs := dev.disp.on, dev.onStateUpdates
+		d.mu.RUnlock()
+		if len(cbs) == 0 || (dev.notified && dev.lastNotified == on) {
+			continue
+		}
+		dev.notified, dev.lastNotified = true, on
+
+		dev.notifyMu.Unlock()
+		for _, cb := range cbs {
+			cb(on)
+		}
+		dev.notifyMu.Lock()
+	}
+	dev.notifyRunning = false
+	dev.notifyMu.Unlock()
 }
 
 // ---- commands ----
@@ -766,6 +801,10 @@ func (dev *device) onOff(on bool, c Colour, bri uint8) Animation {
 	return a
 }
 
+// Every A stage carries an explicit brightness: unlike P, A has no "keep the
+// current brightness" value. So off, colour and on commands send the cached
+// brightness, and a brightness changed out of band since the last poll is
+// overwritten by the next command.
 func (d *Driver) setOn(dev *device, on bool) error {
 	return d.command(dev, "set on", func() (*Animation, display) {
 		// Off keeps the brightness and only fades the colour to zero, so an
@@ -801,10 +840,12 @@ func (d *Driver) setColour(dev *device, c Colour) error {
 			a := dev.fade(Colour{}, bri)
 			return &a, display{on: false, brightness: bri, colour: Colour{}}
 		}
-		dev.onColour = c
 		if !dev.disp.on {
-			return nil, dev.disp // only remembered, shown by the next "on"
+			// Only remembered, shown by the next "on"; nothing to send.
+			dev.onColour = c
+			return nil, dev.disp
 		}
+		// The memory learns c from the "on" display once it is accepted.
 		a := dev.fade(c, bri)
 		return &a, display{on: true, brightness: bri, colour: c}
 	})

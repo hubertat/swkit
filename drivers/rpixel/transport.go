@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"sync"
 	"time"
@@ -59,6 +60,9 @@ func newTransport(logger *log.Logger, retryWaits []time.Duration) (*transport, e
 		return nil, err
 	}
 	t := &transport{
+		// A random start keeps a restarted driver (same host, possibly the
+		// same port) from reusing IDs the device still remembers.
+		nextId:      uint16(rand.Uint32()),
 		conn:        conn,
 		logger:      logger,
 		retryWaits:  retryWaits,

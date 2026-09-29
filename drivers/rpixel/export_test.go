@@ -2,6 +2,7 @@ package rpixel
 
 import (
 	"context"
+	"net"
 	"time"
 )
 
@@ -49,4 +50,9 @@ func SetCmdInFlight(d *Driver, name string, inFlight bool) {
 // ApplyStatus applies st to device name as the reply to a G sent at gen.
 func ApplyStatus(d *Driver, name string, st Status, gen uint64) {
 	d.applyStatus(d.byName[name], st, gen)
+}
+
+// NoteSeen records addr as the source of an S from id, as the reader would.
+func NoteSeen(d *Driver, id DeviceId, addr *net.UDPAddr) {
+	d.tr.noteSeen(id, copyAddr(addr))
 }

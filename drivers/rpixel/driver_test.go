@@ -492,11 +492,17 @@ func TestRetryAfterLostPacket(t *testing.T) {
 		t.Fatalf("device ran %d animations, want 1", n)
 	}
 	wantAnim(t, fake, fade(500, off, 60))
+	// The retry is the identical frame, same request ID included, so a
+	// device that did get the first copy replays its result.
+	dropped := fake.Dropped()
+	if len(dropped) != 1 || string(dropped[0]) != string(lastAnim(t, fake).Raw) {
+		t.Fatalf("retry was not byte-identical:\n lost %x\nretry %x", dropped, lastAnim(t, fake).Raw)
+	}
 }
 
 func TestSilentDevice(t *testing.T) {
 	fake := newFake(t)
-	_, v := startOne(t, fake, 50, nil)
+	d, v := startOne(t, fake, 50, nil)
 
 	fake.SetSilent(true)
 	begin := time.Now()
@@ -510,7 +516,11 @@ func TestSilentDevice(t *testing.T) {
 	if elapsed := time.Since(begin); elapsed > 2*time.Second {
 		t.Fatalf("Set took %s to fail", elapsed)
 	}
-	// Nothing was confirmed, so the cached state is unchanged.
+	// Nothing was confirmed, so the cached state is unchanged. The debug
+	// snapshot shows it regardless of health.
+	if pt := d.GetIoDebugSnapshot().Points[0]; !pt.State {
+		t.Fatal("a failed Set(false) changed the cached state")
+	}
 	eventually(t, 3*time.Second, func() bool { return !v.dOut.IsHealthy() }, "device to go unhealthy")
 	if _, err := v.dOut.GetState(); err == nil {
 		t.Fatal("GetState on an offline device should fail")
@@ -835,6 +845,7 @@ func TestSetupConfigErrors(t *testing.T) {
 		{"bad effect", []rpixel.DeviceConfig{{Name: "a", Address: addr, Effect: "sparkle"}}, "", nil, "unknown effect"},
 		{"bad port", []rpixel.DeviceConfig{{Name: "a", Address: "host:99999"}}, "", nil, "invalid port"},
 		{"huge transition", []rpixel.DeviceConfig{{Name: "a", Address: addr, TransitionMs: 1 << 31}}, "", nil, "TransitionMs"},
+		{"huge poll interval", []rpixel.DeviceConfig{{Name: "a", Address: addr}}, "poll", nil, "PollIntervalMs"},
 		{"bad broadcast", []rpixel.DeviceConfig{{Name: "a", DeviceId: "0011223344556677"}}, "my-lan", nil, "IPv4"},
 		{"unknown device io", []rpixel.DeviceConfig{{Name: "a", Address: addr}}, "", []string{"rpixel|d_out|b"}, "unknown device"},
 		{"input io", []rpixel.DeviceConfig{{Name: "a", Address: addr}}, "", []string{"rpixel|d_in|a"}, "unsupported io type"},
@@ -845,6 +856,9 @@ func TestSetupConfigErrors(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			d := &rpixel.Driver{Devices: c.devices, BroadcastAddress: c.bcast}
+			if c.bcast == "poll" {
+				d.BroadcastAddress, d.PollIntervalMs = "", 3600001
+			}
 			err := rpixel.SetupForTest(d, c.ios)
 			defer d.Close()
 			if err == nil {
@@ -961,5 +975,133 @@ func TestDebugSnapshotStatusAndDetails(t *testing.T) {
 	}
 	if err := d.SetAnalogOutput(-1, 1); err == nil {
 		t.Error("SetAnalogOutput out of range should fail")
+	}
+}
+
+// TestColourStoredWhileDarkSurvives: a colour stored while the ring is dark
+// at brightness 0 must not be overwritten by the dark display's colour.
+func TestColourStoredWhileDarkSurvives(t *testing.T) {
+	fake := newFake(t)
+	_, v := startOne(t, fake, idleMs, nil)
+	red := rpixel.Colour{R: 255}
+
+	if err := v.aOut.Set(0); err != nil {
+		t.Fatalf("aOut.Set(0): %v", err)
+	}
+	if err := v.rgbw.Set(red.R, red.G, red.B, red.W); err != nil {
+		t.Fatalf("rgbw.Set(red): %v", err)
+	}
+	if err := v.dOut.Set(true); err != nil {
+		t.Fatalf("Set(true): %v", err)
+	}
+	wantAnim(t, fake, fade(500, red, 60))
+}
+
+// TestFailedColourNotRemembered: a colour the device never accepted must not
+// become the "on" colour.
+func TestFailedColourNotRemembered(t *testing.T) {
+	fake := newFake(t)
+	_, v := startOne(t, fake, idleMs, nil)
+
+	fake.SetSilent(true)
+	if err := v.rgbw.Set(9, 9, 9, 0); err == nil {
+		t.Fatal("colour on a silent device succeeded")
+	}
+	fake.SetSilent(false)
+	if _, _, c := mustState(t, v); c != white {
+		t.Fatalf("colour after a failed set = %+v, want white", c)
+	}
+}
+
+func TestMultipleCallbacksAllFire(t *testing.T) {
+	fake := newFake(t)
+	_, v := startOne(t, fake, idleMs, nil)
+	a, b := make(chan bool, 4), make(chan bool, 4)
+	_ = v.dOut.SetOnStateUpdate(func(on bool) { a <- on })
+	_ = v.dOut.SetOnStateUpdate(func(on bool) { b <- on })
+
+	if err := v.dOut.Set(false); err != nil {
+		t.Fatalf("Set(false): %v", err)
+	}
+	for name, ch := range map[string]chan bool{"first": a, "second": b} {
+		select {
+		case on := <-ch:
+			if on {
+				t.Fatalf("%s callback reported on", name)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s callback did not fire", name)
+		}
+	}
+}
+
+// TestCallbackMayCallBackIntoDriver: callbacks run with no driver mutex held,
+// so one may issue a command synchronously; its own change is delivered too.
+func TestCallbackMayCallBackIntoDriver(t *testing.T) {
+	fake := newFake(t)
+	_, v := startOne(t, fake, idleMs, nil)
+	var mu sync.Mutex
+	var seen []bool
+	var once sync.Once
+	_ = v.dOut.SetOnStateUpdate(func(on bool) {
+		mu.Lock()
+		seen = append(seen, on)
+		mu.Unlock()
+		if !on {
+			once.Do(func() {
+				if err := v.dOut.Set(true); err != nil {
+					t.Errorf("Set(true) from a callback: %v", err)
+				}
+			})
+		}
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- v.dOut.Set(false) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Set(false): %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("deadlock: Set did not return while its callback re-entered the driver")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(seen, []bool{false, true}) {
+		t.Fatalf("callbacks saw %v, want [false true]", seen)
+	}
+}
+
+// TestAddressChangeNeedsReverification: when discovery moves a DeviceId
+// device to a new address, commands are refused until that address verifies.
+func TestAddressChangeNeedsReverification(t *testing.T) {
+	first := newFake(t)
+	second := newFake(t)
+	second.SetSilent(true) // never verifies
+	d := &rpixel.Driver{
+		Devices:          []rpixel.DeviceConfig{{Name: "ring", DeviceId: rpixeltest.DefaultDeviceId.String()}},
+		PollIntervalMs:   50,
+		BroadcastAddress: first.Address(),
+	}
+	start(t, d)
+	v := viewsOf(t, d, "ring")
+	if !v.dOut.IsHealthy() {
+		t.Fatal("device not discovered")
+	}
+
+	first.SetSilent(true)
+	eventually(t, 3*time.Second, func() bool { return !v.dOut.IsHealthy() }, "device to go offline")
+	// Something at a new address now claims the device id.
+	rpixel.NoteSeen(d, rpixeltest.DefaultDeviceId, second.Addr())
+	eventually(t, 3*time.Second, func() bool {
+		return d.DriverDetails().(rpixel.Details).Rings[0].Resolved == second.Address()
+	}, "the new address to be picked up")
+
+	if err := v.dOut.Set(true); err == nil || !strings.Contains(err.Error(), "not verified") {
+		t.Fatalf("Set to an unverified new address: err = %v", err)
+	}
+	if n := second.Received(rpixel.TypeAnimation); n != 0 {
+		t.Fatalf("unverified address received %d A frames", n)
 	}
 }

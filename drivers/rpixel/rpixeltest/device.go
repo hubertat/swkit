@@ -53,6 +53,7 @@ type Device struct {
 	drop        map[rpixel.PacketType]int
 	statusDelay time.Duration
 	received    map[rpixel.PacketType]int
+	dropped     [][]byte
 	animations  []AnimationRecord
 	sets        []rpixel.SetCommand
 }
@@ -198,6 +199,14 @@ func (d *Device) ReceivedTotal() int {
 	return n
 }
 
+// Dropped returns every frame ignored because of DropNext, byte for byte,
+// oldest first.
+func (d *Device) Dropped() [][]byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([][]byte(nil), d.dropped...)
+}
+
 // Animations returns every accepted A, oldest first.
 func (d *Device) Animations() []AnimationRecord {
 	d.mu.Lock()
@@ -253,6 +262,7 @@ func (d *Device) handle(f rpixel.Frame, raw []byte, from *net.UDPAddr) {
 	}
 	if d.drop[f.Type] > 0 {
 		d.drop[f.Type]--
+		d.dropped = append(d.dropped, raw)
 		return
 	}
 
@@ -306,7 +316,9 @@ func (d *Device) handle(f rpixel.Frame, raw []byte, from *net.UDPAddr) {
 	case rpixel.TypeStop:
 		reqId, setOff, err := rpixel.ParseStop(f.Payload)
 		if err != nil {
-			d.replyLocked(from, rpixel.EncodeAck(rpixel.Ack{ReqId: reqId, Status: rpixel.AckRejected, Detail: rpixel.DetailInvalidPacket}))
+			if _, ok := f.RequestId(); ok {
+				d.replyLocked(from, rpixel.EncodeAck(rpixel.Ack{ReqId: reqId, Status: rpixel.AckRejected, Detail: rpixel.DetailInvalidPacket}))
+			}
 			return
 		}
 		d.cancelAnimLocked()
@@ -318,7 +330,9 @@ func (d *Device) handle(f rpixel.Frame, raw []byte, from *net.UDPAddr) {
 	case rpixel.TypeStatusRequest:
 		reqId, err := rpixel.ParseStatusRequest(f.Payload)
 		if err != nil {
-			d.replyLocked(from, rpixel.EncodeAck(rpixel.Ack{ReqId: reqId, Status: rpixel.AckRejected, Detail: rpixel.DetailInvalidPacket}))
+			if _, ok := f.RequestId(); ok {
+				d.replyLocked(from, rpixel.EncodeAck(rpixel.Ack{ReqId: reqId, Status: rpixel.AckRejected, Detail: rpixel.DetailInvalidPacket}))
+			}
 			return
 		}
 		s := d.statusLocked(reqId)
