@@ -17,6 +17,7 @@ import (
 	hklog "github.com/brutella/hap/log"
 
 	"github.com/hubertat/swkit/drivers"
+	"github.com/hubertat/swkit/drivers/rpixel"
 	"github.com/hubertat/swkit/mqtt"
 )
 
@@ -59,6 +60,7 @@ type SwKit struct {
 	FakeDriver *drivers.MockIoDriver
 	Shelly     *drivers.ShellyIO
 	Wago       *drivers.WagoIO
+	Rpixel     *rpixel.Driver `json:",omitempty"`
 
 	ioDrivers  map[string]drivers.IoDriver
 	mqttClient *mqtt.MqttClient
@@ -301,6 +303,10 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 
 	if sw.Wago != nil {
 		sw.ioDrivers[sw.Wago.String()] = sw.Wago
+	}
+
+	if sw.Rpixel != nil {
+		sw.ioDrivers[sw.Rpixel.String()] = sw.Rpixel
 	}
 
 	for _, driver := range sw.ioDrivers {

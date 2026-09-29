@@ -80,7 +80,7 @@ golangci-lint run
 ### Core Components
 
 **SwKit (swkit.go)** - Central orchestrator that:
-- Manages IO drivers (GPIO, MCP23017, Grenton, Shelly, Mock)
+- Manages IO drivers (GPIO, MCP23017, Grenton, Shelly, WAGO, rpixel, Mock)
 - Coordinates devices (Lights, ColorLights, Outlets, Buttons)
 - Handles HomeKit bridge setup and device registration
 - Runs periodic sync loop to maintain state consistency between hardware and HomeKit
@@ -149,6 +149,50 @@ golangci-lint run
 - Custom protocol for Grenton smart home devices
 - Device ID + feature ID addressing
 
+**rpixel Driver** (`drivers/rpixel/`):
+- rpixels RGBW NeoPixel rings (40 pixels: inner 16, outer 24) over the binary
+  UDP protocol in `docs/rpixel/protocol.md` (v1, device port 8888). Own
+  package, stdlib only; `drivers/arduino` is dead code and is not used.
+- One configured device is one ring, exposed as three views onto one cached
+  state, addressed by the device `Name`:
+  - `rpixel|d_out|<name>`: on/off (Light, Outlet, ...)
+  - `rpixel|a_out|<name>`: strip brightness 0..255 (DimmableLight)
+  - `rpixel|rgbw_out|<name>`: colour (ColorLight)
+- `Name` may not contain `:` (reserved for a future `:<segment>` suffix for
+  inner/outer ring lights) or `|`.
+- One UDP socket per driver. Each device has a poll goroutine (G every
+  `PollIntervalMs`, default 2000) that resolves the address (system
+  resolver, so `rpxl-<id>.local` works where nss-mdns exists; or, with only a
+  `DeviceId`, a rate-limited broadcast G to `BroadcastAddress`) and applies
+  the S. Requests retry the identical frame after 250 ms, 500 ms and 1 s, so
+  a command fails within ~1.75 s.
+- Commands are one-stage `A` animations on the full ring, waiting for the
+  first `R`. On/off follows `Effect` (`fade` default 500 ms, `wipe` 2400 ms
+  forward on / reverse off, `immediate`). Off fades the colour to zero but
+  keeps the brightness; brightness and colour are remembered, so on/off
+  never loses them. Brightness 0 or the zero colour turn the ring off.
+  Setting a colour while off only remembers it for the next "on".
+- State is optimistic after an accepted `R`; an S answering a G sent before
+  the latest command (or during one) is dropped. `GetState` never does I/O
+  and errors while the ring is unseen or unhealthy (no accepted S for
+  `max(3 x poll, 6 s)`, or an S rejected for protocol version or `DeviceId`
+  mismatch). Commands are refused while a configured `DeviceId` is mismatched
+  or not yet verified, so a reassigned IP never drives the wrong ring.
+- An unreachable ring is a warning, never a `Setup` error. `Close` sends
+  nothing to the rings.
+- Not in `MapAllIoDrivers()` (that would be an import cycle: `drivers/rpixel`
+  imports `drivers`); `SwKit` registers it directly.
+- `drivers/rpixel/rpixeltest` is an exported in-process fake ring on
+  127.0.0.1 (packet loss, silence, status delay, out-of-band toggle, device
+  id / protocol version knobs) for driver and swkit wiring tests.
+- Not implemented yet (follow-ups): several lights per ring (inner/outer
+  segments), effect/animation actions, mDNS browsing (`_rpixels._udp`),
+  deleting `drivers/arduino`. The socket is IPv4 only. The protocol has no
+  authentication; keep rings on a trusted network segment.
+- `ColorLight` on `rgbw_out` is wired but not useful yet: the HSV conversions
+  in `colors.go` are still TODO stubs, so HomeKit hue/saturation changes send
+  the zero colour (which turns the ring off).
+
 **Mock Driver** (`drivers/mock_io_driver.go`):
 - In-memory simulation for testing
 - No hardware required
@@ -182,6 +226,21 @@ The application uses JSON configuration (`config.json` by default) with structur
     "MqttBroker": "mqtt://192.168.1.100:1883",
     "MqttClientId": "swkit-main"
   },
+  "Rpixel": {
+    "PollIntervalMs": 2000,
+    "BroadcastAddress": "192.168.1.255",
+    "Devices": [
+      {
+        "Name": "desk-ring",
+        "Address": "rpxl-e6614103e7452d2f.local",
+        "DeviceId": "e6614103e7452d2f",
+        "Effect": "fade",
+        "TransitionMs": 500,
+        "DefaultBrightness": 60
+      },
+      { "Name": "hall-ring", "DeviceId": "0123456789abcdef" }
+    ]
+  },
   "SshServer": {
     "Enabled": true,
     "Port": 2222,
@@ -195,6 +254,16 @@ The application uses JSON configuration (`config.json` by default) with structur
 ```
 
 Control device format: `<event>:<action>:<device_name>` where action is `on`, `off`, or `toggle`.
+
+`Rpixel` fields: `Devices` (required); `PollIntervalMs` (default 2000);
+`BroadcastAddress` (default `255.255.255.255`, IPv4 `host` or `host:port`,
+used only for devices without an `Address`). Per device: `Name` (required,
+unique); `Address` (host, IP or `host:port`, default port 8888) and/or
+`DeviceId` (16 hex digits, verified against every S; required without
+`Address`); `Effect` (`fade` | `wipe` | `immediate`); `TransitionMs` (0 =
+effect default: fade 500, wipe 2400); `DefaultBrightness` (0 = 60). A light on
+a ring uses e.g. `"DigitalOutName": "rpixel|d_out|desk-ring"`, and a dimmable
+light adds `"AnalogOutName": "rpixel|a_out|desk-ring"`.
 
 ### SSH server configuration (security-relevant)
 
@@ -231,7 +300,8 @@ the defaults are permissive. Read this before exposing the port:
 1. Create driver struct implementing `IoDriver` interface
 2. Implement `Setup(ctx, ios)` to parse IO IDs and initialize hardware
 3. Implement getter methods for relevant IO types (return error for unsupported types)
-4. Add to `MapAllIoDrivers()` in `io_driver.go`
+4. Add to `MapAllIoDrivers()` in `io_driver.go` (drivers in their own package,
+   like `drivers/rpixel`, cannot be: `SwKit` registers them directly)
 5. Add driver field to `SwKit` struct
 
 ### Working with Shelly Devices
@@ -246,6 +316,8 @@ the defaults are permissive. Read this before exposing the port:
 ### Testing Considerations
 
 - Use `MockIoDriver` for unit tests that need IO
+- Use `rpixeltest.New()` for a fake rpixel ring on loopback (see
+  `rpixel_wiring_test.go`)
 - Driver tests typically require specific hardware or mocks
 - HomeKit testing requires actual iOS device or simulator
 - MQTT can be tested with local broker (mosquitto)
