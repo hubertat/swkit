@@ -143,3 +143,17 @@ func TestIoPointToIdWithTypePushEventOverridesInputType(t *testing.T) {
 		t.Fatalf("unexpected io id: got %q, want %q", got, want)
 	}
 }
+
+func TestIoPointToIdRpixelUsesDeviceName(t *testing.T) {
+	for _, c := range []struct {
+		typ, want string
+	}{
+		{"output", "rpixel|d_out|desk-ring"},
+		{"analog_output", "rpixel|a_out|desk-ring"},
+	} {
+		pt := IoPointDebugState{DriverName: "rpixel", Index: 3, Name: "desk-ring", Type: c.typ}
+		if got := IoPointToId(pt); got != c.want {
+			t.Errorf("IoPointToId(%s) = %q, want %q", c.typ, got, c.want)
+		}
+	}
+}

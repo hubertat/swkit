@@ -238,6 +238,15 @@
             const now = Date.now();
             let rows = '';
             for (const ring of det.rings) {
+                // timeSince() gives up after 200 s; an offline ring is often
+                // older than that, so fall back to the timestamp itself.
+                let lastSeen = timeSince(ring.last_seen, now);
+                if (!lastSeen) {
+                    const seenAt = ring.last_seen ? new Date(ring.last_seen) : null;
+                    lastSeen = (seenAt && !isNaN(seenAt.getTime()) && seenAt.getTime() > 0)
+                        ? escHtml(seenAt.toLocaleString())
+                        : 'never';
+                }
                 const healthIcon = ring.online
                     ? '<span class="text-success">✓</span>'
                     : '<span class="text-error" title="' + escHtml(ring.problem || '') + '">✗</span>';
@@ -247,7 +256,7 @@
                     '<td class="mono">' + escHtml(ring.resolved || '-') + '</td>' +
                     '<td class="mono">' + escHtml(ring.device_id || '-') + '</td>' +
                     '<td>' + (ring.on ? 'on' : 'off') + ' / ' + ring.brightness + '</td>' +
-                    '<td>' + (timeSince(ring.last_seen, now) || '-') + '</td>' +
+                    '<td>' + lastSeen + '</td>' +
                     '<td>' + healthIcon + '</td>' +
                     '</tr>';
             }

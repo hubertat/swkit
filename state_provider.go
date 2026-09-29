@@ -306,9 +306,11 @@ func (p *SwKitProvider) GetState() app.AppState {
 			ioDeviceMap[ds.EventInputId] = ds.Name
 		}
 	}
-	// Annotate each IO point with the device that uses it (if any). The id
-	// must be built the way config ids are (app.IoPointToId): name-addressed
-	// drivers such as rpixel and Shelly are not keyed by pt.Index.
+	// Annotate each IO point with the device that uses it (if any), matching
+	// the point's config-grammar id (app.IoPointToId) against the devices' io
+	// String() ids. For wago this is the same index form as before; rpixel
+	// needs it because its ids use the device name, not pt.Index. (Shelly
+	// io String() ids are not in config grammar, so they match neither way.)
 	for i, pt := range state.IoDebug {
 		if deviceName, ok := ioDeviceMap[app.IoPointToId(pt)]; ok {
 			state.IoDebug[i].ConfiguredAs = deviceName
