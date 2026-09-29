@@ -18,6 +18,7 @@ const (
 	PrefixMcpio   = "mcpio 🔲"
 	PrefixGrenton = "grenton 🏛️"
 	PrefixArduino = "arduino 🤖"
+	PrefixRpixel  = "rpixel 🌈"
 	PrefixPushEvt = "push 👆"
 	PrefixMock    = "mock 🎭"
 	PrefixAgent   = "agent 🤖"
