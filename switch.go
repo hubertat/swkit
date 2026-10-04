@@ -27,10 +27,9 @@ type Switch struct {
 	DisableHomekit bool
 	IsFaulty       bool
 
-	switchSlice []SwitchableDevice
-
-	input  drivers.DigitalInput
-	driver drivers.IoDriver
+	switchThis []SwitchableDevice
+	input      drivers.DigitalInput
+	driver     drivers.IoDriver
 
 	hk    *accessory.Switch
 	fault *characteristic.StatusFault
@@ -108,8 +107,8 @@ func (swb *Switch) Sync() (err error) {
 		swb.hk.Switch.On.SetValue(swb.State)
 	}
 
-	if len(swb.switchSlice) > 0 {
-		for _, controlledDevice := range swb.switchSlice {
+	if len(swb.switchThis) > 0 {
+		for _, controlledDevice := range swb.switchThis {
 			controlledDevice.SetValue(swb.State)
 		}
 	}
