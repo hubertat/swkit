@@ -1,11 +1,11 @@
 module github.com/hubertat/swkit
 
-go 1.24.0
+go 1.27.1
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.19.0
-	github.com/brutella/dnssd v1.2.10
-	github.com/brutella/hap v0.0.31
+	github.com/brutella/dnssd v1.2.14
+	github.com/brutella/hap v0.0.35
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/glamour v0.10.0
@@ -20,6 +20,7 @@ require (
 	github.com/racerxdl/go-mcp23017 v0.0.0-20200119181255-c8f9b9777b0e
 	github.com/simonvetter/modbus v1.6.4
 	github.com/stianeikeland/go-rpio/v4 v4.6.0
+	golang.org/x/crypto v0.40.0
 )
 
 require (
@@ -52,7 +53,7 @@ require (
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
-	github.com/miekg/dns v1.1.54 // indirect
+	github.com/miekg/dns v1.1.61 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
@@ -64,11 +65,12 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/vishvananda/netlink v1.2.1-beta.2 // indirect
+	github.com/vishvananda/netns v0.0.0-20200728191858-db3c7e526aae // indirect
 	github.com/xiam/to v0.0.0-20200126224905-d60d31e03561 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.8 // indirect
 	github.com/yuin/goldmark-emoji v1.0.5 // indirect
-	golang.org/x/crypto v0.40.0 // indirect
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56 // indirect
 	golang.org/x/mod v0.25.0 // indirect
 	golang.org/x/net v0.41.0 // indirect

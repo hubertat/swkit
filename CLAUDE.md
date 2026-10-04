@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **swkit** is a HomeKit-enabled switch/input/roller shutter controller for Raspberry Pi and similar devices. It provides a bridge between physical IO hardware (GPIO, MCP23017, Grenton, Shelly devices) and Apple HomeKit, allowing home automation control through the Home app.
 
 Key technologies:
-- Go 1.22+
+- Go 1.27+
 - HomeKit integration via `github.com/brutella/hap`
 - MQTT support via `github.com/eclipse/paho.golang`
 - Hardware IO drivers for various platforms
@@ -136,7 +136,8 @@ golangci-lint run
 **MCP23017 Driver** (`drivers/mcpio_driver.go`):
 - I2C expander for additional IO
 - `DevNo` is relative (0-7), actual address is `0x20 + DevNo`
-- Pins identified by port letter + number (e.g., `a3`, `b7`)
+- Pins identified by numeric pin index (e.g., `3`, `12`)
+- Buttons use `mcpio|push_event|<pin>`; the pin is polled by a `PushEventDetector`
 
 **Shelly Driver** (`drivers/shelly_driver.go`):
 - Communicates via MQTT using Gen 2+ RPC protocol
