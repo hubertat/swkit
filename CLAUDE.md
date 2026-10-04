@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **swkit** is a HomeKit-enabled switch/input/roller shutter controller for Raspberry Pi and similar devices. It provides a bridge between physical IO hardware (GPIO, MCP23017, Grenton, Shelly devices) and Apple HomeKit, allowing home automation control through the Home app.
 
 Key technologies:
-- Go 1.22+
+- Go 1.27+
 - HomeKit integration via `github.com/brutella/hap`
 - MQTT support via `github.com/eclipse/paho.golang`
 - Hardware IO drivers for various platforms
