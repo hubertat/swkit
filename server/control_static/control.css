@@ -466,6 +466,9 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .dev[data-sync="unknown"] .dev-mark { display: grid; background: var(--line-strong); color: var(--surface); }
 .dev[data-sync="unknown"] .dev-mark::before { content: "?"; }
 
+/* --- Command not confirmed and state unreadable: keep the "?" visible --- */
+.dev[data-sync="unconfirmed"][data-unknown="1"] .dev-sub { color: var(--warn); }
+
 /* --- Faulty --- */
 .dev[data-fault="1"] .dev-mark { display: grid; background: var(--bad); color: #fff; }
 .dev[data-fault="1"] .dev-mark::before { content: "!"; }
@@ -574,7 +577,7 @@ html[data-variant="list"] .dev[data-kind="input"] { background: var(--surface); 
 }
 .dev[data-on="1"] .dev-switch { background: var(--on); }
 .dev[data-on="1"] .dev-switch::before { transform: translateX(18px); }
-.dev[data-sync="unknown"] .dev-switch::before { transform: translateX(9px); }
+.dev[data-unknown="1"] .dev-switch::before { transform: translateX(9px); }
 .dev[data-kind="input"] .dev-switch, .dev[data-kind="scene"] .dev-switch { display: none; }
 
 .dev-bri { display: flex; align-items: center; gap: 6px; padding: 4px 0 2px; }

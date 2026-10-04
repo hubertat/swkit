@@ -14,8 +14,16 @@
  *   unconfirmed  no matching report within CONFIRM_MS; the tile falls back to
  *                the reported value with an amber "not confirmed" marker
  *
+ * Each device has two independent intent slots, "power" (on/off or scene
+ * step) and "bri" (brightness), so one never discards the other. Within a
+ * slot requests are strictly serialized: the next one is sent only after
+ * the previous reply, so the controller applies them in the order they were
+ * made. On/off and brightness keep only the latest unsent target; scene
+ * steps queue, since every tap is one step.
+ *
  * Poll results never override an active sending/waiting intent, so the
- * displayed state only moves forward. Independently, the whole page is
+ * displayed state only moves forward. A state the server could not read
+ * stays "unknown" independently of any command status. Independently, the whole page is
  * flagged stale when no poll has succeeded for STALE_MS, and devices whose
  * state the server could not read are shown as unknown, never as "off".
  */
@@ -146,7 +154,8 @@ let lastErr = null;
 let structureKey = null;     // null until the first snapshot is rendered
 let variant = document.documentElement.getAttribute('data-variant') || VARIANTS[0];
 
-const intents = new Map();    // index → intent (see header comment)
+const intents = new Map();    // index → { power: intent|null, bri: intent|null }
+const SLOTS = ['power', 'bri'];
 const views = new Map();      // index → { root, hit, name, sub, chip, range, rangeVal }
 const sectionViews = [];      // { def, root, count, act }
 
@@ -166,42 +175,51 @@ function kindOf(dev) {
     return 'input';
 }
 
+// An intent still steering what is displayed (not yet given up on).
+function live(it) { return !!it && it.phase !== 'unconfirmed'; }
+
+const PHASE_RANK = { sending: 4, dragging: 3, waiting: 2, unconfirmed: 1 };
+
 function viewOf(dev) {
-    const it = intents.get(dev.index);
     const kind = kindOf(dev);
-    let on = !!dev.is_on;
+    const pw = getIntent(dev.index, 'power');
+    const br = getIntent(dev.index, 'bri');
+    const offline = !dev.is_healthy;
+    // A failed read is reported as is_on=false; never show that as "off".
+    const unknown = !offline && !!dev.state_error;
+    let on = unknown ? false : !!dev.is_on;
     let bri = dev.brightness || 0;
-    let sync = 'ok';
+    let onKnown = !unknown;
 
-    if (!dev.is_healthy) sync = 'offline';
-    else if (dev.state_error) sync = 'unknown';
-
-    if (it && sync !== 'offline') {
-        if (it.phase === 'unconfirmed') {
-            sync = 'unconfirmed';
-        } else {
-            sync = it.phase;
-            if (it.kind === 'power' && it.target !== null) on = it.target;
-            else if (it.kind === 'bri') bri = it.target;
-            else if (it.kind === 'scene') on = it.target !== 0;
+    if (!offline) {
+        if (live(pw)) {
+            if (pw.kind === 'scene') on = pw.target !== 0;
+            else if (pw.target !== null) { on = pw.target; onKnown = true; }
         }
+        if (live(br)) bri = br.target;
     }
-    if (sync === 'unknown') on = false;
+
+    // The tile shows the most active command phase of the two slots.
+    let cmdIt = null;
+    for (const it of [pw, br]) {
+        if (it && (!cmdIt || PHASE_RANK[it.phase] > PHASE_RANK[cmdIt.phase])) cmdIt = it;
+    }
+    const sync = offline ? 'offline' : cmdIt ? cmdIt.phase : unknown ? 'unknown' : 'ok';
     const busy = sync === 'sending' || sync === 'waiting' || sync === 'dragging';
 
     let sub;
     if (kind === 'input') {
-        if (!dev.is_healthy) sub = 'Offline';
+        if (offline) sub = 'Offline';
         else sub = dev.last_event_type ? eventLabel(dev.last_event_type) + ' · ' + ago(eventAge(dev)) : 'No presses yet';
-    } else if (sync === 'offline') {
+    } else if (offline) {
         sub = 'Offline';
-    } else if (sync === 'unknown') {
-        sub = 'State unknown';
     } else if (busy) {
         if (sync === 'waiting') sub = 'Confirming…';
-        else if (it.kind === 'bri') sub = 'Dimming…';
-        else if (it.kind === 'scene' || it.target === null) sub = 'Switching…';
+        else if (cmdIt.kind === 'bri') sub = 'Dimming…';
+        else if (cmdIt.kind === 'scene' || cmdIt.target === null) sub = 'Switching…';
         else sub = on ? 'Turning on…' : 'Turning off…';
+    } else if (unknown && !onKnown) {
+        sub = 'State unknown';
     } else if (sync === 'unconfirmed') {
         sub = 'Unconfirmed';
     } else if (kind === 'scene') {
@@ -210,7 +228,7 @@ function viewOf(dev) {
         sub = on ? 'On' : 'Off';
     }
 
-    return { on, bri, sync, sub, kind, busy, fault: !!dev.is_faulty && sync !== 'offline' };
+    return { on, onKnown, unknown, bri, sync, sub, kind, busy, pw, br, cmdIt, fault: !!dev.is_faulty && !offline };
 }
 
 function eventAge(dev) {
@@ -218,34 +236,79 @@ function eventAge(dev) {
 }
 
 function hasActiveIntent() {
-    for (const it of intents.values()) {
-        if (it.phase === 'sending' || it.phase === 'waiting' || it.phase === 'dragging') return true;
+    for (const slots of intents.values()) {
+        for (const slot of SLOTS) {
+            const it = slots[slot];
+            if (it && it.phase !== 'unconfirmed') return true;
+        }
     }
     return false;
 }
 
 // ---------- intents ----------
 
-function clearIntent(index, it) {
-    const cur = intents.get(index);
-    if (it && cur !== it) return;
-    if (cur) {
-        clearTimeout(cur.timer);
-        clearTimeout(cur.holdTimer);
-        clearTimeout(cur.debounce);
-    }
-    intents.delete(index);
+function getIntent(index, slot) {
+    const slots = intents.get(index);
+    return slots ? slots[slot] : null;
 }
 
-function newIntent(dev, kind, target) {
-    clearIntent(dev.index);
-    const it = { kind, target, name: dev.name, phase: 'sending', sentAt: Date.now(), ackAt: 0 };
-    intents.set(dev.index, it);
+function clearIntent(index, slot, it) {
+    const slots = intents.get(index);
+    if (!slots) return;
+    const cur = slots[slot];
+    if (!cur || (it && cur !== it)) return;
+    clearTimeout(cur.timer);
+    clearTimeout(cur.holdTimer);
+    clearTimeout(cur.debounce);
+    slots[slot] = null;
+    if (!slots.power && !slots.bri) intents.delete(index);
+}
+
+// intentFor returns the slot's intent, creating it if needed. An existing
+// intent is reused (never replaced) so that its request queue, and any
+// request already in flight, stay serialized behind one owner.
+function intentFor(dev, slot, kind) {
+    let slots = intents.get(dev.index);
+    if (!slots) { slots = { power: null, bri: null }; intents.set(dev.index, slots); }
+    let it = slots[slot];
+    if (it && it.kind !== kind && !it.inFlight) { clearIntent(dev.index, slot, it); it = null; }
+    if (!it) {
+        it = { slot, kind, name: dev.name, target: null, phase: 'sending', ackAt: 0, inFlight: false, debouncing: false, queue: [] };
+        slots[slot] = it;
+    }
+    it.kind = kind;
+    clearTimeout(it.timer);
+    clearTimeout(it.holdTimer);
     return it;
 }
 
+// pump sends the slot's next queued request once the previous one replied.
+// When the queue drains, the intent waits for the device to confirm.
+function pump(index, it) {
+    if (getIntent(index, it.slot) !== it || it.inFlight) return;
+    const job = it.queue.shift();
+    if (!job) {
+        if (it.debouncing) { it.phase = 'dragging'; updateDevice(index); return; }
+        acknowledge(index, it);
+        return;
+    }
+    it.inFlight = true;
+    it.phase = 'sending';
+    updateDevice(index);
+    request(job.path, { method: 'POST', body: job.body })
+        .then(() => {
+            it.inFlight = false;
+            if (job.onAck) job.onAck();
+            pump(index, it);
+        })
+        .catch(e => {
+            it.inFlight = false;
+            fail(index, it, job.verb, e);
+        });
+}
+
 function acknowledge(index, it) {
-    if (intents.get(index) !== it) return;
+    if (getIntent(index, it.slot) !== it) return;
     it.phase = 'waiting';
     it.ackAt = Date.now();
     it.timer = setTimeout(() => expire(index, it), CONFIRM_MS);
@@ -254,25 +317,31 @@ function acknowledge(index, it) {
 }
 
 function expire(index, it) {
-    if (intents.get(index) !== it || it.phase !== 'waiting') return;
+    if (getIntent(index, it.slot) !== it || it.phase !== 'waiting') return;
     it.phase = 'unconfirmed';
-    it.holdTimer = setTimeout(() => { clearIntent(index, it); updateDevice(index); }, UNCONFIRMED_HOLD_MS);
+    it.holdTimer = setTimeout(() => { clearIntent(index, it.slot, it); updateDevice(index); }, UNCONFIRMED_HOLD_MS);
     updateDevice(index);
     const dev = devices.get(index);
-    if (dev) {
-        const reported = dev.state_error ? 'its state is unknown' : 'it still reports ' + (it.kind === 'bri' ? (dev.brightness + '%') : (dev.is_on ? 'on' : 'off'));
-        toast(dev.name + " didn't confirm the change; " + reported + '.', 'warn');
-    }
+    if (dev) toast(dev.name + " didn't confirm the change; " + reportedText(dev, it) + '.', 'warn');
+}
+
+// What the device currently reports for the quantity this intent changes.
+function reportedText(dev, it) {
+    if (it.kind === 'bri') return 'it still reports ' + (dev.brightness || 0) + '%';
+    if (it.kind === 'scene') return 'it still reports ' + (dev.scene_state || 'state ' + ((dev.scene_index || 0) + 1));
+    if (dev.state_error) return "its state can't be read, so it's not known whether it switched";
+    return 'it still reports ' + (dev.is_on ? 'on' : 'off');
 }
 
 function fail(index, it, verb, err) {
-    if (intents.get(index) === it) clearIntent(index, it);
+    clearIntent(index, it.slot, it);
     updateDevice(index);
     toast("Couldn't " + verb + ': ' + err.message + '.', 'error');
 }
 
 // Does a snapshot taken at `pollStartedAt` confirm this intent?
 function confirms(it, dev, pollStartedAt) {
+    if (it.inFlight || it.debouncing || it.queue.length) return false;
     if (it.phase === 'sending' || it.phase === 'dragging') return false;
     if (it.phase === 'waiting' && pollStartedAt < it.ackAt) return false;
     if (!dev.is_healthy) return false;
@@ -292,42 +361,43 @@ function confirms(it, dev, pollStartedAt) {
 
 function setPower(dev, target, opts = {}) {
     const index = dev.index;
-    const v = viewOf(dev);
-    if (v.sync === 'offline') return;
+    if (!dev.is_healthy) return;
+    const base = '/api/devices/' + index + '/';
+    let it;
 
-    // Explicit "set" is idempotent, so a repeated tap or a stale cache can't
-    // flip the device twice. Fall back to toggle only when the current state
-    // is unknown (and scenes, whose toggle cycles through states).
-    let path, body, it;
     if (dev.type === 'scene') {
-        const count = dev.scene_count || 2;
-        const cur = intents.get(index);
-        const from = cur && cur.kind === 'scene' && cur.phase !== 'unconfirmed' ? cur.target : (dev.scene_index || 0);
-        const next = (from + 1) % count;
-        it = newIntent(dev, 'scene', next);
-        path = '/api/devices/' + index + '/toggle';
-    } else if (target === null) {
-        it = newIntent(dev, 'power', null);
-        path = '/api/devices/' + index + '/toggle';
+        const prev = getIntent(index, 'power');
+        const from = live(prev) ? prev.target : (dev.scene_index || 0);
+        it = intentFor(dev, 'power', 'scene');
+        it.target = (from + 1) % (dev.scene_count || 2);
+        // Every tap is one step forward, so scene toggles queue up.
+        it.queue.push({ path: base + 'toggle', verb: 'switch ' + dev.name });
     } else {
-        it = newIntent(dev, 'power', target);
-        if (opts.seconds) {
-            path = '/api/devices/' + index + '/set_for';
-            body = { value: target, seconds: opts.seconds };
+        // Explicit "set" is idempotent, so a repeated tap or a stale cache
+        // can't flip the device twice. Toggle only when the state is unknown.
+        it = intentFor(dev, 'power', 'power');
+        it.target = target;
+        let job;
+        if (target === null) {
+            job = { path: base + 'toggle', verb: 'switch ' + dev.name };
+        } else if (opts.seconds) {
+            job = {
+                path: base + 'set_for',
+                body: { value: target, seconds: opts.seconds },
+                verb: (target ? 'turn on ' : 'turn off ') + dev.name,
+                onAck: () => toast(dev.name + (target ? ' on' : ' off') + ' for ' + durLabel(opts.seconds) + ', then back.'),
+            };
         } else {
-            path = '/api/devices/' + index + '/set';
-            body = { value: target };
+            job = { path: base + 'set', body: { value: target }, verb: (target ? 'turn on ' : 'turn off ') + dev.name };
         }
+        // Only the latest target matters: replace anything not yet sent. A
+        // request already in flight finishes first, then this one follows.
+        it.queue = [job];
     }
+    it.phase = 'sending';
     haptic();
     updateDevice(index);
-
-    request(path, { method: 'POST', body })
-        .then(() => {
-            acknowledge(index, it);
-            if (opts.seconds) toast(dev.name + (target ? ' on' : ' off') + ' for ' + durLabel(opts.seconds) + ', then back.');
-        })
-        .catch(e => fail(index, it, (target === null ? 'switch ' : target ? 'turn on ' : 'turn off ') + dev.name, e));
+    pump(index, it);
 }
 
 function tapDevice(dev) {
@@ -335,42 +405,40 @@ function tapDevice(dev) {
     if (v.kind === 'input') { openSheet(dev.index); return; }
     if (v.sync === 'offline') { toast(dev.name + ' is offline.', 'warn'); return; }
     if (v.kind === 'scene') { setPower(dev, null); return; }
-    setPower(dev, v.sync === 'unknown' ? null : !v.on);
+    if (!v.onKnown) {
+        // A blind toggle is already pending; a second one could undo it.
+        if (live(v.pw) && v.pw.target === null) {
+            toast('Waiting for ' + dev.name + ' to report its state.', 'warn');
+            return;
+        }
+        setPower(dev, null);
+        return;
+    }
+    setPower(dev, !v.on);
 }
 
-// Brightness: one request in flight per device; newer values queue behind it
-// so a late reply for an old value can never win.
+// Brightness: the slider is debounced; the latest value replaces anything
+// not yet sent and goes out after the request in flight, so a late reply for
+// an old value can never win.
 function setBrightness(dev, value, immediate) {
     const index = dev.index;
-    value = clamp(Math.round(value), 0, 100);
-    let it = intents.get(index);
-    if (!it || it.kind !== 'bri' || it.phase === 'unconfirmed') {
-        it = newIntent(dev, 'bri', value);
-    }
-    clearTimeout(it.timer);
-    clearTimeout(it.holdTimer);
-    it.target = value;
-    it.phase = it.inFlight ? 'sending' : 'dragging';
-    updateDevice(index);
-
+    const it = intentFor(dev, 'bri', 'bri');
+    it.target = clamp(Math.round(value), 0, 100);
     clearTimeout(it.debounce);
-    const send = () => {
-        if (intents.get(index) !== it) return;
-        if (it.inFlight) { it.queued = true; return; }
-        it.inFlight = true;
-        it.queued = false;
-        it.phase = 'sending';
-        const sent = it.target;
-        updateDevice(index);
-        request('/api/devices/' + index + '/set_brightness', { method: 'POST', body: { value: sent } })
-            .then(() => {
-                it.inFlight = false;
-                if (it.queued || it.target !== sent) { send(); return; }
-                acknowledge(index, it);
-            })
-            .catch(e => { it.inFlight = false; fail(index, it, 'set brightness of ' + dev.name, e); });
+    const enqueue = () => {
+        it.debouncing = false;
+        if (getIntent(index, 'bri') !== it) return;
+        it.queue = [{ path: '/api/devices/' + index + '/set_brightness', body: { value: it.target }, verb: 'set brightness of ' + dev.name }];
+        pump(index, it);
     };
-    if (immediate) send(); else it.debounce = setTimeout(send, 160);
+    if (immediate) {
+        enqueue();
+    } else {
+        it.debouncing = true;
+        if (!it.inFlight) it.phase = 'dragging';
+        it.debounce = setTimeout(enqueue, 160);
+    }
+    updateDevice(index);
 }
 
 function allOff(def) {
@@ -424,9 +492,12 @@ function applySnapshot(list, startedAt) {
     for (const d of list) next.set(d.index, d);
 
     // Config reloaded and indices moved: drop intents that no longer match.
-    for (const [index, it] of intents) {
+    for (const [index, slots] of intents) {
         const d = next.get(index);
-        if (!d || d.name !== it.name) clearIntent(index);
+        for (const slot of SLOTS) {
+            const it = slots[slot];
+            if (it && (!d || d.name !== it.name)) clearIntent(index, slot, it);
+        }
     }
 
     devices = next;
@@ -437,11 +508,13 @@ function applySnapshot(list, startedAt) {
     }
 
     for (const d of list) {
-        const it = intents.get(d.index);
-        if (it && confirms(it, d, startedAt)) {
-            const wasUnconfirmed = it.phase === 'unconfirmed';
-            clearIntent(d.index, it);
-            flashConfirmed(d.index, wasUnconfirmed);
+        for (const slot of SLOTS) {
+            const it = getIntent(d.index, slot);
+            if (it && confirms(it, d, startedAt)) {
+                const wasUnconfirmed = it.phase === 'unconfirmed';
+                clearIntent(d.index, slot, it);
+                flashConfirmed(d.index, wasUnconfirmed);
+            }
         }
         updateDevice(d.index);
     }
@@ -638,6 +711,7 @@ function updateDevice(index) {
 
     r.dataset.on = s.on ? '1' : '0';
     r.dataset.sync = s.sync;
+    r.dataset.unknown = s.unknown && !s.onKnown ? '1' : '0';
     r.dataset.fault = s.fault ? '1' : '0';
     if (v.name.textContent !== dev.name) v.name.textContent = dev.name;
     v.sub.textContent = s.sub;
@@ -647,13 +721,13 @@ function updateDevice(index) {
         v.hit.setAttribute('aria-label', dev.name + ', button. ' + s.sub + '. Show details');
     } else {
         v.hit.setAttribute('aria-label', dev.name + ', ' + (TYPE_NAME[dev.type] || dev.type).toLowerCase() + ', ' + s.sub);
-        if (s.kind === 'power' && s.sync !== 'unknown') v.hit.setAttribute('aria-pressed', s.on ? 'true' : 'false');
+        if (s.kind === 'power' && s.onKnown) v.hit.setAttribute('aria-pressed', s.on ? 'true' : 'false');
         else v.hit.removeAttribute('aria-pressed');
     }
     v.hit.setAttribute('aria-disabled', s.sync === 'offline' ? 'true' : 'false');
 
     if (v.chip) {
-        v.chip.textContent = s.sync === 'unknown' ? '—' : s.bri + '%';
+        v.chip.textContent = s.bri + '%';
     }
     if (v.range) {
         const disabled = s.sync === 'offline';
@@ -726,7 +800,7 @@ function closeSheet() {
 }
 
 function statusText(dev, s) {
-    const it = intents.get(dev.index);
+    const it = s.cmdIt;
     if (freshness().level === 'stale') {
         return { sync: 'stale', title: 'Connection lost', detail: lastOkAt ? 'Last known state from ' + clock(lastOkAt) + '. It may have changed since.' : 'No state received yet.' };
     }
@@ -737,8 +811,8 @@ function statusText(dev, s) {
         case 'dragging': return { sync: 'sending', title: 'Adjusting…', detail: '' };
         case 'waiting': return { sync: 'waiting', title: 'Waiting for the device to confirm', detail: 'The command was accepted ' + ago(Date.now() - it.ackAt) + '. The display updates once the device reports its new state.' };
         case 'unconfirmed': {
-            const rep = it && it.kind === 'bri' ? dev.brightness + '%' : (dev.is_on ? 'on' : 'off');
-            return { sync: 'unconfirmed', title: 'Not confirmed', detail: 'The device still reports ' + rep + '. The command may have been lost; try again.' };
+            const r = reportedText(dev, it);
+            return { sync: 'unconfirmed', title: 'Not confirmed', detail: r.charAt(0).toUpperCase() + r.slice(1) + '. The command may have been lost; try again.' };
         }
     }
     return { sync: 'ok', title: s.kind === 'input' ? 'Listening' : 'Confirmed by device', detail: 'Updated ' + ago(Date.now() - lastOkAt) + '.' };
@@ -759,7 +833,7 @@ function renderSheet(fresh) {
     // Rebuild the controls only when what they show changes, never on the
     // once-a-second tick: replacing a button mid-tap would swallow the tap.
     const body = document.getElementById('sheet-body');
-    const sig = [dev.index, dev.name, s.on, s.sync, s.bri, dev.scene_index, dev.scene_state, dev.last_event_type,
+    const sig = [dev.index, dev.name, s.on, s.onKnown, s.sync, s.bri, dev.scene_index, dev.scene_state, dev.last_event_type,
         s.kind === 'input' ? Math.floor(eventAge(dev) / 5000) : 0].join('|');
     const activeRange = body.querySelector('.range[data-active]');
     if (activeRange && !fresh) {
@@ -774,7 +848,7 @@ function renderSheet(fresh) {
     const parts = [];
 
     if (s.kind === 'power') {
-        const known = s.sync !== 'unknown';
+        const known = s.onKnown;
         const onBtn = h('button', { class: 'pick', type: 'button', 'aria-pressed': known && s.on ? 'true' : 'false', disabled: offline }, 'On');
         const offBtn = h('button', { class: 'pick off', type: 'button', 'aria-pressed': known && !s.on ? 'true' : 'false', disabled: offline }, 'Off');
         onBtn.addEventListener('click', () => setPower(dev, true));
