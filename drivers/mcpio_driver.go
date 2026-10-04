@@ -21,6 +21,7 @@ type McpIO struct {
 
 	inputs  []McpInput
 	outputs []McpOutput
+	pushers []*PushEventDetector
 	isReady bool
 
 	BusNo         uint8
@@ -138,23 +139,18 @@ func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
 
 		switch ioType {
 		case IoTypeDigitalInput:
-			pin, err := strconv.Atoi(ioId)
+			pin, err := mcp.setupInputPin(ioId)
 			if err != nil {
-				return errors.Join(err, errors.New("failed to convert input pin to int"))
+				return err
 			}
-			if pin > 255 || pin < 0 {
-				return errors.Join(err, errors.New("input pin out of range (mcpio takes uint8 pin id)"))
-			}
+			mcp.inputs = append(mcp.inputs, McpInput{pin: pin, invert: mcp.InvertInputs, device: mcp.device})
 
-			err = mcp.device.PinMode(uint8(pin), mcp23017.INPUT)
+		case IoTypePushEventEmitter:
+			pin, err := mcp.setupInputPin(ioId)
 			if err != nil {
-				return errors.Join(err, errors.New("failed to set pin mode"))
+				return err
 			}
-			err = mcp.device.SetPullUp(uint8(pin), true)
-			if err != nil {
-				return errors.Join(err, errors.New("failed to set pullup"))
-			}
-			mcp.inputs = append(mcp.inputs, McpInput{pin: uint8(pin), invert: mcp.InvertInputs, device: mcp.device})
+			mcp.addPusher(pin)
 
 		case IoTypeDigitalOutput:
 			pin, err := strconv.Atoi(ioId)
@@ -176,9 +172,44 @@ func (mcp *McpIO) Setup(ctx context.Context, ios []string) error {
 		}
 	}
 
+	for _, push := range mcp.pushers {
+		push.Start()
+	}
+
 	mcp.isReady = err == nil
 
 	return err
+}
+
+// setupInputPin parses an input pin id and configures it as a pulled-up input.
+func (mcp *McpIO) setupInputPin(ioId string) (uint8, error) {
+	pin, err := strconv.Atoi(ioId)
+	if err != nil {
+		return 0, errors.Join(err, errors.New("failed to convert input pin to int"))
+	}
+	if pin > 255 || pin < 0 {
+		return 0, errors.New("input pin out of range (mcpio takes uint8 pin id)")
+	}
+
+	err = mcp.device.PinMode(uint8(pin), mcp23017.INPUT)
+	if err != nil {
+		return 0, errors.Join(err, errors.New("failed to set pin mode"))
+	}
+	err = mcp.device.SetPullUp(uint8(pin), true)
+	if err != nil {
+		return 0, errors.Join(err, errors.New("failed to set pullup"))
+	}
+
+	return uint8(pin), nil
+}
+
+// addPusher registers the pin as a digital input and attaches a push event
+// detector to it. The detector polls its own copy of the input, so later
+// appends to mcp.inputs cannot invalidate it.
+func (mcp *McpIO) addPusher(pin uint8) {
+	input := McpInput{pin: pin, invert: mcp.InvertInputs, device: mcp.device}
+	mcp.inputs = append(mcp.inputs, input)
+	mcp.pushers = append(mcp.pushers, NewPushEventDetector(&input, fmt.Sprintf("%d", pin), nil, mcp.logger))
 }
 
 func (mcp *McpIO) SetMqtt(publisher mqtt.Publisher) (h []mqtt.MqttHandler) {
@@ -246,11 +277,29 @@ func (mcp *McpIO) GetRgbwOutput(id string) (output RgbwOutput, err error) {
 
 // GetPushEventEmitter returns a PushEventEmitter for the given pin.
 func (mcp *McpIO) GetPushEventEmitter(id string) (PushEventEmitter, error) {
-	return nil, errors.New("push event emitter not implemented in MCPIO driver")
+	pin, err := strconv.Atoi(id)
+	if err != nil {
+		return nil, errors.Join(err, errors.New("failed to convert push event emitter id to int"))
+	}
+	if pin > 255 || pin < 0 {
+		return nil, errors.New("push event emitter pin out of range (mcpio takes uint8 pin id)")
+	}
+
+	name := fmt.Sprintf("%d", pin)
+	for _, push := range mcp.pushers {
+		if push.String() == name {
+			return push, nil
+		}
+	}
+
+	return nil, fmt.Errorf("push event emitter (id: %s) not found", id)
 }
 
 func (mcp *McpIO) Close() error {
 	mcp.isReady = false
+	for _, push := range mcp.pushers {
+		push.Stop()
+	}
 	for _, output := range mcp.outputs {
 		output.Set(false)
 	}

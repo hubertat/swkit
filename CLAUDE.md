@@ -136,7 +136,8 @@ golangci-lint run
 **MCP23017 Driver** (`drivers/mcpio_driver.go`):
 - I2C expander for additional IO
 - `DevNo` is relative (0-7), actual address is `0x20 + DevNo`
-- Pins identified by port letter + number (e.g., `a3`, `b7`)
+- Pins identified by numeric pin index (e.g., `3`, `12`)
+- Buttons use `mcpio|push_event|<pin>`; the pin is polled by a `PushEventDetector`
 
 **Shelly Driver** (`drivers/shelly_driver.go`):
 - Communicates via MQTT using Gen 2+ RPC protocol
