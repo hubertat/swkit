@@ -17,6 +17,7 @@ import (
 	hklog "github.com/brutella/hap/log"
 
 	"github.com/hubertat/swkit/drivers"
+	"github.com/hubertat/swkit/drivers/rpixel"
 	"github.com/hubertat/swkit/mqtt"
 )
 
@@ -59,6 +60,7 @@ type SwKit struct {
 	FakeDriver *drivers.MockIoDriver
 	Shelly     *drivers.ShellyIO
 	Wago       *drivers.WagoIO
+	Rpixel     *rpixel.Driver `json:",omitempty"`
 
 	ioDrivers  map[string]drivers.IoDriver
 	mqttClient *mqtt.MqttClient
@@ -273,7 +275,12 @@ func (sw *SwKit) resolveControllable(name string) (Controllable, bool) {
 	return nil, false
 }
 
-func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
+// Setup builds the drivers and devices from config. When it fails, every
+// driver whose Setup had already succeeded is closed again, and ioDrivers is
+// emptied, so a failed Setup (e.g. a hot reload of a bad config) leaves no
+// driver polling in the background and nothing for a later Close to do.
+// Drivers that were never set up are not closed.
+func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) (err error) {
 	sw.logger = logger
 	sw.timed = newTimedController(logger)
 	sw.ioDrivers = make(map[string]drivers.IoDriver)
@@ -303,6 +310,10 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		sw.ioDrivers[sw.Wago.String()] = sw.Wago
 	}
 
+	if sw.Rpixel != nil {
+		sw.ioDrivers[sw.Rpixel.String()] = sw.Rpixel
+	}
+
 	for _, driver := range sw.ioDrivers {
 		ioSlice[driver.String()] = []string{}
 	}
@@ -319,6 +330,19 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		ioSlice[driverId] = append(ios, ioId)
 	}
 
+	var setUp []drivers.IoDriver
+	defer func() {
+		if err == nil {
+			return
+		}
+		for _, driver := range setUp {
+			if closeErr := driver.Close(); closeErr != nil {
+				logger.Warn("failed to close driver after setup error", "driver", driver.String(), "err", closeErr)
+			}
+		}
+		sw.ioDrivers = map[string]drivers.IoDriver{}
+	}()
+
 	for _, driver := range sw.ioDrivers {
 		ioSlice, present := ioSlice[driver.String()]
 		logger.Debug("looking for driver", "driver", driver.String(), "present", present)
@@ -330,6 +354,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		if err != nil {
 			return errors.Join(err, fmt.Errorf("failed to setup %s driver", driver.String()))
 		}
+		setUp = append(setUp, driver)
 	}
 
 	for _, light := range sw.Lights {
