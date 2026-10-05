@@ -79,6 +79,11 @@ type DeviceState struct {
 	IsFaulty       bool
 	HomeKitEnabled bool
 
+	// StateError is set when the on/off state could not be read from the
+	// driver (e.g. stale or disconnected). IsOn is then false by default and
+	// must not be presented as a real reading.
+	StateError string
+
 	OutputIoId       string                  // lights, color lights, outlets, dimmable lights
 	RgbwIoId         string                  // color lights only
 	AnalogIoId       string                  // dimmable lights only

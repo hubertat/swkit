@@ -102,6 +102,11 @@ golangci-lint run
 - `JsonRpcMessenger`: Implements Shelly Gen 2+ RPC protocol
 - `MqttHandler` interface: Devices implement this to handle MQTT messages
 
+**Control web UI (server/control_server.go, control_static/, control_templates/)** - Phone-first device control page:
+- Display styles live under their own paths: `<endpoint>/tiles`, `<endpoint>/list`, `<endpoint>/compact`. The bare `<endpoint>` opens the viewer's last used style (default tiles). Add a style by extending `controlVariants` and the `html[data-variant=…]` CSS rules; all styles share one markup.
+- JSON API: `GET <endpoint>/api/devices`, `POST <endpoint>/api/devices/{index}/{toggle|set|set_brightness|adjust_brightness|set_for}`.
+- Drivers report state asynchronously (Shelly via MQTT, Wago on its next poll), so a read straight after a command often returns the old value. The client therefore never renders a poll over a pending command: it uses idempotent `set` (not `toggle`) where the current state is known, shows the requested state hatched until a poll that *started after* the server's acknowledgement reports it, and falls back to an amber "unconfirmed" state after a timeout. Power and brightness are tracked as independent per-device slots, and each slot sends one request at a time (latest target wins; scene steps queue), so rapid taps reach the controller in order. `state_error` in the API marks a device whose state could not be read (shown as unknown, never as off), and the whole page greys out with a banner when polls stop succeeding.
+
 ### Key Patterns
 
 1. **IO Resolution Flow**:
