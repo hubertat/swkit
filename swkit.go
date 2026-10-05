@@ -103,6 +103,10 @@ type ControlServerConfig struct {
 	Enabled  bool
 	Port     int    // 0 = share with WebServer port
 	Endpoint string // default "/control"
+	// Advertise announces the control API over mDNS/DNS-SD as a
+	// "_swkit._tcp" service, so LAN clients (e.g. the Presto panel in
+	// presto/) can find it without a configured address. Off by default.
+	Advertise bool
 }
 
 // AgentConfig configures the AI chat agent

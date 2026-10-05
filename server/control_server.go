@@ -76,6 +76,11 @@ func NewControlServer(provider app.DeviceController, endpoint, name string, logg
 	}, nil
 }
 
+// Endpoint returns the normalized URL path prefix the server is mounted under
+func (cs *ControlServer) Endpoint() string {
+	return cs.endpoint
+}
+
 // RegisterOn mounts the control server onto an existing mux (port-sharing mode)
 func (cs *ControlServer) RegisterOn(mux *http.ServeMux) {
 	cs.registerRoutes(mux)
@@ -132,6 +137,8 @@ func (cs *ControlServer) dispatch(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(path, staticPrefix):
 		cs.staticHandler.ServeHTTP(w, r)
+	case path == cs.endpoint+"/api/info":
+		cs.handleInfo(w, r)
 	case path == apiDevices:
 		cs.handleDeviceList(w, r)
 	case strings.HasPrefix(path, apiDevices+"/"):
@@ -169,6 +176,21 @@ func (cs *ControlServer) handlePage(w http.ResponseWriter, r *http.Request, vari
 		cs.logger.Error("control template render error", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
+}
+
+// handleInfo identifies the controller to API clients (e.g. the Presto
+// panel), which otherwise only see an anonymous device list.
+func (cs *ControlServer) handleInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	json.NewEncoder(w).Encode(struct {
+		Name string `json:"name"`
+		API  int    `json:"api"`
+	}{Name: cs.name, API: controlAPIVersion})
 }
 
 // controlDeviceResponse is the response for device list endpoint

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -138,6 +139,13 @@ func (ws *WebServer) Start(ctx context.Context) error {
 // Addr returns the server address
 func (ws *WebServer) Addr() string {
 	return ws.server.Addr
+}
+
+// Port returns the TCP port the server listens on (0 if unparseable)
+func (ws *WebServer) Port() int {
+	_, port, _ := net.SplitHostPort(ws.server.Addr)
+	p, _ := strconv.Atoi(port)
+	return p
 }
 
 // Mux returns the underlying ServeMux for mounting additional handlers
