@@ -131,6 +131,7 @@ class Model:
         self.intents = {}         # index -> {"power": Intent|None, "bri": Intent|None}
         self.flash = {}           # index -> ticks when "confirmed" flash ends
         self.poll_now = False     # set to request an immediate poll
+        self.on_press = lambda dev: None  # a button reported a new press
 
     # ---------- helpers ----------
 
@@ -242,7 +243,8 @@ class Model:
             if offline:
                 sub = "Offline"
             elif dev.get("last_event_type"):
-                sub = event_label(dev["last_event_type"]) + " · " + ago(self.event_age(dev))
+                # "Double · 2 min ago": the tile is narrow, the sheet says "press".
+                sub = event_label(dev["last_event_type"]).replace(" press", "") + " · " + ago(self.event_age(dev))
             else:
                 sub = "No presses yet"
         elif offline:
@@ -470,12 +472,28 @@ class Model:
         now = ticks_ms()
         self.snapshot_at = now
         self.last_ok_at = now
+        recovered = self.last_err is not None
         self.last_err = None
         nxt = {}
         order = []
+        changed = recovered
+        presses = []
         for d in lst:
-            nxt[d["index"]] = d
-            order.append(d["index"])
+            index = d["index"]
+            age = d.get("last_event_age_ms")
+            # When the event happened, in local ticks: stable across polls,
+            # unlike the age, so it only changes on a new press.
+            if age:
+                d["_event_at"] = ticks_add(now, -age)
+            old = self.devices.get(index)
+            if old is None or not _same(old, d):
+                changed = True
+                if old is not None and age and (not old.get("_event_at") or abs(ticks_diff(d["_event_at"], old["_event_at"])) > 1500):
+                    presses.append(d)
+            nxt[index] = d
+            order.append(index)
+        if order != self.order:
+            changed = True
         for index in list(self.intents):
             d = nxt.get(index)
             for slot in ("power", "bri"):
@@ -496,15 +514,20 @@ class Model:
                     self.flash[d["index"]] = ticks_add(now, CONFIRM_FLASH_MS)
                     if was:
                         self.notify(d["name"] + " confirmed the change.")
-        self.changed()
+        if changed:
+            self.changed()
+        for d in presses:
+            self.on_press(d)
 
     async def poll(self):
         started = ticks_ms()
         try:
             data = await self.client.get("/api/devices", POLL_TIMEOUT_S)
         except Exception as e:  # noqa: BLE001
+            first = self.last_err is None
             self.last_err = e
-            self.changed()
+            if first:
+                self.changed()
             return False
         if not isinstance(data, list):
             self.last_err = ValueError("unexpected reply")
@@ -549,6 +572,21 @@ class Model:
         if v.kind == "input":
             return "ok", "Listening", "Updated " + ago(ticks_diff(ticks_ms(), self.last_ok_at))
         return "ok", "Confirmed by device", "Updated " + ago(ticks_diff(ticks_ms(), self.last_ok_at))
+
+
+def _same(a, b):
+    """Equal for display purposes: the event age ticks on every poll."""
+    for k, v in b.items():
+        if k in ("last_event_age_ms", "_event_at"):
+            continue
+        if a.get(k) != v:
+            return False
+    if len(a) != len(b):
+        return False
+    ea, eb = a.get("_event_at"), b.get("_event_at")
+    if ea is None or eb is None:
+        return ea is eb
+    return abs(ticks_diff(ea, eb)) <= 1500
 
 
 def err_text(e):

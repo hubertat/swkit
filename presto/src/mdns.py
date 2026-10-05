@@ -175,7 +175,15 @@ class _Collector:
         return out
 
 
+def _src_ip(addr):
+    # lwIP (the Presto) gives (ip, port); the unix port a raw sockaddr.
+    if isinstance(addr, tuple):
+        return addr[0]
+    return ".".join(str(b) for b in bytes(addr)[4:8])
+
+
 async def _exchange(queries, collector, timeout_ms, resend_ms=700):
+    dest = socket.getaddrinfo(MDNS_ADDR[0], MDNS_ADDR[1])[0][-1]
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.setblocking(False)
@@ -188,7 +196,7 @@ async def _exchange(queries, collector, timeout_ms, resend_ms=700):
             if ticks_diff(now, next_send) >= 0:
                 for q in queries:
                     try:
-                        s.sendto(q, MDNS_ADDR)
+                        s.sendto(q, dest)
                     except OSError:
                         pass
                 next_send = ticks_add(now, resend_ms)
@@ -198,7 +206,7 @@ async def _exchange(queries, collector, timeout_ms, resend_ms=700):
                 await asyncio.sleep(0.03)
                 continue
             try:
-                collector.feed(parse(buf), addr[0])
+                collector.feed(parse(buf), _src_ip(addr))
             except (ValueError, IndexError):
                 pass
     finally:
