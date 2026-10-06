@@ -134,6 +134,43 @@ async def test_unknown_state_toggles_once():
     assert toasts and toasts[-1][0] == "warn", toasts
 
 
+async def test_power_tap_keeps_queued_brightness():
+    # Brightness 30% in flight, 80% queued, then On: 80% must still be sent
+    # and the brightness slot must not drop the pending power state.
+    m, c, _ = setup(dev(type="dimmable_light", has_brightness=True, brightness=10))
+    c.gate = asyncio.Event()
+    m.set_brightness(m.devices[0], 30, True)
+    await settle()
+    m.set_brightness(m.devices[0], 80, True)
+    m.set_power(m.devices[0], True)
+    await settle()
+    assert m.view(m.devices[0]).on, "pending power state lost"
+    c.gate.set()
+    for _ in range(4):
+        await settle()
+    bri = [b["value"] for p, b in c.sent if p.endswith("set_brightness")]
+    pw = [b["value"] for p, b in c.sent if p.endswith("/set")]
+    assert bri == [30, 80], c.sent
+    assert pw == [True], c.sent
+
+
+async def test_unconfirmed_on_unreadable_device_stays_unknown():
+    # After expiry an unreadable device must not be presented as "off".
+    m, c, toasts = setup(dev(state_error="stale"))
+    m.tap(m.devices[0])
+    await settle()
+    advance(M.CONFIRM_MS + 1)
+    m.tick()
+    m.apply_snapshot([dev(state_error="stale")], clock[0])   # polls keep failing to read it
+    d = m.devices[0]
+    v = m.view(d)
+    assert v.sync == "unconfirmed" and v.unknown and not v.on_known, (v.sync, v.unknown, v.on_known)
+    assert v.sub == "State unknown", v.sub
+    _, title, detail = m.status(d, v)
+    assert "reports off" not in detail and "can't be read" in detail, detail
+    assert "reports off" not in toasts[-1][1], toasts
+
+
 async def test_brightness_debounced():
     m, c, _ = setup(dev(type="dimmable_light", has_brightness=True, is_on=True, brightness=40))
     for v in (45, 50, 62, 70):
