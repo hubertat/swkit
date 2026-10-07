@@ -407,11 +407,14 @@ func (p *SwKitProvider) Subscribe(ctx context.Context, interval time.Duration) <
 func (p *SwKitProvider) buildLightState(light *Light) app.DeviceState {
 	isOn := false
 	isHealthy := true
+	stateErr := ""
 	outputIoId := ""
 
 	if light.output != nil {
 		if state, err := light.output.GetState(); err == nil {
 			isOn = state
+		} else {
+			stateErr = err.Error()
 		}
 		isHealthy = isOutputHealthy(light.output)
 		outputIoId = light.output.String()
@@ -424,6 +427,7 @@ func (p *SwKitProvider) buildLightState(light *Light) app.DeviceState {
 		IsHealthy:      isHealthy,
 		IsFaulty:       light.isFaulty,
 		HomeKitEnabled: !light.disableHomekit,
+		StateError:     stateErr,
 		OutputIoId:     outputIoId,
 	}
 }
@@ -431,12 +435,15 @@ func (p *SwKitProvider) buildLightState(light *Light) app.DeviceState {
 func (p *SwKitProvider) buildColorLightState(cl *ColorLight) app.DeviceState {
 	isOn := false
 	isHealthy := true
+	stateErr := ""
 	outputIoId := ""
 	rgbwIoId := ""
 
 	if cl.onDigitalOut != nil {
 		if state, err := cl.onDigitalOut.GetState(); err == nil {
 			isOn = state
+		} else {
+			stateErr = err.Error()
 		}
 		isHealthy = isOutputHealthy(cl.onDigitalOut)
 		outputIoId = cl.onDigitalOut.String()
@@ -453,6 +460,7 @@ func (p *SwKitProvider) buildColorLightState(cl *ColorLight) app.DeviceState {
 		IsHealthy:      isHealthy,
 		IsFaulty:       cl.isFaulty,
 		HomeKitEnabled: !cl.disableHomekit,
+		StateError:     stateErr,
 		OutputIoId:     outputIoId,
 		RgbwIoId:       rgbwIoId,
 	}
@@ -461,6 +469,7 @@ func (p *SwKitProvider) buildColorLightState(cl *ColorLight) app.DeviceState {
 func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceState {
 	isOn := false
 	isHealthy := true
+	stateErr := ""
 	outputIoId := ""
 	analogIoId := ""
 	brightness := 0
@@ -468,6 +477,8 @@ func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceSta
 	if dl.onOut != nil {
 		if state, err := dl.onOut.GetState(); err == nil {
 			isOn = state
+		} else {
+			stateErr = err.Error()
 		}
 		isHealthy = isOutputHealthy(dl.onOut)
 		outputIoId = dl.onOut.String()
@@ -488,6 +499,7 @@ func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceSta
 		IsHealthy:      isHealthy,
 		IsFaulty:       dl.isFaulty,
 		HomeKitEnabled: !dl.disableHomekit,
+		StateError:     stateErr,
 		OutputIoId:     outputIoId,
 		AnalogIoId:     analogIoId,
 		Brightness:     brightness,
@@ -497,11 +509,14 @@ func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceSta
 func (p *SwKitProvider) buildOutletState(outlet *Outlet) app.DeviceState {
 	isOn := false
 	isHealthy := true
+	stateErr := ""
 	outputIoId := ""
 
 	if outlet.output != nil {
 		if state, err := outlet.output.GetState(); err == nil {
 			isOn = state
+		} else {
+			stateErr = err.Error()
 		}
 		isHealthy = isOutputHealthy(outlet.output)
 		outputIoId = outlet.output.String()
@@ -514,6 +529,7 @@ func (p *SwKitProvider) buildOutletState(outlet *Outlet) app.DeviceState {
 		IsHealthy:      isHealthy,
 		IsFaulty:       outlet.isFaulty,
 		HomeKitEnabled: !outlet.disableHomekit,
+		StateError:     stateErr,
 		OutputIoId:     outputIoId,
 	}
 }

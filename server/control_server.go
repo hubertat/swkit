@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,12 @@ var controlStaticFiles goEmbed.FS
 var controlTemplateFiles goEmbed.FS
 
 const defaultControlEndpoint = "/control"
+
+// controlVariants are the display styles of the control page, each served
+// under its own path (<endpoint>/<variant>). The bare endpoint serves the
+// page with no forced variant, and the client picks the viewer's last used
+// one (falling back to the first entry).
+var controlVariants = []string{"tiles", "list", "compact"}
 
 // ControlServer serves the device control web UI
 type ControlServer struct {
@@ -67,6 +74,11 @@ func NewControlServer(provider app.DeviceController, endpoint, name string, logg
 		endpoint:      endpoint,
 		staticHandler: staticHandler,
 	}, nil
+}
+
+// Endpoint returns the normalized URL path prefix the server is mounted under
+func (cs *ControlServer) Endpoint() string {
+	return cs.endpoint
 }
 
 // RegisterOn mounts the control server onto an existing mux (port-sharing mode)
@@ -125,30 +137,60 @@ func (cs *ControlServer) dispatch(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(path, staticPrefix):
 		cs.staticHandler.ServeHTTP(w, r)
+	case path == cs.endpoint+"/api/info":
+		cs.handleInfo(w, r)
 	case path == apiDevices:
 		cs.handleDeviceList(w, r)
 	case strings.HasPrefix(path, apiDevices+"/"):
 		cs.handleDeviceAction(w, r)
+	case path == cs.endpoint || path == cs.endpoint+"/":
+		cs.handlePage(w, r, "")
 	default:
-		cs.handlePage(w, r)
+		variant := strings.TrimPrefix(path, cs.endpoint+"/")
+		if !slices.Contains(controlVariants, variant) {
+			http.NotFound(w, r)
+			return
+		}
+		cs.handlePage(w, r, variant)
 	}
 }
 
-// handlePage renders the HTML control page
-func (cs *ControlServer) handlePage(w http.ResponseWriter, r *http.Request) {
+// handlePage renders the HTML control page. An empty variant lets the client
+// choose (last used, else the default).
+func (cs *ControlServer) handlePage(w http.ResponseWriter, r *http.Request, variant string) {
 	data := struct {
 		Name     string
 		Endpoint string
+		Variant  string
+		Variants []string
 	}{
 		Name:     cs.name,
 		Endpoint: cs.endpoint,
+		Variant:  variant,
+		Variants: controlVariants,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 	if err := cs.tmpl.ExecuteTemplate(w, "control.html", data); err != nil {
 		cs.logger.Error("control template render error", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
+}
+
+// handleInfo identifies the controller to API clients (e.g. the Presto
+// panel), which otherwise only see an anonymous device list.
+func (cs *ControlServer) handleInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	json.NewEncoder(w).Encode(struct {
+		Name string `json:"name"`
+		API  int    `json:"api"`
+	}{Name: cs.name, API: controlAPIVersion})
 }
 
 // controlDeviceResponse is the response for device list endpoint
@@ -163,6 +205,15 @@ type controlDeviceResponse struct {
 	HasBrightness bool   `json:"has_brightness"`
 	Brightness    int    `json:"brightness"`
 	LastEventType string `json:"last_event_type,omitempty"`
+	// StateError is non-empty when the server could not read the device's
+	// state; is_on is then meaningless and the UI shows the state as unknown.
+	StateError string `json:"state_error,omitempty"`
+	SceneState string `json:"scene_state,omitempty"`
+	SceneIndex int    `json:"scene_index,omitempty"`
+	SceneCount int    `json:"scene_count,omitempty"`
+	// LastEventAgeMs is how long ago the button's last event happened, so the
+	// client can show a relative time without trusting its own clock.
+	LastEventAgeMs int64 `json:"last_event_age_ms,omitempty"`
 }
 
 // handleDeviceList returns the list of devices with their current state
@@ -183,7 +234,7 @@ func (cs *ControlServer) handleDeviceList(w http.ResponseWriter, r *http.Request
 			d.Type == app.DeviceTypeScene
 		hasBrightness := d.Type == app.DeviceTypeDimmableLight
 
-		result = append(result, controlDeviceResponse{
+		resp := controlDeviceResponse{
 			Index:         i,
 			Name:          d.Name,
 			Type:          string(d.Type),
@@ -194,7 +245,19 @@ func (cs *ControlServer) handleDeviceList(w http.ResponseWriter, r *http.Request
 			HasBrightness: hasBrightness,
 			Brightness:    d.Brightness,
 			LastEventType: d.LastEventType,
-		})
+			StateError:    d.StateError,
+		}
+		if !d.LastEventTime.IsZero() {
+			resp.LastEventAgeMs = max(time.Since(d.LastEventTime).Milliseconds(), 1)
+		}
+		if d.Type == app.DeviceTypeScene {
+			resp.SceneIndex = d.SceneStateIndex
+			resp.SceneCount = len(d.SceneStateNames)
+			if d.SceneStateIndex >= 0 && d.SceneStateIndex < len(d.SceneStateNames) {
+				resp.SceneState = d.SceneStateNames[d.SceneStateIndex]
+			}
+		}
+		result = append(result, resp)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
