@@ -128,6 +128,7 @@ class Model:
         self.last_err = None
         self.structure = None     # changes when the device list changes
         self.version = 0          # bumped on every visible change
+        self.dirty = None         # changed device indices since take_dirty(); None = everything
         self.intents = {}         # index -> {"power": Intent|None, "bri": Intent|None}
         self.flash = {}           # index -> ticks when "confirmed" flash ends
         self.poll_now = False     # set to request an immediate poll
@@ -135,8 +136,19 @@ class Model:
 
     # ---------- helpers ----------
 
-    def changed(self):
+    def changed(self, index=None):
+        """Marks a visible change: of one device, or of everything."""
         self.version += 1
+        if index is None:
+            self.dirty = None
+        elif self.dirty is not None:
+            self.dirty.add(index)
+
+    def take_dirty(self):
+        """Indices changed since the last call, or None for everything."""
+        d = self.dirty
+        self.dirty = set()
+        return d
 
     def get_intent(self, index, slot):
         slots = self.intents.get(index)
@@ -152,7 +164,7 @@ class Model:
         slots[slot] = None
         if slots["power"] is None and slots["bri"] is None:
             del self.intents[index]
-        self.changed()
+        self.changed(index)
 
     def intent_for(self, dev, slot, kind):
         index = dev["index"]
@@ -301,14 +313,14 @@ class Model:
         if not it.queue:
             if it.debounce_at is not None:
                 it.phase = "dragging"
-                self.changed()
+                self.changed(index)
                 return
             self.acknowledge(index, it)
             return
         job = it.queue.pop(0)
         it.in_flight = True
         it.phase = "sending"
-        self.changed()
+        self.changed(index)
         asyncio.create_task(self._send(index, it, job))
 
     async def _send(self, index, it, job):
@@ -329,7 +341,7 @@ class Model:
         it.phase = "waiting"
         it.ack_at = ticks_ms()
         it.expire_at = ticks_add(it.ack_at, CONFIRM_MS)
-        self.changed()
+        self.changed(index)
         self.poll_now = True
 
     def fail(self, index, it, verb, err):
@@ -355,7 +367,7 @@ class Model:
                     it.phase = "unconfirmed"
                     it.expire_at = None
                     it.clear_at = ticks_add(now, UNCONFIRMED_HOLD_MS)
-                    self.changed()
+                    self.changed(index)
                     dev = self.devices.get(index)
                     if dev:
                         self.notify("%s didn't confirm the change; %s." % (dev["name"], self.reported_text(dev, it)), "warn")
@@ -364,7 +376,7 @@ class Model:
         for index in list(self.flash):
             if ticks_diff(now, self.flash[index]) >= 0:
                 del self.flash[index]
-                self.changed()
+                self.changed(index)
 
     def confirms(self, it, dev, poll_started_at):
         if it.in_flight or it.debounce_at is not None or it.queue:
@@ -415,7 +427,7 @@ class Model:
                 job = {"path": base + "set", "body": {"value": target}, "verb": ("turn on " if target else "turn off ") + name}
             it.queue = [job]
         it.phase = "sending"
-        self.changed()
+        self.changed(index)
         self.pump(index, it)
 
     def tap(self, dev):
@@ -455,7 +467,7 @@ class Model:
             it.debounce_at = ticks_add(ticks_ms(), DEBOUNCE_MS)
             if not it.in_flight:
                 it.phase = "dragging"
-        self.changed()
+        self.changed(index)
 
     def on_count(self, devs):
         return sum(1 for d in devs if self.view(d).on)
@@ -476,7 +488,8 @@ class Model:
         self.last_err = None
         nxt = {}
         order = []
-        changed = recovered
+        everything = recovered      # e.g. the stale look goes away
+        changed = []
         presses = []
         for d in lst:
             index = d["index"]
@@ -487,13 +500,13 @@ class Model:
                 d["_event_at"] = ticks_add(now, -age)
             old = self.devices.get(index)
             if old is None or not _same(old, d):
-                changed = True
+                changed.append(index)
                 if old is not None and age and (not old.get("_event_at") or abs(ticks_diff(d["_event_at"], old["_event_at"])) > 1500):
                     presses.append(d)
             nxt[index] = d
             order.append(index)
         if order != self.order:
-            changed = True
+            everything = True
         for index in list(self.intents):
             d = nxt.get(index)
             for slot in ("power", "bri"):
@@ -505,6 +518,7 @@ class Model:
         key = "|".join("%s:%s:%s" % (d["index"], d.get("type"), d.get("name")) for d in lst)
         if key != self.structure:
             self.structure = key
+            everything = True       # devices moved between sections
         for d in lst:
             for slot in ("power", "bri"):
                 it = self.get_intent(d["index"], slot)
@@ -514,8 +528,11 @@ class Model:
                     self.flash[d["index"]] = ticks_add(now, CONFIRM_FLASH_MS)
                     if was:
                         self.notify(d["name"] + " confirmed the change.")
-        if changed:
+        if everything:
             self.changed()
+        else:
+            for index in changed:
+                self.changed(index)
         for d in presses:
             self.on_press(d)
 

@@ -10,13 +10,13 @@ This folder is **not part of the swkit Go binary**. It is a MicroPython app
 copied onto the Presto. The only related change on the swkit side is the
 optional mDNS announcement described below.
 
-| Lights | Pending command | Detail sheet | Buttons |
+| Lights, screen 1 of 2 | Pending command | Lights, screen 2 of 2 | Detail sheet |
 |---|---|---|---|
-| ![](docs/lights.png) | ![](docs/pending.png) | ![](docs/sheet-dimmable.png) | ![](docs/buttons.png) |
+| ![](docs/lights.png) | ![](docs/pending.png) | ![](docs/lights-screen2.png) | ![](docs/sheet-dimmable.png) |
 
-| Settings | Controller unreachable | Controller picker |
-|---|---|---|
-| ![](docs/settings.png) | ![](docs/stale.png) | ![](docs/picker.png) |
+| Buttons | Settings | Controller unreachable | Controller picker |
+|---|---|---|---|
+| ![](docs/buttons.png) | ![](docs/settings.png) | ![](docs/stale.png) | ![](docs/picker.png) |
 
 The screenshots come from the PC simulator (`sim/`). It runs the same code
 and renders with the same font and the same fill rules as PicoVector.
@@ -28,12 +28,12 @@ It has the same scope and the same honesty rules as the web control UI
 
 | Web control UI | Presto panel |
 |---|---|
-| Sections: Lights, Outlets, Scenes, Buttons | One page per section, as tabs at the bottom. Swipe left/right to change page. Pages scroll vertically, with momentum. |
+| Sections: Lights, Outlets, Scenes, Buttons | One section per tab; swipe left/right to change section. Six tiles per screen; longer sections are paged with ▲ 1/2 ▼ or a swipe up/down. |
 | Tap to toggle; idempotent `set`, `toggle` only when the state is unknown | Same |
 | Requested state shown hatched until a poll *started after* the acknowledgement confirms it; amber "Unconfirmed" after 6 s | Same; the state machine is a direct port (`src/model.py`) |
 | Power and brightness as independent, serialized request slots | Same |
 | `state_error` shown as unknown, never as off | Same ("?" icon, "State unknown") |
-| Page greys out with a banner when polls stop | Header pill turns red, a banner shows the age of the data, and "on" tiles are muted |
+| Page greys out with a banner when polls stop | The header turns red with the age of the data and a Retry button; "on" tiles are muted |
 | Long-press: detail sheet with On/Off, brightness, presets, "on/off for" timers, scene stepping, plain-language sync status | Same sheet, sized for fingers |
 | Two-tap "All off" per section | Same |
 | Button tiles show the last press and when it happened | Same; a fresh press lights the tile blue for 3 s, and optionally flashes the LEDs on the back |
@@ -50,6 +50,10 @@ Panel-only features:
 - **Back LEDs.** *Status* gives a blue flash on a button press and a slow
   red pulse while the controller is unreachable. *Glow* mirrors the screen
   colours.
+- **Light order** (Settings): *Config* (swkit's config order, the default),
+  *On first* (lit lights first, then config order) or *A–Z*. With *On
+  first*, tiles never move under your finger: the order is refreshed when
+  you change section or screen, or after 5 s without touches.
 - **Optional tap sound** from the piezo buzzer.
 - **On-screen guidance** for every failure: missing `secrets.py`, wrong
   Wi-Fi password, no controller found, controller unreachable.
@@ -69,11 +73,22 @@ Both were evaluated against
 | Iteration | Copy `.py` files over USB, REPL for debugging | Rebuild and reflash a `.uf2` on every change |
 | What C++ would add | Raw speed for full-frame animation, LVGL (no Presto port exists) | |
 
-The panel redraws only what changed. A tap repaints one tile; a poll with no
-changes repaints nothing. Interpreter overhead is therefore small next to
-the native drawing. And since the device is always powered, idle power
-draw doesn't matter. The app also checks its own frame time:
-*Settings → Last frame*.
+Drawing is the expensive part on this hardware: at full resolution the
+framebuffer lives in PSRAM, and every anti-aliased pixel is a
+read-modify-write there. So the UI draws as little as possible without
+lowering quality:
+
+- **Paging, not scrolling.** A screen flip is one redraw; free scrolling
+  needed a full redraw for every finger movement.
+- **Per-device repaints.** The model reports which devices changed. A tap or
+  poll repaints those tiles, plus the summary bar and tab badges when their
+  counts change, each as its own small region.
+- **Touch first.** While a finger is down, repaints triggered by polls and
+  timers wait.
+- **Text-only refreshes.** Ageing text ("2 min ago", "Updated 9s ago") is
+  repainted only when it changes.
+
+The app shows its own frame time under *Settings → Last frame*.
 
 **Capability differences on this hardware**
 
@@ -156,6 +171,7 @@ What ends up on the Presto:
 /swkit/*.py         the app
 /swkit/swkit.af     font with icons
 /swkit_settings.json   created on the device: chosen controller, brightness, ...
+                       (pending changes wait in /ramfs; see "Settings storage" below)
 ```
 
 **Without mpremote**, use [Thonny](https://thonny.org): pick the Presto's
@@ -182,9 +198,13 @@ Note that this erases all files.
 - **Long-press** a tile for details: explicit On/Off, brightness slider with
   − / + and presets, "on for 5 min" style timers, scene stepping, and the
   sync status in words.
-- **Swipe** sideways or use the tabs to change page. Drag up and down to
-  scroll. Tab badges count what's on.
-- **Tap the status pill** (top right) or the red banner to refresh now.
+- **Swipe** sideways or use the tabs to change section. Tab badges count
+  what's on. Tapping the active tab goes back to its first screen.
+- **▲ 1/2 ▼** next to All off pages through sections with more than six
+  tiles; a swipe up/down does the same.
+- **Pull the detail sheet down**, tap above it, or tap ✕ to close it.
+- **Tap the status pill** (top right), or Retry in the red header, to
+  refresh now.
 - **All off** asks for a second tap within 3 s.
 
 | Tile look | Meaning |
@@ -197,9 +217,32 @@ Note that this erases all files.
 | Blue (Buttons page) | Pressed in the last 3 seconds |
 | White outline flash | Just confirmed |
 
-On the Presto, *Settings* holds screen brightness, *Dim when idle*, back
-LEDs (Off / Status / Glow) and tap sound. It also shows Wi-Fi, IP and the
-panel's name. The panel announces itself as `swkit-panel.local`.
+On the Presto, *Settings* holds the controller, *Light order*, screen
+brightness, *Dim when idle*, back LEDs (Off / Status / Glow) and tap sound.
+It also shows Wi-Fi, IP, the panel's name and the last frame time. The
+panel announces itself as `swkit-panel.local`. With *Status*, the back LEDs
+stay dark until something needs attention.
+
+### Settings storage
+
+Presto firmware v2.0.0 hangs for good if Python writes to flash while the
+display is running. The firmware replaces pico-sdk's core-1 "lockout"
+handler with one written for the old SDK protocol: it only answers the
+fixed request `0x73a8831e`. The bundled pico-sdk 2.3 sends an incrementing
+request id and waits for the echo with no timeout. Writing the settings file
+was the "changing Back LEDs / Dim freezes the panel" bug.
+
+So the panel never writes flash at runtime:
+
+1. A settings change applies immediately and is saved to `/ramfs`, the
+   firmware's PSRAM RAM disk. It survives a reset, but not a power cut.
+2. On the next boot, before the display starts, the RAM copy is written to
+   `/swkit_settings.json` in flash.
+3. While a change is pending, the panel restarts itself once it has been
+   left alone for 10 minutes (screen dimmed, nobody using it), which
+   commits it. *Settings → Restart now* does it at once.
+
+Changes made in the last 10 minutes before a power cut are lost.
 
 ## Development
 
@@ -240,11 +283,15 @@ The fakes check arguments the way the C bindings do. For example,
 ### MicroPython checks
 
 ```sh
-# unit tests for the state machine (CPython and MicroPython)
+# unit tests: state machine, settings storage (CPython and MicroPython)
 python3 sim/test_model.py
+python3 sim/test_settings.py
 MICROPYPATH=.frozen:src micropython sim/test_model.py
+MICROPYPATH=.frozen:src micropython sim/test_settings.py
 
-# whole app, headless, on the MicroPython unix port, tapping through every screen
+# whole app, headless, on the MicroPython unix port: taps through every
+# screen, checks that a tap repaints only small regions, paging, light
+# order, recovery from an injected UI fault and the boot-time settings commit
 python3 sim/mock_swkit.py --port 18081 &
 sh sim/mp_check.sh
 ```
@@ -272,12 +319,17 @@ python3 tools/make_font.py
 - **Blank screen or a message about `swkit.af`.** Re-run `./deploy.sh`; the
   font must be at `/swkit/swkit.af`.
 - **Logs and REPL.** Run `mpremote repl` to see the app's prints and any
-  traceback. Ctrl-C stops the app; Ctrl-D soft-reboots. After a crash the
-  panel shows the error and restarts after 20 seconds.
+  traceback. Ctrl-C stops the app; Ctrl-D soft-reboots. An error inside one
+  of the app's loops is logged, shown as a toast and the loop restarts;
+  repeated errors show the error screen and restart the panel after 20
+  seconds.
+- **Writing files from your own code.** Don't write to flash while the
+  panel runs (see *Settings storage*); stop the app first.
 
 ## Status
 
 The app was developed with the PC simulator, the MicroPython unix port
-(1.22) and swkit's real mDNS responder. It has **not yet been run on
-physical Presto hardware**. In particular, frame times on the RP2350 are
-unmeasured; check *Settings → Last frame* on the device.
+(1.22) and swkit's real mDNS responder. First hardware tests found the
+flash-write freeze and slow scrolling described above, which led to
+paging and RAM-first settings. Frame times on the RP2350 still need
+measuring: check *Settings → Last frame* on the device.

@@ -73,6 +73,8 @@ ICONS = {
     "info": 0xE88E,
     "home": 0xE88A,
     "light_mode": 0xE518,
+    "expand_less": 0xE5CE,
+    "expand_more": 0xE5CF,
 }
 
 

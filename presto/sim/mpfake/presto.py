@@ -74,6 +74,7 @@ class Presto:
         self.wifi = EzWiFi()
         self.frames = 0
         self.partials = 0
+        self.largest = (0, 0)
 
     def set_backlight(self, b):
         if not 0.0 <= b <= 1.0:
@@ -96,6 +97,8 @@ class Presto:
             if not isinstance(v, int):
                 raise TypeError("partial_update: int required")
         self.partials += 1
+        if w * h > self.largest[0] * self.largest[1]:
+            self.largest = (w, h)
         self.touch.poll()
 
 
