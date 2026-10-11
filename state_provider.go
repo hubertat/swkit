@@ -494,6 +494,9 @@ func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceSta
 			if dl.onOut == nil {
 				isOn = raw > min
 			}
+		} else if dl.onOut == nil {
+			// Analog-only: the analog output is the on/off state too.
+			stateErr = err.Error()
 		}
 		if dl.onOut == nil {
 			isHealthy = dl.briOut.IsHealthy()
