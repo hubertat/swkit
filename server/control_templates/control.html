@@ -1,28 +1,92 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-variant="{{if .Variant}}{{.Variant}}{{else}}tiles{{end}}">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{.Name}} — Control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>{{.Name}}</title>
 <link rel="stylesheet" href="{{.Endpoint}}/static/control.css">
-<script>window.__ENDPOINT = {{.Endpoint}};</script>
+<script>
+window.__ENDPOINT = {{.Endpoint}};
+window.__VARIANT = {{.Variant}};
+window.__VARIANTS = {{.Variants}};
+// Apply theme and display style before first paint to avoid a flash.
+(function () {
+    var d = document.documentElement;
+    var theme = null, variant = null;
+    try {
+        theme = localStorage.getItem('swkit-theme');
+        variant = localStorage.getItem('swkit-control-variant');
+    } catch (e) {}
+    if (!theme) theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    d.setAttribute('data-theme', theme);
+    var v = window.__VARIANT || variant;
+    if (v && window.__VARIANTS.indexOf(v) >= 0) d.setAttribute('data-variant', v);
+})();
+</script>
 </head>
 <body>
-<div class="app">
-  <header class="header">
-    <div class="header-left">
-      <h1>{{.Name}}</h1>
-      <span class="header-sub">Device Control</span>
-    </div>
-    <div class="header-right">
-      <span id="status-indicator" class="status-dot" title="Polling status"></span>
-      <button id="theme-toggle" class="icon-btn" title="Toggle dark/light mode" aria-label="Toggle theme">&#9728;</button>
-    </div>
-  </header>
-  <main id="content">
-    <div class="loading">Loading devices…</div>
-  </main>
+<header class="bar">
+  <div class="bar-title">
+    <h1>{{.Name}}</h1>
+    <button id="fresh" class="fresh" data-fresh="connecting" type="button" title="Refresh now">
+      <span class="fresh-dot" aria-hidden="true"></span><span id="fresh-text">Connecting…</span>
+    </button>
+  </div>
+  <nav class="seg" aria-label="Display style">
+    {{range .Variants}}<a href="{{$.Endpoint}}/{{.}}" class="seg-btn" data-variant="{{.}}" title="{{.}}" aria-label="{{.}} style">
+      {{- if eq . "tiles"}}<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
+      {{- else if eq . "list"}}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      {{- else}}<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="8" height="4" rx="2"/><rect x="13" y="5" width="8" height="4" rx="2"/><rect x="3" y="11" width="8" height="4" rx="2"/><rect x="13" y="11" width="8" height="4" rx="2"/><rect x="3" y="17" width="8" height="4" rx="2"/></svg>
+      {{- end}}</a>{{end}}
+  </nav>
+  <button id="theme-toggle" class="icon-btn" type="button" title="Switch light / dark" aria-label="Switch light or dark theme">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+  </button>
+</header>
+
+<div id="stale-banner" class="banner" role="alert" hidden>
+  <span class="banner-text"><strong>Can't reach the controller.</strong> <span id="stale-detail">Showing the last known state, which may be out of date.</span></span>
+  <button id="stale-retry" class="banner-btn" type="button">Retry</button>
 </div>
+
+<main id="content" class="content" aria-busy="true">
+  <div class="loading" aria-label="Loading devices">
+    <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+    <span class="sk"></span><span class="sk"></span><span class="sk"></span>
+  </div>
+</main>
+
+<footer class="foot">
+  <span>Tap to switch. Long-press for brightness, timers and details.</span>
+  <span class="legend">
+    <span class="lg lg-pending">Confirming</span>
+    <span class="lg lg-unconfirmed">Unconfirmed</span>
+    <span class="lg lg-unknown">Unknown</span>
+  </span>
+</footer>
+
+<dialog id="sheet" class="sheet" aria-labelledby="sheet-title">
+  <div class="sheet-inner">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <div class="sheet-head">
+      <div>
+        <h2 id="sheet-title"></h2>
+        <div id="sheet-type" class="sheet-type"></div>
+      </div>
+      <button id="sheet-close" class="icon-btn" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div id="sheet-status" class="sheet-status"></div>
+    <div id="sheet-body" class="sheet-body"></div>
+  </div>
+</dialog>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
 <script src="{{.Endpoint}}/static/control.js"></script>
 </body>
 </html>

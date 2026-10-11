@@ -10,6 +10,12 @@ swkit - HomeKit enabled switch/input/roller shutter switch, monitor
 * thermostat output
 * influx sensor (temperature for thermostat)
 
+## Presto wall panel
+
+`presto/` holds a touch-screen panel app for the Pimoroni Presto that controls
+swkit over its control API (lights, outlets, scenes, button presses). It's a
+separate MicroPython program, see [presto/README.md](presto/README.md).
+
 ## usage
 
 ### mcp23017

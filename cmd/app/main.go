@@ -319,13 +319,22 @@ func main() {
 		} else {
 			sharePort := sk.ControlServer.Port == 0 ||
 				(sk.WebServer != nil && sk.WebServer.Enabled && sk.ControlServer.Port == sk.WebServer.Port)
+			controlPort := sk.ControlServer.Port
 			if sharePort && webSrv != nil {
 				cs.RegisterOn(webSrv.Mux())
+				controlPort = webSrv.Port()
 				logger.Info("control UI mounted on web server", "endpoint", endpoint)
 			} else {
 				go func() {
 					if err := cs.StartOnPort(ctx, sk.ControlServer.Port); err != nil {
 						logger.Error("control server error", "err", err)
+					}
+				}()
+			}
+			if sk.ControlServer.Advertise {
+				go func() {
+					if err := server.AdvertiseControl(ctx, sk.Name, controlPort, cs.Endpoint(), Version, logger); err != nil {
+						logger.Error("control API mDNS advertisement failed", "err", err)
 					}
 				}()
 			}
