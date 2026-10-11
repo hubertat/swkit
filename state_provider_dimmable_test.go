@@ -116,3 +116,38 @@ func TestStateProviderBuildsDimmableLightState(t *testing.T) {
 		t.Error("dimmable light state missing AnalogIoId")
 	}
 }
+
+func TestStateProviderAnalogOnlyDimmableLight(t *testing.T) {
+	logger := log.New(nil)
+	dimBri := drivers.NewMockAnalogOutput("dl_bri", 0, 100)
+	sw := &SwKit{Name: "t"}
+	sw.dimmableLights = []*DimmableLight{
+		NewDimmableLight(DimmableLightConfig{Name: "Dim1"}, nil, dimBri, logger),
+	}
+	sw.ioDrivers = map[string]drivers.IoDriver{}
+	p := NewStateProvider(sw)
+
+	find := func() app.DeviceState {
+		t.Helper()
+		for _, d := range p.GetState().Devices {
+			if d.Type == app.DeviceTypeDimmableLight {
+				return d
+			}
+		}
+		t.Fatal("no dimmable_light device in state")
+		return app.DeviceState{}
+	}
+
+	ds := find()
+	if ds.IsOn || ds.OutputIoId != "" || ds.AnalogIoId == "" || !ds.IsHealthy {
+		t.Errorf("off analog-only state = %+v, want IsOn=false, no OutputIoId, AnalogIoId set, healthy", ds)
+	}
+
+	if res := p.ToggleDevice(0); res.Error != nil {
+		t.Fatalf("ToggleDevice: %v", res.Error)
+	}
+	ds = find()
+	if !ds.IsOn || ds.Brightness != 100 {
+		t.Errorf("after toggle on: IsOn=%v Brightness=%d, want true/100", ds.IsOn, ds.Brightness)
+	}
+}

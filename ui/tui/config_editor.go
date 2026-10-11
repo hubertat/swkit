@@ -398,7 +398,7 @@ func (ce *ConfigEditor) rebuildItems() {
 func lightFieldCount() int { return 3 } // Name, DigitalOutName, DisableHomekit
 
 // dimmableLightFieldCount returns the number of editable fields for a DimmableLight
-func dimmableLightFieldCount() int { return 5 } // Name, DigitalOutName, AnalogOutName, DefaultSetpoint, DisableHomekit
+func dimmableLightFieldCount() int { return 5 } // Name, DigitalOutName (optional), AnalogOutName, DefaultSetpoint, DisableHomekit
 
 // outletFieldCount returns the number of editable fields for an Outlet
 func outletFieldCount() int { return 3 } // Name, DigitalOutName, DisableHomekit
@@ -1661,7 +1661,12 @@ func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 				hkText = theme.Muted.Render(" (no HK)")
 			}
 
-			ioText := theme.Secondary.Render(dl.DigitalOutName + " + " + dl.AnalogOutName)
+			// DigitalOutName is optional: an analog-only dimmable light shows
+			// just its analog output.
+			ioText := theme.Secondary.Render(dl.AnalogOutName)
+			if dl.DigitalOutName != "" {
+				ioText = theme.Secondary.Render(dl.DigitalOutName + " + " + dl.AnalogOutName)
+			}
 			if dl.DigitalOutName == "" && dl.AnalogOutName == "" {
 				ioText = theme.Muted.Render("[no IO]")
 			}
@@ -1829,7 +1834,7 @@ func (ce *ConfigEditor) viewEditDimmableLight(theme Theme) string {
 
 	fields := []string{title, ""}
 	fields = append(fields, ce.renderTextField(theme, "Name", dl.Name, 0))
-	fields = append(fields, ce.renderTextField(theme, "IO Output (on/off)", dl.DigitalOutName, 1))
+	fields = append(fields, ce.renderTextField(theme, "IO Out (optional)", dl.DigitalOutName, 1))
 	fields = append(fields, ce.renderTextField(theme, "IO Analog (bright)", dl.AnalogOutName, 2))
 	fields = append(fields, ce.renderTextField(theme, "Default Brightness (0-100)", strconv.Itoa(dl.DefaultSetpoint), 3))
 	fields = append(fields, ce.renderBoolField(theme, "Disable HomeKit", dl.DisableHomekit, 4))

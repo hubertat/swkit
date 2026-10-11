@@ -13,13 +13,24 @@ import (
 )
 
 type DimmableLightConfig struct {
-	Name           string
+	Name string
+	// DigitalOutName is optional. When set (the typical wiring) it switches
+	// the light on/off while AnalogOutName only sets brightness. When empty,
+	// the analog output does both: zero is off, anything above zero is on.
 	DigitalOutName string
-	AnalogOutName  string
-	// DefaultSetpoint is the brightness (0-100, HomeKit %) written to the
-	// analog output on startup. Zero means "do not initialise" (hardware
-	// keeps its own power-on default). Set to e.g. 100 to ensure full
-	// brightness after every restart.
+	// AnalogOutName is required.
+	AnalogOutName string
+	// DefaultSetpoint is a brightness (0-100, HomeKit %). Zero means unset.
+	//
+	// With a DigitalOutName it is written to the analog output on startup
+	// (hardware otherwise keeps its own power-on default); set to e.g. 100 to
+	// ensure full brightness after every restart. The light's on/off state is
+	// untouched, since the digital output owns it.
+	//
+	// Without a DigitalOutName nothing is written on startup, because any
+	// non-zero level would switch the light on after every restart. Instead
+	// it is the level used when the light is switched on with no earlier
+	// level to restore (unset = 100%).
 	//
 	// Pattern: any device type that owns an AnalogOutput and needs a
 	// configurable startup value should follow this same approach —
@@ -32,17 +43,34 @@ type DimmableLightConfig struct {
 // DimmableLight supports brightness control.
 var _ Dimmable = (*DimmableLight)(nil)
 
-// DimmableLight is an on/off light with brightness control, composing a
-// DigitalOutput (on/off) and an AnalogOutput (brightness). HomeKit brightness
-// (0-100) is scaled to the analog output's native range via GetMinMax().
+// DimmableLight is an on/off light with brightness control. It always has an
+// AnalogOutput (brightness) and optionally a DigitalOutput (on/off). HomeKit
+// brightness (0-100) is scaled to the analog output's native range via
+// GetMinMax().
+//
+// With a DigitalOutput, on/off and brightness are independent: the digital
+// output alone decides on/off. Without one (onOut == nil, "analog-only"), the
+// analog output carries both: the light is on while it is above its minimum,
+// switching off writes the minimum, and switching on restores the last level
+// it had (see restoreLevel).
 type DimmableLight struct {
 	name           string
 	disableHomekit bool
 	isFaulty       bool
 
-	onOut  drivers.DigitalOutput
+	onOut  drivers.DigitalOutput // nil for an analog-only light
 	briOut drivers.AnalogOutput
 	logger *log.Logger
+
+	// Analog-only mode: lastLevel is the most recent native level above the
+	// minimum, restored when the light is switched back on. Until one is seen
+	// (hasLastLevel false), onLevel is used instead. Guarded by levelMu, not lock:
+	// Sync holds lock across driver reads, and control calls must not queue
+	// behind a slow one.
+	levelMu      sync.Mutex
+	lastLevel    int
+	hasLastLevel bool
+	onLevel      int // native level for switch-on with no lastLevel
 
 	hk         *accessory.Lightbulb
 	brightness *characteristic.Brightness
@@ -51,8 +79,9 @@ type DimmableLight struct {
 	lock sync.Mutex
 }
 
+// NewDimmableLight creates a dimmable light. dOut may be nil for an
+// analog-only light (see DimmableLight); aOut is required.
 func NewDimmableLight(config DimmableLightConfig, dOut drivers.DigitalOutput, aOut drivers.AnalogOutput, logger *log.Logger) *DimmableLight {
-	logger.Debug("dimmable light created", "name", config.Name, "digitalOut", dOut.String(), "analogOut", aOut.String())
 	dl := &DimmableLight{
 		name:           config.Name,
 		disableHomekit: config.DisableHomekit,
@@ -61,8 +90,22 @@ func NewDimmableLight(config DimmableLightConfig, dOut drivers.DigitalOutput, aO
 		onOut:          dOut,
 		briOut:         aOut,
 	}
+	min, max := aOut.GetMinMax()
+	if dOut == nil {
+		logger.Debug("dimmable light created (analog only)", "name", config.Name, "analogOut", aOut.String())
+		dl.onLevel = max
+		if config.DefaultSetpoint > 0 {
+			// A setpoint that scales down to the minimum would make switch-on
+			// a no-op; fall back to full brightness then.
+			if native := convertIntRange(config.DefaultSetpoint, 0, 100, min, max); native > min {
+				dl.onLevel = native
+			}
+		}
+		return dl
+	}
+
+	logger.Debug("dimmable light created", "name", config.Name, "digitalOut", dOut.String(), "analogOut", aOut.String())
 	if config.DefaultSetpoint > 0 {
-		min, max := aOut.GetMinMax()
 		native := convertIntRange(config.DefaultSetpoint, 0, 100, min, max)
 		if err := aOut.Set(native); err != nil {
 			logger.Warn("failed to apply default setpoint", "dimmableLight", config.Name, "err", err)
@@ -90,9 +133,13 @@ func (dl *DimmableLight) InitHk() *accessory.A {
 		return nil
 	}
 
+	serial := fmt.Sprintf("dimmable_light:%s", dl.briOut.String())
+	if dl.onOut != nil {
+		serial = fmt.Sprintf("dimmable_light:%s:%s", dl.onOut.String(), dl.briOut.String())
+	}
 	info := accessory.Info{
 		Name:         dl.name,
-		SerialNumber: fmt.Sprintf("dimmable_light:%s:%s", dl.onOut.String(), dl.briOut.String()),
+		SerialNumber: serial,
 	}
 	dl.hk = accessory.NewLightbulb(info)
 
@@ -118,8 +165,10 @@ func (dl *DimmableLight) updateBrightness(newBrightness int) {
 }
 
 // SetBrightness sets brightness as a HomeKit percentage (0-100), scaled to the
-// analog output's native range. Values are clamped to [0, 100]. Setting
-// brightness does not toggle the On state - the two are independent.
+// analog output's native range. Values are clamped to [0, 100]. With a digital
+// output, setting brightness does not toggle the On state - the two are
+// independent. Analog-only, brightness is the On state: 0 switches the light
+// off and anything above 0 switches it on.
 func (dl *DimmableLight) SetBrightness(pct int) {
 	if pct < 0 {
 		pct = 0
@@ -132,7 +181,37 @@ func (dl *DimmableLight) SetBrightness(pct int) {
 	dl.logger.Debug("setting dimmable light brightness", "dimmableLight", dl.name, "brightness", pct, "native", native)
 	if err := dl.briOut.Set(native); err != nil {
 		dl.logger.Error("failed to set dimmable light brightness", "dimmableLight", dl.name, "err", err)
+		return
 	}
+	dl.rememberLevel(native)
+}
+
+// rememberLevel records native as the level to restore on switch-on, if it is
+// above the analog minimum. Only meaningful for an analog-only light.
+func (dl *DimmableLight) rememberLevel(native int) {
+	if dl.onOut != nil {
+		return
+	}
+	min, _ := dl.briOut.GetMinMax()
+	if native <= min {
+		return
+	}
+	dl.levelMu.Lock()
+	dl.lastLevel = native
+	dl.hasLastLevel = true
+	dl.levelMu.Unlock()
+}
+
+// restoreLevel returns the native level an analog-only light switches on to:
+// the last level above the minimum it had, else onLevel (DefaultSetpoint, or
+// the analog maximum when unset).
+func (dl *DimmableLight) restoreLevel() int {
+	dl.levelMu.Lock()
+	defer dl.levelMu.Unlock()
+	if dl.hasLastLevel {
+		return dl.lastLevel
+	}
+	return dl.onLevel
 }
 
 // Sync() is called periodically by swkit managing server to sync from drivers io.
@@ -145,8 +224,17 @@ func (dl *DimmableLight) Sync(force bool) (err error) {
 	dl.lock.Lock()
 	defer dl.lock.Unlock()
 
-	onState, onErr := dl.onOut.GetState()
+	var onState bool
+	var onErr error
 	native, briErr := dl.briOut.GetState()
+	if dl.onOut != nil {
+		onState, onErr = dl.onOut.GetState()
+	} else if briErr == nil {
+		onState = dl.isOnLevel(native)
+		// Track levels set outside swkit (e.g. at the dimmer itself) so a
+		// later switch-on restores what the user last saw.
+		dl.rememberLevel(native)
+	}
 	if onErr != nil || briErr != nil {
 		err = errors.Join(errors.New("failed to get one of DimmableLight io values: On, Brightness"), onErr, briErr)
 		dl.isFaulty = true
@@ -166,9 +254,24 @@ func (dl *DimmableLight) Sync(force bool) (err error) {
 	return nil
 }
 
-// GetState reports the current on/off state from the digital output.
+// isOnLevel reports whether a native analog level counts as "on" for an
+// analog-only light: anything above the analog minimum.
+func (dl *DimmableLight) isOnLevel(native int) bool {
+	min, _ := dl.briOut.GetMinMax()
+	return native > min
+}
+
+// GetState reports the current on/off state: from the digital output if there
+// is one, otherwise whether the analog output is above its minimum.
 func (dl *DimmableLight) GetState() (bool, error) {
-	return dl.onOut.GetState()
+	if dl.onOut != nil {
+		return dl.onOut.GetState()
+	}
+	native, err := dl.briOut.GetState()
+	if err != nil {
+		return false, err
+	}
+	return dl.isOnLevel(native), nil
 }
 
 // GetBrightness reports the current brightness as a HomeKit percentage (0-100),
@@ -182,15 +285,43 @@ func (dl *DimmableLight) GetBrightness() (int, error) {
 	return convertIntRange(native, min, max, 0, 100), nil
 }
 
+// SetValue switches the light on or off. With a digital output it drives that
+// output only. Analog-only, off writes the analog minimum (remembering the
+// current level first) and on restores the remembered level; switching on a
+// light that is already on leaves its level unchanged.
 func (dl *DimmableLight) SetValue(state bool) {
 	dl.logger.Debug("setting dimmable light value", "dimmableLight", dl.name, "state", state)
-	if err := dl.onOut.Set(state); err != nil {
+	if dl.onOut != nil {
+		if err := dl.onOut.Set(state); err != nil {
+			dl.logger.Error("failed to set dimmable light on state", "dimmableLight", dl.name, "err", err)
+		}
+		return
+	}
+	dl.setAnalogOnly(state)
+}
+
+func (dl *DimmableLight) setAnalogOnly(state bool) {
+	min, _ := dl.briOut.GetMinMax()
+	current, err := dl.briOut.GetState()
+	if err == nil {
+		dl.rememberLevel(current)
+	}
+
+	target := min
+	if state {
+		if err == nil && dl.isOnLevel(current) {
+			return // already on: keep the current level
+		}
+		target = dl.restoreLevel()
+	}
+	dl.logger.Debug("setting analog-only dimmable light level", "dimmableLight", dl.name, "state", state, "native", target)
+	if err := dl.briOut.Set(target); err != nil {
 		dl.logger.Error("failed to set dimmable light on state", "dimmableLight", dl.name, "err", err)
 	}
 }
 
 func (dl *DimmableLight) Toggle() {
-	currentState, err := dl.onOut.GetState()
+	currentState, err := dl.GetState()
 	if err == nil {
 		dl.logger.Debug("toggling dimmable light", "dimmableLight", dl.name, "oldState", currentState, "newState", !currentState)
 		dl.SetValue(!currentState)

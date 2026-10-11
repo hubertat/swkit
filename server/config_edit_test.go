@@ -740,6 +740,53 @@ func TestConfigEdit_ValidationDefaultSetpointOutOfRange(t *testing.T) {
 	postAndExpectErrors(t, ws, cfg, "DefaultSetpoint")
 }
 
+// ---- Dimmable light: DigitalOutName is optional, AnalogOutName is not ----
+
+func TestConfigEdit_ValidationDimmableAnalogOnlyAccepted(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		DimmableLights: []app.DimmableLightEditConfig{{Name: "Hall", AnalogOutName: "gpio|a_out|1"}},
+	}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: fakeConfigRevision(baseFixtureConfig())})
+	code, resp := doConfigEditPost(t, ws, string(body))
+	if code != 200 {
+		t.Fatalf("status = %d, want 200 (a dimmable light without DigitalOutName is valid), errors=%v", code, resp.Errors)
+	}
+}
+
+func TestConfigEdit_ValidationDimmableAnalogOutRequired(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		DimmableLights: []app.DimmableLightEditConfig{{Name: "Hall", DigitalOutName: "gpio|d_out|5"}},
+	}
+	postAndExpectErrors(t, ws, cfg, "AnalogOutName must not be empty")
+}
+
+func TestConfigEdit_ValidationDimmableDigitalOutStillTypeChecked(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		DimmableLights: []app.DimmableLightEditConfig{{Name: "Hall", DigitalOutName: "gpio|a_out|2", AnalogOutName: "gpio|a_out|1"}},
+	}
+	postAndExpectErrors(t, ws, cfg, "DigitalOutName")
+}
+
+func TestConfigEdit_ValidationDimmableShellyAnalogOnlyRejected(t *testing.T) {
+	// A Shelly a_out only sets a light's brightness; on/off is a separate
+	// d_out, so it cannot back an analog-only dimmable light.
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		DimmableLights: []app.DimmableLightEditConfig{{Name: "Hall", AnalogOutName: "shelly|a_out|dev123:light:0"}},
+	}
+	postAndExpectErrors(t, ws, cfg, "DigitalOutName is required")
+
+	cfg.DimmableLights[0].DigitalOutName = "shelly|d_out|dev123:light:0"
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: fakeConfigRevision(baseFixtureConfig())})
+	code, resp := doConfigEditPost(t, ws, string(body))
+	if code != 200 {
+		t.Fatalf("status = %d, want 200 (shelly a_out with a d_out is valid), errors=%v", code, resp.Errors)
+	}
+}
+
 // ---- Colon-in-name rejection (finding 1) ----
 
 func TestConfigEdit_ValidationNameWithColonRejectedLight(t *testing.T) {

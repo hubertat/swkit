@@ -59,10 +59,15 @@ type OutletEditConfig struct {
 
 // DimmableLightEditConfig represents an editable DimmableLight configuration
 type DimmableLightEditConfig struct {
-	Name           string
+	Name string
+	// DigitalOutName is optional; when empty the analog output also switches
+	// the light on/off (0 = off).
 	DigitalOutName string
-	AnalogOutName  string
-	// DefaultSetpoint is the startup brightness (0-100, HomeKit %). 0 = do not initialise.
+	// AnalogOutName is required.
+	AnalogOutName string
+	// DefaultSetpoint is a brightness (0-100, HomeKit %); 0 = unset. With a
+	// DigitalOutName it is written on startup; without one it is the level
+	// used when switching on with no earlier level to restore.
 	DefaultSetpoint int
 	DisableHomekit  bool
 }

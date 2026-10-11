@@ -154,3 +154,148 @@ func TestDimmableLightSyncWithoutHomekitIsNoop(t *testing.T) {
 		t.Errorf("Sync without homekit returned error: %v", err)
 	}
 }
+
+// ---- Analog-only dimmable light (no DigitalOutName) ----
+
+func newAnalogOnlyDimmableLight(t *testing.T, min, max, defaultSetpoint int) (*DimmableLight, *drivers.MockAnalogOutput) {
+	t.Helper()
+	aOut := drivers.NewMockAnalogOutput("dl_bri", min, max)
+	dl := NewDimmableLight(
+		DimmableLightConfig{Name: "Analog Dim", AnalogOutName: "y", DefaultSetpoint: defaultSetpoint},
+		nil, aOut, log.New(nil),
+	)
+	return dl, aOut
+}
+
+func TestDimmableLightAnalogOnlyDefaultSetpointNotAppliedOnNew(t *testing.T) {
+	// Writing a non-zero level at startup would switch an analog-only light
+	// on after every restart, so the constructor must leave it alone.
+	_, aOut := newAnalogOnlyDimmableLight(t, 0, 100, 75)
+	if got, _ := aOut.GetState(); got != 0 {
+		t.Errorf("analog-only DefaultSetpoint must not be written on startup: native = %d, want 0", got)
+	}
+}
+
+func TestDimmableLightAnalogOnlyStateFollowsLevel(t *testing.T) {
+	dl, aOut := newAnalogOnlyDimmableLight(t, 0, 32767, 0)
+
+	if on, err := dl.GetState(); err != nil || on {
+		t.Fatalf("GetState at level 0 = (%v, %v), want (false, nil)", on, err)
+	}
+	_ = aOut.Set(1)
+	if on, _ := dl.GetState(); !on {
+		t.Error("GetState above the analog minimum should be on")
+	}
+}
+
+func TestDimmableLightAnalogOnlySetValueRestoresLastLevel(t *testing.T) {
+	dl, aOut := newAnalogOnlyDimmableLight(t, 0, 100, 0)
+
+	dl.SetBrightness(40)
+	dl.SetValue(false)
+	if got, _ := aOut.GetState(); got != 0 {
+		t.Fatalf("SetValue(false): native = %d, want 0", got)
+	}
+	dl.SetValue(true)
+	if got, _ := aOut.GetState(); got != 40 {
+		t.Errorf("SetValue(true) after off: native = %d, want restored 40", got)
+	}
+}
+
+func TestDimmableLightAnalogOnlySetValueOnKeepsCurrentLevel(t *testing.T) {
+	dl, aOut := newAnalogOnlyDimmableLight(t, 0, 100, 0)
+
+	dl.SetBrightness(30)
+	dl.SetValue(true)
+	if got, _ := aOut.GetState(); got != 30 {
+		t.Errorf("SetValue(true) on a lit light: native = %d, want unchanged 30", got)
+	}
+}
+
+func TestDimmableLightAnalogOnlyFirstOnUsesDefaultSetpoint(t *testing.T) {
+	dl, aOut := newAnalogOnlyDimmableLight(t, 0, 32767, 50)
+	dl.SetValue(true)
+	if got, _ := aOut.GetState(); got < 16380 || got > 16387 {
+		t.Errorf("first SetValue(true) with DefaultSetpoint 50: native = %d, want ~16383", got)
+	}
+}
+
+func TestDimmableLightAnalogOnlyFirstOnWithoutSetpointIsFull(t *testing.T) {
+	dl, aOut := newAnalogOnlyDimmableLight(t, 0, 32767, 0)
+	dl.SetValue(true)
+	if got, _ := aOut.GetState(); got != 32767 {
+		t.Errorf("first SetValue(true) without DefaultSetpoint: native = %d, want 32767", got)
+	}
+}
+
+func TestDimmableLightAnalogOnlyToggle(t *testing.T) {
+	dl, aOut := newAnalogOnlyDimmableLight(t, 0, 100, 0)
+
+	dl.SetBrightness(60)
+	dl.Toggle()
+	if got, _ := aOut.GetState(); got != 0 {
+		t.Fatalf("Toggle from on: native = %d, want 0", got)
+	}
+	dl.Toggle()
+	if got, _ := aOut.GetState(); got != 60 {
+		t.Errorf("Toggle from off: native = %d, want restored 60", got)
+	}
+}
+
+func TestDimmableLightAnalogOnlyBrightnessZeroIsOff(t *testing.T) {
+	dl, aOut := newAnalogOnlyDimmableLight(t, 0, 100, 0)
+
+	dl.SetBrightness(70)
+	dl.SetBrightness(0)
+	if on, _ := dl.GetState(); on {
+		t.Error("SetBrightness(0) should leave an analog-only light off")
+	}
+	// Brightness 0 is not remembered as a level to restore.
+	dl.SetValue(true)
+	if got, _ := aOut.GetState(); got != 70 {
+		t.Errorf("SetValue(true) after SetBrightness(0): native = %d, want restored 70", got)
+	}
+}
+
+func TestDimmableLightAnalogOnlyRemembersExternalLevelOnSync(t *testing.T) {
+	dl, aOut := newAnalogOnlyDimmableLight(t, 0, 100, 0)
+	dl.InitHk()
+
+	// Level changed outside swkit, then picked up by the sync loop.
+	_ = aOut.Set(25)
+	if err := dl.Sync(true); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if !dl.hk.Lightbulb.On.Value() {
+		t.Error("Sync: HomeKit On should be true above the analog minimum")
+	}
+	dl.SetValue(false)
+	if err := dl.Sync(true); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if dl.hk.Lightbulb.On.Value() {
+		t.Error("Sync: HomeKit On should be false at the analog minimum")
+	}
+	dl.SetValue(true)
+	if got, _ := aOut.GetState(); got != 25 {
+		t.Errorf("SetValue(true): native = %d, want restored external level 25", got)
+	}
+}
+
+func TestDimmableLightWithDigitalOutBrightnessIndependentOfOn(t *testing.T) {
+	// The typical wiring is unchanged: with a digital output, brightness
+	// does not touch on/off and on/off does not touch brightness.
+	dOut := drivers.NewMockOutput("dl_on")
+	aOut := drivers.NewMockAnalogOutput("dl_bri", 0, 100)
+	dl := NewDimmableLight(DimmableLightConfig{Name: "Test", DigitalOutName: "x", AnalogOutName: "y"}, dOut, aOut, log.New(nil))
+
+	dl.SetBrightness(40)
+	if on, _ := dl.GetState(); on {
+		t.Error("SetBrightness must not switch on a light with a digital output")
+	}
+	dl.SetValue(true)
+	dl.SetValue(false)
+	if got, _ := aOut.GetState(); got != 40 {
+		t.Errorf("SetValue must not touch brightness with a digital output: native = %d, want 40", got)
+	}
+}

@@ -2460,7 +2460,9 @@
 
     function buildDimmableForm(panel, entry) {
         buildNameField(panel, entry, 'dimmable_light');
-        panel.appendChild(ioFieldEl('Digital Out', entry.DigitalOutName, 'd_out', function(v) {
+        // Digital Out is optional: left empty, the analog output also
+        // switches the light on/off (0 = off). See DimmableLightConfig.
+        panel.appendChild(ioFieldEl('Digital Out (optional)', entry.DigitalOutName, 'd_out', function(v) {
             entry.DigitalOutName = v; markDirty(); scheduleRedrawEdit();
         }));
         panel.appendChild(ioFieldEl('Analog Out', entry.AnalogOutName, 'a_out', function(v) {

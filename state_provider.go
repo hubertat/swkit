@@ -474,6 +474,8 @@ func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceSta
 	analogIoId := ""
 	brightness := 0
 
+	// The digital output is optional; without it on/off is derived from the
+	// analog output (DimmableLight.GetState) and health comes from it too.
 	if dl.onOut != nil {
 		if state, err := dl.onOut.GetState(); err == nil {
 			isOn = state
@@ -489,6 +491,12 @@ func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceSta
 		if raw, err := dl.briOut.GetState(); err == nil {
 			min, max := dl.briOut.GetMinMax()
 			brightness = convertIntRange(raw, min, max, 0, 100)
+			if dl.onOut == nil {
+				isOn = raw > min
+			}
+		}
+		if dl.onOut == nil {
+			isHealthy = dl.briOut.IsHealthy()
 		}
 	}
 
@@ -830,10 +838,9 @@ func (p *SwKitProvider) getDeviceState(device Controllable) bool {
 			}
 		}
 	case *DimmableLight:
-		if d.onOut != nil {
-			if state, err := d.onOut.GetState(); err == nil {
-				return state
-			}
+		// GetState covers both the digital-output and analog-only wiring.
+		if state, err := d.GetState(); err == nil {
+			return state
 		}
 	case *Outlet:
 		if d.output != nil {
