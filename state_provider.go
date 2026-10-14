@@ -286,6 +286,9 @@ func (p *SwKitProvider) GetState() app.AppState {
 	if sw.Shelly != nil {
 		collectIoDebug(sw.Shelly.String(), sw.Shelly)
 	}
+	if sw.Rpixel != nil {
+		collectIoDebug(sw.Rpixel.String(), sw.Rpixel)
+	}
 
 	// Build IO id → device name map for annotating IO debug points
 	ioDeviceMap := make(map[string]string)
@@ -303,17 +306,13 @@ func (p *SwKitProvider) GetState() app.AppState {
 			ioDeviceMap[ds.EventInputId] = ds.Name
 		}
 	}
-	// Annotate each IO point with the device that uses it (if any)
+	// Annotate each IO point with the device that uses it (if any), matching
+	// the point's config-grammar id (app.IoPointToId) against the devices' io
+	// String() ids. For wago this is the same index form as before; rpixel
+	// needs it because its ids use the device name, not pt.Index. (Shelly
+	// io String() ids are not in config grammar, so they match neither way.)
 	for i, pt := range state.IoDebug {
-		ioTypeStr := "d_in"
-		switch pt.Type {
-		case "output":
-			ioTypeStr = "d_out"
-		case "analog_output":
-			ioTypeStr = "a_out"
-		}
-		ioId := fmt.Sprintf("%s|%s|%d", pt.DriverName, ioTypeStr, pt.Index)
-		if deviceName, ok := ioDeviceMap[ioId]; ok {
+		if deviceName, ok := ioDeviceMap[app.IoPointToId(pt)]; ok {
 			state.IoDebug[i].ConfiguredAs = deviceName
 		}
 	}

@@ -42,6 +42,9 @@ func IoPointToIdWithType(pt IoPointDebugState, typeStr string) string {
 //   - Wago: config ids use the driver-global point index rather than the
 //     "M<module>:D?<port>" debug name, since that index is stable across
 //     module topology changes.
+//
+// rpixel uses the debug name verbatim: it is the configured device name, the
+// same name its config ids use (rpixel|d_out|<name>, rpixel|a_out|<name>).
 func ioPointNameForConfig(pt IoPointDebugState) string {
 	switch pt.DriverName {
 	case "shelly":

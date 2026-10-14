@@ -230,6 +230,43 @@
                 '</table></div></div>';
         }
 
+        // rpixel: has "rings" array
+        if (det.rings !== undefined) {
+            if (!det.rings || det.rings.length === 0) {
+                return '<div class="driver-detail-panel"><span class="text-muted">No rings configured</span></div>';
+            }
+            const now = Date.now();
+            let rows = '';
+            for (const ring of det.rings) {
+                // timeSince() gives up after 200 s; an offline ring is often
+                // older than that, so fall back to the timestamp itself.
+                let lastSeen = timeSince(ring.last_seen, now);
+                if (!lastSeen) {
+                    const seenAt = ring.last_seen ? new Date(ring.last_seen) : null;
+                    lastSeen = (seenAt && !isNaN(seenAt.getTime()) && seenAt.getTime() > 0)
+                        ? escHtml(seenAt.toLocaleString())
+                        : 'never';
+                }
+                const healthIcon = ring.online
+                    ? '<span class="text-success">✓</span>'
+                    : '<span class="text-error" title="' + escHtml(ring.problem || '') + '">✗</span>';
+                rows += '<tr>' +
+                    '<td>' + escHtml(ring.name) + '</td>' +
+                    '<td class="mono">' + escHtml(ring.address || '-') + '</td>' +
+                    '<td class="mono">' + escHtml(ring.resolved || '-') + '</td>' +
+                    '<td class="mono">' + escHtml(ring.device_id || '-') + '</td>' +
+                    '<td>' + (ring.on ? 'on' : 'off') + ' / ' + ring.brightness + '</td>' +
+                    '<td>' + lastSeen + '</td>' +
+                    '<td>' + healthIcon + '</td>' +
+                    '</tr>';
+            }
+            return '<div class="driver-detail-panel">' +
+                '<div class="table-wrap"><table>' +
+                '<thead><tr><th>Name</th><th>Address</th><th>Resolved</th><th>Device ID</th><th>State</th><th>Last seen</th><th>Health</th></tr></thead>' +
+                '<tbody>' + rows + '</tbody>' +
+                '</table></div></div>';
+        }
+
         // Fallback: raw JSON
         return '<div class="driver-detail-panel"><pre class="driver-detail-raw">' + escHtml(JSON.stringify(det, null, 2)) + '</pre></div>';
     }
