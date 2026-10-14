@@ -124,6 +124,10 @@ func NewDimmableLight(config DimmableLightConfig, dOut drivers.DigitalOutput, aO
 	min, max := aOut.GetMinMax()
 	if dOut == nil {
 		logger.Debug("dimmable light created (analog only)", "name", config.Name, "analogOut", aOut.String())
+		// Outputs that set only a level by default must carry on/off here.
+		if ls, ok := aOut.(drivers.LevelSwitchable); ok {
+			ls.SetLevelSwitchesPower(true)
+		}
 		dl.onLevel = max
 		if config.DefaultSetpoint > 0 {
 			// A setpoint that scales down to the minimum would make switch-on

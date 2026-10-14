@@ -411,10 +411,6 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		if err != nil {
 			return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", dimLight.AnalogOutName))
 		}
-		if dOut == nil && drivers.AnalogOutputIsBrightnessOnly(driver.String()) {
-			return fmt.Errorf("dimmable light %s: %s analog output %s only sets brightness and cannot switch the light off; DigitalOutName is required for it", dimLight.Name, driver.String(), dimLight.AnalogOutName)
-		}
-
 		aOut, err := driver.GetAnalogOutput(ioName)
 		if err != nil {
 			return errors.Join(err, fmt.Errorf("failed to get analog output for dimmable light %s", dimLight.Name))

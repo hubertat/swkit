@@ -770,20 +770,19 @@ func TestConfigEdit_ValidationDimmableDigitalOutStillTypeChecked(t *testing.T) {
 	postAndExpectErrors(t, ws, cfg, "DigitalOutName")
 }
 
-func TestConfigEdit_ValidationDimmableShellyAnalogOnlyRejected(t *testing.T) {
-	// A Shelly a_out only sets a light's brightness; on/off is a separate
-	// d_out, so it cannot back an analog-only dimmable light.
-	ws := newValidationTestServer(t)
-	cfg := app.EditableConfig{
-		DimmableLights: []app.DimmableLightEditConfig{{Name: "Hall", AnalogOutName: "shelly|a_out|dev123:light:0"}},
-	}
-	postAndExpectErrors(t, ws, cfg, "DigitalOutName is required")
-
-	cfg.DimmableLights[0].DigitalOutName = "shelly|d_out|dev123:light:0"
-	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: fakeConfigRevision(baseFixtureConfig())})
-	code, resp := doConfigEditPost(t, ws, string(body))
-	if code != 200 {
-		t.Fatalf("status = %d, want 200 (shelly a_out with a d_out is valid), errors=%v", code, resp.Errors)
+func TestConfigEdit_ValidationDimmableShellyAnalogOnlyAccepted(t *testing.T) {
+	// A Shelly a_out carries on/off itself when it backs an analog-only
+	// dimmable light (drivers.LevelSwitchable), so both forms are valid.
+	for _, dOut := range []string{"", "shelly|d_out|dev123:light:0"} {
+		ws := newValidationTestServer(t)
+		cfg := app.EditableConfig{
+			DimmableLights: []app.DimmableLightEditConfig{{Name: "Hall", DigitalOutName: dOut, AnalogOutName: "shelly|a_out|dev123:light:0"}},
+		}
+		body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: fakeConfigRevision(baseFixtureConfig())})
+		code, resp := doConfigEditPost(t, ws, string(body))
+		if code != 200 {
+			t.Fatalf("DigitalOutName %q: status = %d, want 200, errors=%v", dOut, code, resp.Errors)
+		}
 	}
 }
 

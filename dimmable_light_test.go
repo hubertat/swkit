@@ -499,3 +499,26 @@ func TestDimmableLightAnalogOnlyFailedWriteRollsBack(t *testing.T) {
 		t.Errorf("SetValue(true) after a failed write: level = %d, want 40 (the failed 90 must not be remembered)", aOut.level)
 	}
 }
+
+// levelSwitchableOutput records whether a light asked its level to carry
+// on/off, as a Shelly a_out does (drivers.LevelSwitchable).
+type levelSwitchableOutput struct {
+	*drivers.MockAnalogOutput
+	switchesPower bool
+}
+
+func (o *levelSwitchableOutput) SetLevelSwitchesPower(on bool) { o.switchesPower = on }
+
+func TestDimmableLightAnalogOnlyEnablesLevelSwitchesPower(t *testing.T) {
+	analogOnly := &levelSwitchableOutput{MockAnalogOutput: drivers.NewMockAnalogOutput("a", 0, 100)}
+	NewDimmableLight(DimmableLightConfig{Name: "A", AnalogOutName: "y"}, nil, analogOnly, log.New(nil))
+	if !analogOnly.switchesPower {
+		t.Error("analog-only light did not make its output switch power")
+	}
+
+	withDigital := &levelSwitchableOutput{MockAnalogOutput: drivers.NewMockAnalogOutput("b", 0, 100)}
+	NewDimmableLight(DimmableLightConfig{Name: "B", DigitalOutName: "x", AnalogOutName: "y"}, drivers.NewMockOutput("on"), withDigital, log.New(nil))
+	if withDigital.switchesPower {
+		t.Error("light with a digital output must leave its analog output brightness-only")
+	}
+}

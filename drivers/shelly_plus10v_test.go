@@ -138,3 +138,85 @@ func TestShellyPlus10vInputEvents(t *testing.T) {
 		t.Errorf("input 1 fired %v, want long press", fired[1])
 	}
 }
+
+// The light's on/off must be offered as a digital output, numbered after all
+// switches, so the config editors can pick it for DigitalOutName.
+func TestShellyPlus10vSnapshotOffersLightOutput(t *testing.T) {
+	she, _ := newPlus10vIO(t)
+
+	var dOut, aOut *IoPointState
+	snap := she.GetIoDebugSnapshot()
+	for i, pt := range snap.Points {
+		switch pt.Type {
+		case IoTypeDigitalOutput:
+			dOut = &snap.Points[i]
+		case IoTypeAnalogOutput:
+			aOut = &snap.Points[i]
+		}
+	}
+	if dOut == nil || dOut.Name != plus10vId+":light0" || dOut.Index != 0 {
+		t.Fatalf("digital output point = %+v, want %s:light0 at index 0", dOut, plus10vId)
+	}
+	if aOut == nil || aOut.Name != plus10vId+":light0" || aOut.Value != 50 {
+		t.Fatalf("analog output point = %+v, want %s:light0 at 50", aOut, plus10vId)
+	}
+
+	m := &lightTestMessenger{}
+	dev, _ := shelly.NewShellyDevice(plus10vId, m)
+	if err := dev.FillStatus(shelly.GetStatus{Light0: []byte(`{"output":false,"brightness":50}`)}); err != nil {
+		t.Fatalf("FillStatus: %v", err)
+	}
+	she.devices = []*shelly.ShellyDevice{dev}
+	if err := she.ToggleOutput(dOut.Index); err != nil {
+		t.Fatalf("ToggleOutput: %v", err)
+	}
+	if m.last.Method != "Light.Set" || m.last.Params["on"] != true {
+		t.Errorf("toggle sent %s %v, want Light.Set on=true", m.last.Method, m.last.Params)
+	}
+	if _, ok := m.last.Params["brightness"]; ok {
+		t.Error("toggle should not change brightness")
+	}
+}
+
+// Analog-only dimmable lights switch the 0-10V through its brightness output.
+func TestShellyAnalogOutputLevelSwitchesPower(t *testing.T) {
+	m := &lightTestMessenger{}
+	dev, _ := shelly.NewShellyDevice(plus10vId, m)
+	if err := dev.FillStatus(shelly.GetStatus{Light0: []byte(`{"output":false,"brightness":50}`)}); err != nil {
+		t.Fatalf("FillStatus: %v", err)
+	}
+	aout := &ShellyAnalogOutput{deviceId: plus10vId, lightNo: 0, dev: dev}
+
+	if v, _ := aout.GetState(); v != 50 {
+		t.Errorf("brightness-only GetState while off = %d, want 50", v)
+	}
+
+	aout.SetLevelSwitchesPower(true)
+	if v, _ := aout.GetState(); v != 0 {
+		t.Errorf("GetState while off = %d, want 0", v)
+	}
+
+	if err := aout.Set(60); err != nil {
+		t.Fatalf("Set(60): %v", err)
+	}
+	if m.last.Params["on"] != true || m.last.Params["brightness"] != 60.0 {
+		t.Errorf("Set(60) params = %v, want on=true brightness=60", m.last.Params)
+	}
+
+	if err := aout.Set(0); err != nil {
+		t.Fatalf("Set(0): %v", err)
+	}
+	if m.last.Params["on"] != false {
+		t.Errorf("Set(0) on = %v, want false", m.last.Params["on"])
+	}
+	if _, ok := m.last.Params["brightness"]; ok {
+		t.Error("Set(0) should switch off without touching brightness")
+	}
+
+	if err := dev.UpdateFromStatus(shelly.GetStatus{Light0: []byte(`{"output":true,"brightness":0.2}`)}); err != nil {
+		t.Fatalf("UpdateFromStatus: %v", err)
+	}
+	if v, _ := aout.GetState(); v != 1 {
+		t.Errorf("GetState while on at 0.2%% = %d, want 1 (never the off level)", v)
+	}
+}
