@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"net/url"
 	"time"
@@ -829,11 +830,23 @@ func (sout *ShellyOutput) IsHealthy() bool {
 // ShellyAnalogOutput exposes a Shelly Light component's brightness (0-100) as an
 // AnalogOutput. On/off for the same light is exposed separately via a
 // ShellyOutput with kind outputKindLight.
+//
+// With switchesPower (set by an analog-only dimmable light, see
+// LevelSwitchable) the level carries on/off too: 0 switches the light off,
+// above 0 switches it on at that brightness, and GetState reads 0 while off.
 type ShellyAnalogOutput struct {
 	lightNo  int
 	deviceId string
 
+	switchesPower atomic.Bool
+
 	dev *shelly.ShellyDevice
+}
+
+var _ LevelSwitchable = (*ShellyAnalogOutput)(nil)
+
+func (sao *ShellyAnalogOutput) SetLevelSwitchesPower(on bool) {
+	sao.switchesPower.Store(on)
 }
 
 func (sao *ShellyAnalogOutput) GetMinMax() (int, int) {
@@ -844,16 +857,40 @@ func (sao *ShellyAnalogOutput) GetState() (int, error) {
 	if sao.dev == nil {
 		return 0, fmt.Errorf("shelly device (%s) internal dev nil error", sao.deviceId)
 	}
-	_, brightness, err := sao.dev.GetLightState(sao.lightNo)
-	return int(brightness + 0.5), err
+	on, brightness, err := sao.dev.GetLightState(sao.lightNo)
+	level := int(brightness + 0.5)
+	if sao.switchesPower.Load() {
+		if !on {
+			return 0, err
+		}
+		// A lit light must never read as the off level.
+		if level < 1 {
+			level = 1
+		}
+	}
+	return level, err
 }
 
 func (sao *ShellyAnalogOutput) Set(value int) error {
 	if sao.dev == nil {
 		return errors.New("shelly analog output internal Light/Device nil error")
 	}
-	brightness := float64(value)
-	if err := sao.dev.SetLight(sao.lightNo, nil, &brightness); err != nil {
+	var on *bool
+	var brightness *float64
+	if sao.switchesPower.Load() {
+		// Off sends no brightness, so the light keeps its level for the next
+		// switch-on made at the device itself.
+		state := value > 0
+		on = &state
+		if state {
+			b := float64(value)
+			brightness = &b
+		}
+	} else {
+		b := float64(value)
+		brightness = &b
+	}
+	if err := sao.dev.SetLight(sao.lightNo, on, brightness); err != nil {
 		return errors.Join(errors.New("failed to set shelly light brightness"), err)
 	}
 	return nil
@@ -1099,6 +1136,27 @@ func (she *ShellyIO) GetIoDebugSnapshot() IoDebugSnapshot {
 			analogIdx++
 		}
 	}
+	// Each light's on/off is also a digital output. These are numbered after
+	// every switch so that adding light outputs did not shift switch indexes
+	// (custom IO names are keyed by index); ToggleOutput uses the same order.
+	for _, dev := range she.devices {
+		healthy := dev.HealthCheck() == nil && dev.IsReady()
+		for i := 0; i < dev.LightCount(); i++ {
+			on := false
+			if o, _, err := dev.GetLightState(i); err == nil {
+				on = o
+			}
+			points = append(points, IoPointState{
+				Index:       outputIdx,
+				Name:        fmt.Sprintf("%s:light%d", dev.Id, i),
+				Type:        IoTypeDigitalOutput,
+				State:       on,
+				Healthy:     healthy,
+				LastChanged: she.outputLastChanged[outputStateKey(dev.Id, outputKindLight, i)],
+			})
+			outputIdx++
+		}
+	}
 	return IoDebugSnapshot{Points: points}
 }
 
@@ -1126,7 +1184,8 @@ func (she *ShellyIO) SetAnalogOutput(index int, value int) error {
 	return fmt.Errorf("shelly: analog output index %d out of range", index)
 }
 
-// ToggleOutput toggles a Shelly relay by its global output index.
+// ToggleOutput toggles a Shelly relay or light on/off by its global output
+// index: all switches first, then all lights (see GetIoDebugSnapshot).
 // Satisfies drivers.IoOutputToggler.
 func (she *ShellyIO) ToggleOutput(index int) error {
 	she.devicesMu.RLock()
@@ -1140,6 +1199,19 @@ func (she *ShellyIO) ToggleOutput(index int) error {
 					return fmt.Errorf("shelly: get state for toggle: %w", err)
 				}
 				return dev.SetSwitch(i, !state)
+			}
+			outputIdx++
+		}
+	}
+	for _, dev := range she.devices {
+		for i := 0; i < dev.LightCount(); i++ {
+			if outputIdx == index {
+				on, _, err := dev.GetLightState(i)
+				if err != nil {
+					return fmt.Errorf("shelly: get light state for toggle: %w", err)
+				}
+				state := !on
+				return dev.SetLight(i, &state, nil)
 			}
 			outputIdx++
 		}

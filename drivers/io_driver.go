@@ -171,15 +171,17 @@ type AnalogOutput interface {
 	IsHealthy() bool
 }
 
-// AnalogOutputIsBrightnessOnly reports whether the named driver's analog
-// outputs set only a level and cannot switch the load off by writing the
-// minimum. Such an output needs a companion digital output for on/off, so it
-// cannot back an analog-only dimmable light.
+// LevelSwitchable is implemented by analog outputs that by default set only a
+// level and leave on/off to a companion digital output. Shelly is the case: its
+// a_out is a Light component's brightness, while the same light's on/off is a
+// separate d_out (see ShellyAnalogOutput).
 //
-// Shelly is the one case: its a_out is a Light component's brightness, while
-// the same light's on/off is a separate d_out (see ShellyAnalogOutput).
-func AnalogOutputIsBrightnessOnly(driverName string) bool {
-	return driverName == shellyDriverName
+// SetLevelSwitchesPower(true) makes the level carry on/off as well, which an
+// analog-only dimmable light needs: writing the minimum switches the load off,
+// writing above it switches the load on at that level, and GetState reports
+// the minimum while the load is off.
+type LevelSwitchable interface {
+	SetLevelSwitchesPower(bool)
 }
 
 // PushEventEmitter represents an input that emits events, as in PushEvent type
