@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -509,5 +510,25 @@ func TestConfigEditorButtonInlineStepPlusMinus(t *testing.T) {
 	ce.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
 	if got := ce.config.Buttons[0].ControlDevices[0].Level; got != 50 {
 		t.Errorf("level after '-' = %d, want 50", got)
+	}
+}
+
+// TestConfigEditorDimmableListShowsAnalogOnly checks the list rendering of a
+// dimmable light: DigitalOutName is optional, so an analog-only light shows
+// just its analog output (no dangling " + ").
+func TestConfigEditorDimmableListShowsAnalogOnly(t *testing.T) {
+	ce := NewConfigEditor(nil, DefaultTheme())
+	ce.config.DimmableLights = []app.DimmableLightEditConfig{
+		{Name: "Both", DigitalOutName: "gpio|d_out|5", AnalogOutName: "wago|a_out|0"},
+		{Name: "AnalogOnly", AnalogOutName: "wago|a_out|1"},
+	}
+	ce.rebuildItems()
+
+	out := ce.viewList(DefaultTheme(), 40)
+	if !strings.Contains(out, "gpio|d_out|5 + wago|a_out|0") {
+		t.Errorf("list should show both outputs for a fully wired light:\n%s", out)
+	}
+	if !strings.Contains(out, "wago|a_out|1") || strings.Contains(out, " + wago|a_out|1") {
+		t.Errorf("list should show only the analog output for an analog-only light:\n%s", out)
 	}
 }

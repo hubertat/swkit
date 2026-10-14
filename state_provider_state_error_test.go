@@ -35,3 +35,30 @@ func TestGetStateReportsUnreadableOutput(t *testing.T) {
 		}
 	}
 }
+
+// erroringAnalogOutput is an AnalogOutput whose state cannot be read.
+type erroringAnalogOutput struct{}
+
+func (erroringAnalogOutput) GetMinMax() (int, int)  { return 0, 100 }
+func (erroringAnalogOutput) GetState() (int, error) { return 0, errors.New("state is stale") }
+func (erroringAnalogOutput) Set(int) error          { return nil }
+func (erroringAnalogOutput) String() string         { return "test|a_out|err" }
+func (erroringAnalogOutput) IsHealthy() bool        { return true }
+
+// An analog-only dimmable light derives on/off from its analog output, so an
+// unreadable analog output must surface as StateError, not as "off".
+func TestGetStateReportsUnreadableAnalogOnlyDimmable(t *testing.T) {
+	logger := log.New(nil)
+	sw := &SwKit{Name: "t"}
+	sw.dimmableLights = []*DimmableLight{
+		NewDimmableLight(DimmableLightConfig{Name: "Dim"}, nil, erroringAnalogOutput{}, logger),
+	}
+
+	state := NewStateProvider(sw).GetState()
+	if len(state.Devices) != 1 {
+		t.Fatalf("got %d devices, want 1", len(state.Devices))
+	}
+	if d := state.Devices[0]; d.StateError == "" {
+		t.Errorf("%s: StateError empty, want the analog read error", d.Name)
+	}
+}

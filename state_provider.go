@@ -474,6 +474,8 @@ func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceSta
 	analogIoId := ""
 	brightness := 0
 
+	// The digital output is optional; without it on/off is derived from the
+	// analog output (DimmableLight.GetState) and health comes from it too.
 	if dl.onOut != nil {
 		if state, err := dl.onOut.GetState(); err == nil {
 			isOn = state
@@ -486,9 +488,22 @@ func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceSta
 
 	if dl.briOut != nil {
 		analogIoId = dl.briOut.String()
+		// Raw readback on purpose, not dl.readLevel: API clients confirm a
+		// command only once a later poll reports it, so reporting the
+		// device's pending (written, unconfirmed) level would confirm writes
+		// the hardware never applied.
 		if raw, err := dl.briOut.GetState(); err == nil {
 			min, max := dl.briOut.GetMinMax()
 			brightness = convertIntRange(raw, min, max, 0, 100)
+			if dl.onOut == nil {
+				isOn = raw > min
+			}
+		} else if dl.onOut == nil {
+			// Analog-only: the analog output is the on/off state too.
+			stateErr = err.Error()
+		}
+		if dl.onOut == nil {
+			isHealthy = dl.briOut.IsHealthy()
 		}
 	}
 
@@ -830,10 +845,9 @@ func (p *SwKitProvider) getDeviceState(device Controllable) bool {
 			}
 		}
 	case *DimmableLight:
-		if d.onOut != nil {
-			if state, err := d.onOut.GetState(); err == nil {
-				return state
-			}
+		// GetState covers both the digital-output and analog-only wiring.
+		if state, err := d.GetState(); err == nil {
+			return state
 		}
 	case *Outlet:
 		if d.output != nil {

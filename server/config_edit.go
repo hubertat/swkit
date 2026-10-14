@@ -458,13 +458,20 @@ func validateEditableConfig(cfg app.EditableConfig, state app.AppState) []string
 	}
 	for _, dl := range cfg.DimmableLights {
 		label := deviceLabel("dimmable light", dl.Name)
-		checkIoField(label, "DigitalOutName", dl.DigitalOutName, []drivers.IoType{drivers.IoTypeDigitalOutput}, "d_out")
-		if strings.TrimSpace(dl.DigitalOutName) != "" {
+		// DigitalOutName is optional: without it the analog output also
+		// switches the light on/off. Only an analog output that can do that
+		// may stand alone (see drivers.AnalogOutputIsBrightnessOnly).
+		hasDigitalOut := strings.TrimSpace(dl.DigitalOutName) != ""
+		if hasDigitalOut {
+			checkIoField(label, "DigitalOutName", dl.DigitalOutName, []drivers.IoType{drivers.IoTypeDigitalOutput}, "d_out")
 			digitalOutUses = append(digitalOutUses, ioUse{"DigitalOutName", label, dl.DigitalOutName})
 		}
 		checkIoField(label, "AnalogOutName", dl.AnalogOutName, []drivers.IoType{drivers.IoTypeAnalogOutput}, "a_out")
 		if strings.TrimSpace(dl.AnalogOutName) != "" {
 			digitalOutUses = append(digitalOutUses, ioUse{"AnalogOutName", label, dl.AnalogOutName})
+			if driverName, _, _, err := drivers.ResolveIoIdString(dl.AnalogOutName); !hasDigitalOut && err == nil && drivers.AnalogOutputIsBrightnessOnly(driverName) {
+				errs = append(errs, fmt.Sprintf("%s: AnalogOutName %q only sets brightness on driver %q and cannot switch the light off; DigitalOutName is required for it", label, dl.AnalogOutName, driverName))
+			}
 		}
 		if dl.DefaultSetpoint < 0 || dl.DefaultSetpoint > 100 {
 			errs = append(errs, fmt.Sprintf("%s: DefaultSetpoint %d out of range (0-100)", label, dl.DefaultSetpoint))

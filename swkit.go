@@ -220,7 +220,10 @@ func (sw *SwKit) getAllIoIds() []string {
 	}
 
 	for _, dlConf := range sw.DimmableLights {
-		allIds = append(allIds, dlConf.DigitalOutName)
+		// DigitalOutName is optional for dimmable lights.
+		if dlConf.DigitalOutName != "" {
+			allIds = append(allIds, dlConf.DigitalOutName)
+		}
 		allIds = append(allIds, dlConf.AnalogOutName)
 	}
 
@@ -389,19 +392,27 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 	}
 
 	for _, dimLight := range sw.DimmableLights {
-		ioName, driver, err := sw.getDriverAndNameForIo(dimLight.DigitalOutName, drivers.IoTypeDigitalOutput)
-		if err != nil {
-			return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", dimLight.DigitalOutName))
+		// The digital output is optional: without one the analog output
+		// also switches the light on/off (see DimmableLight).
+		var dOut drivers.DigitalOutput
+		if dimLight.DigitalOutName != "" {
+			ioName, driver, err := sw.getDriverAndNameForIo(dimLight.DigitalOutName, drivers.IoTypeDigitalOutput)
+			if err != nil {
+				return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", dimLight.DigitalOutName))
+			}
+
+			dOut, err = driver.GetDigitalOutput(ioName)
+			if err != nil {
+				return errors.Join(err, fmt.Errorf("failed to get digital output for dimmable light %s", dimLight.Name))
+			}
 		}
 
-		dOut, err := driver.GetDigitalOutput(ioName)
-		if err != nil {
-			return errors.Join(err, fmt.Errorf("failed to get digital output for dimmable light %s", dimLight.Name))
-		}
-
-		ioName, driver, err = sw.getDriverAndNameForIo(dimLight.AnalogOutName, drivers.IoTypeAnalogOutput)
+		ioName, driver, err := sw.getDriverAndNameForIo(dimLight.AnalogOutName, drivers.IoTypeAnalogOutput)
 		if err != nil {
 			return errors.Join(err, fmt.Errorf("failed to get driver and name for io %s", dimLight.AnalogOutName))
+		}
+		if dOut == nil && drivers.AnalogOutputIsBrightnessOnly(driver.String()) {
+			return fmt.Errorf("dimmable light %s: %s analog output %s only sets brightness and cannot switch the light off; DigitalOutName is required for it", dimLight.Name, driver.String(), dimLight.AnalogOutName)
 		}
 
 		aOut, err := driver.GetAnalogOutput(ioName)

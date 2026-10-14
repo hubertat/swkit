@@ -159,3 +159,34 @@ func TestButtonDrivesScene(t *testing.T) {
 		t.Error("second press should toggle scene back to state 0 (A off)")
 	}
 }
+
+// TestSetupDimmableLightDigitalOutOptional exercises SwKit.Setup with one
+// dimmable light wired both ways: digital + analog, and analog only.
+func TestSetupDimmableLightDigitalOutOptional(t *testing.T) {
+	sw := &SwKit{
+		Name:       "t",
+		FakeDriver: &drivers.MockIoDriver{},
+		DimmableLights: []DimmableLightConfig{
+			{Name: "Both", DigitalOutName: "mock_driver|d_out|1", AnalogOutName: "mock_driver|a_out|1"},
+			{Name: "AnalogOnly", AnalogOutName: "mock_driver|a_out|2"},
+		},
+	}
+
+	if err := sw.Setup(context.Background(), log.New(nil)); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if len(sw.dimmableLights) != 2 {
+		t.Fatalf("expected 2 dimmable lights, got %d", len(sw.dimmableLights))
+	}
+	if sw.dimmableLights[0].onOut == nil {
+		t.Error("Both: digital output should be wired")
+	}
+	if sw.dimmableLights[1].onOut != nil {
+		t.Error("AnalogOnly: digital output should be nil")
+	}
+	for _, id := range sw.getAllIoIds() {
+		if id == "" {
+			t.Error("getAllIoIds must not include an empty id for an omitted DigitalOutName")
+		}
+	}
+}

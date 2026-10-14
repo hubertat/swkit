@@ -171,6 +171,17 @@ type AnalogOutput interface {
 	IsHealthy() bool
 }
 
+// AnalogOutputIsBrightnessOnly reports whether the named driver's analog
+// outputs set only a level and cannot switch the load off by writing the
+// minimum. Such an output needs a companion digital output for on/off, so it
+// cannot back an analog-only dimmable light.
+//
+// Shelly is the one case: its a_out is a Light component's brightness, while
+// the same light's on/off is a separate d_out (see ShellyAnalogOutput).
+func AnalogOutputIsBrightnessOnly(driverName string) bool {
+	return driverName == shellyDriverName
+}
+
 // PushEventEmitter represents an input that emits events, as in PushEvent type
 type PushEventEmitter interface {
 	Subscribe(eventTypes PushEvent, handler func(PushEvent)) error
