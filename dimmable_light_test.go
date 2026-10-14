@@ -1,6 +1,8 @@
 package swkit
 
 import (
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -369,22 +371,131 @@ func TestDimmableLightPendingLevelExpires(t *testing.T) {
 	dl, aOut, clock := newLaggingDimmableLight(t, 40)
 
 	dl.SetBrightness(70)
-	if got, _ := dl.readLevel(); got != 70 {
+	if got, _ := dl.readLevel(false); got != 70 {
 		t.Fatalf("readLevel within pending window = %d, want written 70", got)
 	}
 
 	*clock = clock.Add(analogPendingTimeout)
-	if got, _ := dl.readLevel(); got != 40 {
+	if got, _ := dl.readLevel(false); got != 40 {
 		t.Fatalf("readLevel after pending window with stale hardware = %d, want readback 40", got)
 	}
 
 	dl.SetBrightness(80)
 	aOut.poll()
-	if got, _ := dl.readLevel(); got != 80 {
+	if got, _ := dl.readLevel(false); got != 80 {
 		t.Fatalf("readLevel after the confirming poll = %d, want 80", got)
 	}
 	aOut.reported = 25 // changed at the dimmer after the write was confirmed
-	if got, _ := dl.readLevel(); got != 25 {
+	if got, _ := dl.readLevel(false); got != 25 {
 		t.Errorf("readLevel after a later external change = %d, want 25", got)
+	}
+}
+
+// blockingAnalogOutput reports writes immediately, but its first Set for
+// blockOn stops inside the driver call until release is closed, so a test can
+// start a second command while the first is mid-write.
+type blockingAnalogOutput struct {
+	mu      sync.Mutex
+	level   int
+	blockOn int
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingAnalogOutput) GetMinMax() (int, int) { return 0, 100 }
+func (b *blockingAnalogOutput) GetState() (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.level, nil
+}
+func (b *blockingAnalogOutput) Set(v int) error {
+	b.mu.Lock()
+	b.level = v
+	b.mu.Unlock()
+	if v == b.blockOn {
+		b.once.Do(func() {
+			close(b.entered)
+			<-b.release
+		})
+	}
+	return nil
+}
+func (b *blockingAnalogOutput) String() string  { return "test|a_out|block" }
+func (b *blockingAnalogOutput) IsHealthy() bool { return true }
+
+// A brightness write and an off command overlap (the control clients send
+// power and brightness from independent slots). Whatever the interleaving,
+// the bookkeeping must match the hardware: after the off lands, an explicit
+// on must switch the light back on rather than see a stale pending level.
+func TestDimmableLightAnalogOnlyOverlappingBrightnessAndOff(t *testing.T) {
+	aOut := &blockingAnalogOutput{level: 40, blockOn: 70, entered: make(chan struct{}), release: make(chan struct{})}
+	dl := NewDimmableLight(DimmableLightConfig{Name: "Overlap"}, nil, aOut, log.New(nil))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); dl.SetBrightness(70) }()
+	<-aOut.entered // brightness is inside the driver write
+
+	offDone := make(chan struct{})
+	go func() { defer wg.Done(); dl.SetValue(false); close(offDone) }()
+	// Give the off command the chance to run to completion while the
+	// brightness write is still stalled, then let the brightness finish.
+	select {
+	case <-offDone:
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(aOut.release)
+	wg.Wait()
+
+	level, _ := aOut.GetState()
+	if on, _ := dl.GetState(); on != (level > 0) {
+		t.Fatalf("GetState = %v but hardware level is %d", on, level)
+	}
+
+	dl.SetValue(true)
+	if level, _ := aOut.GetState(); level != 70 {
+		t.Errorf("SetValue(true) after overlapping brightness/off: level = %d, want restored 70", level)
+	}
+}
+
+// failingAnalogOutput accepts writes until fail is set, then rejects them.
+type failingAnalogOutput struct {
+	level int
+	fail  bool
+}
+
+func (f *failingAnalogOutput) GetMinMax() (int, int)  { return 0, 100 }
+func (f *failingAnalogOutput) GetState() (int, error) { return f.level, nil }
+func (f *failingAnalogOutput) Set(v int) error {
+	if f.fail {
+		return errors.New("write rejected")
+	}
+	f.level = v
+	return nil
+}
+func (f *failingAnalogOutput) String() string  { return "test|a_out|fail" }
+func (f *failingAnalogOutput) IsHealthy() bool { return true }
+
+// The pending and remembered levels are recorded before the driver write, so
+// a failed write must roll them back rather than leave the light believing
+// in a level the hardware never got.
+func TestDimmableLightAnalogOnlyFailedWriteRollsBack(t *testing.T) {
+	aOut := &failingAnalogOutput{level: 0}
+	dl := NewDimmableLight(DimmableLightConfig{Name: "Fail"}, nil, aOut, log.New(nil))
+
+	dl.SetBrightness(40)
+	dl.SetValue(false)
+
+	aOut.fail = true
+	dl.SetBrightness(90)
+	if on, _ := dl.GetState(); on {
+		t.Fatal("GetState after a failed brightness write = on, want off (hardware is at 0)")
+	}
+
+	aOut.fail = false
+	dl.SetValue(true)
+	if aOut.level != 40 {
+		t.Errorf("SetValue(true) after a failed write: level = %d, want 40 (the failed 90 must not be remembered)", aOut.level)
 	}
 }

@@ -63,11 +63,20 @@ type DimmableLight struct {
 	briOut drivers.AnalogOutput
 	logger *log.Logger
 
+	// cmdMu serializes analog commands (SetBrightness, analog-only
+	// SetValue/Toggle): each one's read-decide-write, driver write and
+	// bookkeeping run as a unit. Power and brightness arrive from independent
+	// client request slots, so without it an off could land in the middle of
+	// a brightness write and the bookkeeping would disagree with the
+	// hardware. It is held across the driver write, so a wedged write blocks
+	// further commands to this light only; Sync and reads never take it.
+	cmdMu sync.Mutex
+
 	// Analog-only mode: lastLevel is the most recent native level above the
 	// minimum, restored when the light is switched back on. Until one is seen
 	// (hasLastLevel false), onLevel is used instead. Guarded by levelMu, not lock:
 	// Sync holds lock across driver reads, and control calls must not queue
-	// behind a slow one.
+	// behind a slow one. levelMu is never held across a driver call.
 	levelMu      sync.Mutex
 	lastLevel    int
 	hasLastLevel bool
@@ -129,7 +138,7 @@ func NewDimmableLight(config DimmableLightConfig, dOut drivers.DigitalOutput, aO
 	logger.Debug("dimmable light created", "name", config.Name, "digitalOut", dOut.String(), "analogOut", aOut.String())
 	if config.DefaultSetpoint > 0 {
 		native := convertIntRange(config.DefaultSetpoint, 0, 100, min, max)
-		if err := dl.writeLevel(native); err != nil {
+		if err := dl.writeLevel(native, false); err != nil {
 			logger.Warn("failed to apply default setpoint", "dimmableLight", config.Name, "err", err)
 		} else {
 			logger.Debug("applied default setpoint", "dimmableLight", config.Name, "setpoint", config.DefaultSetpoint, "native", native)
@@ -201,21 +210,43 @@ func (dl *DimmableLight) SetBrightness(pct int) {
 	min, max := dl.briOut.GetMinMax()
 	native := convertIntRange(pct, 0, 100, min, max)
 	dl.logger.Debug("setting dimmable light brightness", "dimmableLight", dl.name, "brightness", pct, "native", native)
-	if err := dl.writeLevel(native); err != nil {
+
+	dl.cmdMu.Lock()
+	defer dl.cmdMu.Unlock()
+	if err := dl.writeLevel(native, true); err != nil {
 		dl.logger.Error("failed to set dimmable light brightness", "dimmableLight", dl.name, "err", err)
-		return
 	}
-	dl.rememberLevel(native)
 }
 
-// writeLevel writes native to the analog output and, on success, records it
-// as pending so readLevel reports it until the driver catches up.
-func (dl *DimmableLight) writeLevel(native int) error {
+// writeLevel writes native to the analog output. Callers hold cmdMu (or are
+// the constructor), so writes and their bookkeeping never interleave.
+//
+// The bookkeeping is recorded before the driver call, not after it: once the
+// write starts, a concurrent readLevel (Sync, the state API) must already
+// report the new level, and must not get a window in which to remember the
+// old one over it. remember also stores native as the level to restore. If
+// the write fails, the bookkeeping is rolled back.
+func (dl *DimmableLight) writeLevel(native int, remember bool) error {
+	dl.levelMu.Lock()
+	prevPending, prevLast, prevHasLast := dl.pending, dl.lastLevel, dl.hasLastLevel
+	dl.pending = pendingLevel{active: true, level: native, at: dl.now()}
+	if remember {
+		dl.rememberLevelLocked(native)
+	}
+	dl.levelMu.Unlock()
+
 	if err := dl.briOut.Set(native); err != nil {
+		dl.levelMu.Lock()
+		dl.pending, dl.lastLevel, dl.hasLastLevel = prevPending, prevLast, prevHasLast
+		dl.levelMu.Unlock()
 		return err
 	}
+
+	// Start the confirmation window when the write lands, not when it began.
 	dl.levelMu.Lock()
-	dl.pending = pendingLevel{active: true, level: native, at: dl.now()}
+	if dl.pending.active && dl.pending.level == native {
+		dl.pending.at = dl.now()
+	}
 	dl.levelMu.Unlock()
 	return nil
 }
@@ -225,26 +256,34 @@ func (dl *DimmableLight) writeLevel(native int) error {
 // the light on? which level to remember?) see the written level rather than
 // a stale readback. The pending level is reported until the driver reads it
 // back, or until analogPendingTimeout passes, whichever comes first.
-func (dl *DimmableLight) readLevel() (int, error) {
+//
+// With remember, the resulting level is also stored as the level to restore,
+// in the same critical section that resolved it, so a write that starts in
+// between cannot have its newer level overwritten by this older read.
+func (dl *DimmableLight) readLevel(remember bool) (int, error) {
 	native, err := dl.briOut.GetState()
 	if err != nil {
 		return 0, err
 	}
 	dl.levelMu.Lock()
 	defer dl.levelMu.Unlock()
-	if !dl.pending.active {
-		return native, nil
+	if dl.pending.active {
+		if native == dl.pending.level || dl.now().Sub(dl.pending.at) >= analogPendingTimeout {
+			dl.pending.active = false
+		} else {
+			native = dl.pending.level
+		}
 	}
-	if native == dl.pending.level || dl.now().Sub(dl.pending.at) >= analogPendingTimeout {
-		dl.pending.active = false
-		return native, nil
+	if remember {
+		dl.rememberLevelLocked(native)
 	}
-	return dl.pending.level, nil
+	return native, nil
 }
 
-// rememberLevel records native as the level to restore on switch-on, if it is
-// above the analog minimum. Only meaningful for an analog-only light.
-func (dl *DimmableLight) rememberLevel(native int) {
+// rememberLevelLocked records native as the level to restore on switch-on, if
+// it is above the analog minimum. Only meaningful for an analog-only light.
+// Callers hold levelMu.
+func (dl *DimmableLight) rememberLevelLocked(native int) {
 	if dl.onOut != nil {
 		return
 	}
@@ -252,10 +291,8 @@ func (dl *DimmableLight) rememberLevel(native int) {
 	if native <= min {
 		return
 	}
-	dl.levelMu.Lock()
 	dl.lastLevel = native
 	dl.hasLastLevel = true
-	dl.levelMu.Unlock()
 }
 
 // restoreLevel returns the native level an analog-only light switches on to:
@@ -282,14 +319,14 @@ func (dl *DimmableLight) Sync(force bool) (err error) {
 
 	var onState bool
 	var onErr error
-	native, briErr := dl.readLevel()
+	// Analog-only, remember the level read: tracks levels set outside swkit
+	// (e.g. at the dimmer itself) so a later switch-on restores what the
+	// user last saw.
+	native, briErr := dl.readLevel(dl.onOut == nil)
 	if dl.onOut != nil {
 		onState, onErr = dl.onOut.GetState()
 	} else if briErr == nil {
 		onState = dl.isOnLevel(native)
-		// Track levels set outside swkit (e.g. at the dimmer itself) so a
-		// later switch-on restores what the user last saw.
-		dl.rememberLevel(native)
 	}
 	if onErr != nil || briErr != nil {
 		err = errors.Join(errors.New("failed to get one of DimmableLight io values: On, Brightness"), onErr, briErr)
@@ -323,7 +360,7 @@ func (dl *DimmableLight) GetState() (bool, error) {
 	if dl.onOut != nil {
 		return dl.onOut.GetState()
 	}
-	native, err := dl.readLevel()
+	native, err := dl.readLevel(false)
 	if err != nil {
 		return false, err
 	}
@@ -333,7 +370,7 @@ func (dl *DimmableLight) GetState() (bool, error) {
 // GetBrightness reports the current brightness as a HomeKit percentage (0-100),
 // scaling the analog output's native value the same way Sync does.
 func (dl *DimmableLight) GetBrightness() (int, error) {
-	native, err := dl.readLevel()
+	native, err := dl.readLevel(false)
 	if err != nil {
 		return 0, err
 	}
@@ -353,33 +390,47 @@ func (dl *DimmableLight) SetValue(state bool) {
 		}
 		return
 	}
-	dl.setAnalogOnly(state)
+	dl.cmdMu.Lock()
+	defer dl.cmdMu.Unlock()
+	current, err := dl.readLevel(true)
+	dl.setAnalogOnlyLocked(state, current, err)
 }
 
-func (dl *DimmableLight) setAnalogOnly(state bool) {
+// setAnalogOnlyLocked switches an analog-only light given its current level
+// (and the error reading it), as just read by the caller under cmdMu. The
+// level comes from readLevel, not briOut.GetState: right after an earlier
+// command the driver may still report the old level, which would both skip a
+// needed switch-on and overwrite the newer remembered level.
+func (dl *DimmableLight) setAnalogOnlyLocked(state bool, current int, readErr error) {
 	min, _ := dl.briOut.GetMinMax()
-	// readLevel, not briOut.GetState: right after an earlier command the
-	// driver may still report the old level, which would both skip a needed
-	// switch-on and overwrite the newer remembered level.
-	current, err := dl.readLevel()
-	if err == nil {
-		dl.rememberLevel(current)
-	}
-
 	target := min
 	if state {
-		if err == nil && dl.isOnLevel(current) {
+		if readErr == nil && dl.isOnLevel(current) {
 			return // already on: keep the current level
 		}
 		target = dl.restoreLevel()
 	}
 	dl.logger.Debug("setting analog-only dimmable light level", "dimmableLight", dl.name, "state", state, "native", target)
-	if err := dl.writeLevel(target); err != nil {
+	if err := dl.writeLevel(target, false); err != nil {
 		dl.logger.Error("failed to set dimmable light on state", "dimmableLight", dl.name, "err", err)
 	}
 }
 
 func (dl *DimmableLight) Toggle() {
+	if dl.onOut == nil {
+		// Read and switch as one command, so concurrent toggles alternate
+		// instead of both acting on the same reading.
+		dl.cmdMu.Lock()
+		defer dl.cmdMu.Unlock()
+		current, err := dl.readLevel(true)
+		if err != nil {
+			dl.logger.Debug("toggle failed to get current state", "dimmableLight", dl.name, "err", err)
+			return
+		}
+		dl.logger.Debug("toggling dimmable light", "dimmableLight", dl.name, "oldState", dl.isOnLevel(current), "newState", !dl.isOnLevel(current))
+		dl.setAnalogOnlyLocked(!dl.isOnLevel(current), current, nil)
+		return
+	}
 	currentState, err := dl.GetState()
 	if err == nil {
 		dl.logger.Debug("toggling dimmable light", "dimmableLight", dl.name, "oldState", currentState, "newState", !currentState)
