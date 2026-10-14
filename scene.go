@@ -40,10 +40,17 @@ type SceneStateConfig struct {
 // scenes. Activation is fire-and-forget: a state's actions are applied once and
 // not re-asserted on Sync.
 //
-// Delayed steps are scheduled when their state is activated. Activating any
+// Delayed steps are scheduled when their state is activated, one timer per
+// distinct delay; steps sharing a delay run in config order. Activating any
 // state (including the same one again) cancels the delayed steps still
 // pending from the previous activation, so "Off" reliably stops a running
 // "Evening" sequence. Close cancels everything (config reload, shutdown).
+//
+// All step application, immediate and delayed, is serialized by applyMu, and
+// a delayed step re-checks that its activation is still current while holding
+// it. So a delayed step can never land after a later activation's own steps:
+// either it sees itself superseded and is skipped, or it was already running
+// and the later activation waits for it, then applies on top.
 type Scene struct {
 	name         string
 	states       []sceneState
@@ -58,6 +65,11 @@ type Scene struct {
 	gen     uint64   // bumped by every Activate and by Close
 	pending []func() // cancel funcs for the current activation's delayed steps
 	closed  bool
+
+	// applyMu serializes applying steps (see the type comment). It is held
+	// across driver calls on purpose; sc.mu never is, so cancelling and
+	// scheduling stay instant even while a step is stuck in a driver.
+	applyMu sync.Mutex
 }
 
 type sceneState struct {
@@ -145,22 +157,24 @@ func (sc *Scene) Activate(stateIndex int) error {
 	state := sc.states[stateIndex]
 	sc.logger.Debug("activating scene state", "scene", sc.name, "state", state.name, "index", stateIndex)
 
-	// Schedule under sc.mu, but apply outside it: an action reaches into a
-	// driver and can block, and holding the lock across that would stall
-	// the next Activate (and Close) for as long as the driver does.
+	// Cancel and schedule under sc.mu, which is never held across a driver
+	// call. Bumping the generation here, before waiting for applyMu below,
+	// is what makes a delayed step that has not started yet skip itself.
 	sc.mu.Lock()
 	sc.cancelPendingLocked()
 	gen := sc.gen
 	if !sc.closed {
-		for _, a := range state.actions {
-			if a.delay <= 0 {
-				continue
-			}
-			a := a
-			sc.pending = append(sc.pending, sc.afterFunc(a.delay, func() { sc.runDelayed(gen, state.name, a) }))
+		for _, batch := range delayedBatches(state.actions) {
+			batch := batch
+			sc.pending = append(sc.pending, sc.afterFunc(batch[0].delay, func() { sc.runDelayed(gen, state.name, batch) }))
 		}
 	}
 	sc.mu.Unlock()
+
+	// Wait for a delayed step that is already mid-apply, so this state's
+	// steps land after it, never before.
+	sc.applyMu.Lock()
+	defer sc.applyMu.Unlock()
 
 	var errs error
 	for _, a := range state.actions {
@@ -176,22 +190,50 @@ func (sc *Scene) Activate(stateIndex int) error {
 	return errs
 }
 
-// runDelayed applies a delayed action unless its activation has since been
-// superseded or the scene closed. The check and the apply are not atomic (the
-// apply must not hold sc.mu, see Activate), so an Activate landing in that
-// instant can still see this one last action run; it never runs twice and
-// never runs after a later activation's own actions have been scheduled.
-func (sc *Scene) runDelayed(gen uint64, stateName string, a sceneAction) {
+// delayedBatches groups a state's delayed actions by delay, in order of first
+// appearance, keeping config order within each batch.
+func delayedBatches(actions []sceneAction) [][]sceneAction {
+	var batches [][]sceneAction
+	index := make(map[time.Duration]int)
+	for _, a := range actions {
+		if a.delay <= 0 {
+			continue
+		}
+		i, ok := index[a.delay]
+		if !ok {
+			i = len(batches)
+			index[a.delay] = i
+			batches = append(batches, nil)
+		}
+		batches[i] = append(batches[i], a)
+	}
+	return batches
+}
+
+// runDelayed applies a batch of delayed actions, in order, holding applyMu.
+// Before each action it re-checks that its activation is still current, so a
+// later Activate or Close stops the rest of the batch; and because Activate
+// takes applyMu before applying, nothing from this batch can land after the
+// later activation's own steps.
+func (sc *Scene) runDelayed(gen uint64, stateName string, batch []sceneAction) {
+	sc.applyMu.Lock()
+	defer sc.applyMu.Unlock()
+	for _, a := range batch {
+		if !sc.isCurrent(gen) {
+			return
+		}
+		sc.logger.Debug("applying delayed scene step", "scene", sc.name, "state", stateName, "device", a.dev.Name(), "verb", a.verb, "delay", a.delay)
+		if err := a.apply(); err != nil {
+			sc.logger.Error("delayed scene step failed", "scene", sc.name, "state", stateName, "err", err)
+		}
+	}
+}
+
+// isCurrent reports whether gen is still the scene's active generation.
+func (sc *Scene) isCurrent(gen uint64) bool {
 	sc.mu.Lock()
-	stale := sc.closed || sc.gen != gen
-	sc.mu.Unlock()
-	if stale {
-		return
-	}
-	sc.logger.Debug("applying delayed scene step", "scene", sc.name, "state", stateName, "device", a.dev.Name(), "verb", a.verb, "delay", a.delay)
-	if err := a.apply(); err != nil {
-		sc.logger.Error("delayed scene step failed", "scene", sc.name, "state", stateName, "err", err)
-	}
+	defer sc.mu.Unlock()
+	return !sc.closed && sc.gen == gen
 }
 
 // cancelPendingLocked cancels every delayed action still pending and starts a

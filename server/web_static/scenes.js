@@ -196,13 +196,21 @@
         return { id: uid(), device: device, delay: delay || 0, delayRaw: null, power: null, bri: null, order: orderSeq++, briFirst: null };
     }
 
+    // stateFromConfig groups a state's steps into moments without ever
+    // changing what they do. Steps run in list order (steps sharing a delay
+    // run in config order, see scene.go), so two steps are merged only when
+    // they are adjacent in the list, for the same device and delay, and
+    // fill different slots (power vs brightness). "on:A, off:A,
+    // brightness:60:A" therefore stays three steps in that order rather than
+    // becoming "on + 60%, then off".
     function stateFromConfig(st) {
         const moments = [], raw = [];
+        let last = null;
         (st.Actions || []).forEach(function (a, i) {
             const p = parseStep(a);
-            if (!p) { raw.push({ id: uid(), text: a }); return; }
+            if (!p) { raw.push({ id: uid(), text: a, order: i }); last = null; return; }
             const slot = isBri(p.verb) ? 'bri' : 'power';
-            let m = moments.find(x => x.device === p.device && x.delay === p.delay && x[slot] === null);
+            let m = last && last.device === p.device && last.delay === p.delay && last[slot] === null ? last : null;
             if (!m) {
                 // briFirst records the loaded step order so an untouched
                 // moment serializes exactly as written.
@@ -211,13 +219,32 @@
             }
             if (slot === 'bri') m.bri = { verb: p.verb, level: p.level };
             else m.power = p.verb;
+            last = m;
         });
-        return { id: uid(), name: st.Name || '', moments: moments, raw: raw };
+        const state = { id: uid(), name: st.Name || '', moments: moments, raw: raw, origActions: (st.Actions || []).slice(), baseSer: '' };
+        state.baseSer = JSON.stringify(buildActions(state));
+        return state;
     }
 
+    // serializeState returns the state's step strings. A state whose steps
+    // were not touched in this session is returned exactly as loaded, so
+    // renaming a state (or a scene) never rewrites its steps.
     function serializeState(st) {
-        const out = st.raw.map(r => r.text);
-        st.moments.slice().sort((a, b) => a.delay - b.delay || a.order - b.order).forEach(function (m) {
+        const out = buildActions(st);
+        if (st.origActions && JSON.stringify(out) === st.baseSer) return st.origActions.slice();
+        return out;
+    }
+
+    // buildActions writes moments and unreadable steps back in list order
+    // (order). New moments get an order past every loaded step, so they are
+    // appended; moving a step in time keeps its place in the list.
+    function buildActions(st) {
+        const items = st.moments.map(m => ({ order: m.order, m: m })).concat(st.raw.map(r => ({ order: r.order, raw: r })));
+        items.sort((a, b) => a.order - b.order);
+        const out = [];
+        items.forEach(function (it) {
+            if (it.raw) { out.push(it.raw.text); return; }
+            const m = it.m;
             if (!m.power && !m.bri) return;
             const prefix = m.delay > 0 ? 'after:' + (m.delayRaw || fmtDelayGo(m.delay)) + ':' : '';
             const pw = m.power ? prefix + m.power + ':' + m.device : null;
@@ -482,7 +509,8 @@
             states: s.states.map(st => ({
                 id: uid(), name: st.name,
                 moments: st.moments.map(m => Object.assign(deepCopy(m), { id: uid() })),
-                raw: st.raw.map(r => ({ id: uid(), text: r.text })),
+                raw: st.raw.map(r => ({ id: uid(), text: r.text, order: r.order })),
+                origActions: st.origActions ? st.origActions.slice() : null, baseSer: st.baseSer,
             })),
         };
         S.scenes.push(copy);
@@ -544,7 +572,8 @@
         const copy = {
             id: uid(), name: uniqueName(st.name + ' copy', taken),
             moments: st.moments.map(m => Object.assign(deepCopy(m), { id: uid() })),
-            raw: st.raw.map(r => ({ id: uid(), text: r.text })),
+            raw: st.raw.map(r => ({ id: uid(), text: r.text, order: r.order })),
+            origActions: st.origActions ? st.origActions.slice() : null, baseSer: st.baseSer,
         };
         s.states.splice(s.states.indexOf(st) + 1, 0, copy);
         S.sel.state = copy.id;
@@ -1112,6 +1141,8 @@
                 if (p) {
                     st.raw = st.raw.filter(x => x !== r);
                     const m = newMoment(p.device, p.delay);
+                    m.order = r.order; // the repaired step keeps its place in the list
+                    m.delayRaw = p.delayRaw;
                     if (isBri(p.verb)) m.bri = { verb: p.verb, level: p.level }; else m.power = p.verb;
                     st.moments.push(m);
                 } else {
