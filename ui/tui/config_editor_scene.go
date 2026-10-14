@@ -251,7 +251,7 @@ func (ce *ConfigEditor) updateSceneActionEdit(msg tea.KeyMsg, state *app.SceneSt
 // adjustSceneActionLevel nudges the brightness step of the action at actIdx,
 // a no-op for non-brightness verbs.
 func (ce *ConfigEditor) adjustSceneActionLevel(state *app.SceneStateEditConfig, actIdx, direction int) {
-	act, err := app.ParseAction(state.Actions[actIdx])
+	act, err := app.ParseSceneStep(state.Actions[actIdx])
 	if err != nil {
 		return
 	}
@@ -264,10 +264,12 @@ func (ce *ConfigEditor) adjustSceneActionLevel(state *app.SceneStateEditConfig, 
 // cycleSceneActionField mutates the action string at actIdx by cycling the
 // currently focused sub-field.
 func (ce *ConfigEditor) cycleSceneActionField(state *app.SceneStateEditConfig, actIdx, direction int) {
-	act, err := app.ParseAction(state.Actions[actIdx])
+	// Parsed as a scene step so a delay set elsewhere (web Scene Studio or
+	// config.json) survives editing the verb, device or level here.
+	act, err := app.ParseSceneStep(state.Actions[actIdx])
 	if err != nil {
 		// Unparseable (e.g. legacy/hand-edited) — reset to a sane default.
-		act = app.Action{Verb: "on", Device: ce.firstTargetDevice()}
+		act = app.SceneStep{Action: app.Action{Verb: "on", Device: ce.firstTargetDevice()}}
 	}
 
 	switch ce.sceneActionField {
@@ -364,7 +366,7 @@ func (ce *ConfigEditor) renderSceneAction(theme Theme, actionStr string, fieldId
 		prefix = "▶ "
 	}
 
-	act, err := app.ParseAction(actionStr)
+	act, err := app.ParseSceneStep(actionStr)
 	if err != nil {
 		return prefix + theme.Muted.Render(actionStr+" [invalid]")
 	}
@@ -375,6 +377,9 @@ func (ce *ConfigEditor) renderSceneAction(theme Theme, actionStr string, fieldId
 	line := prefix + "  " + theme.On.Render(act.Verb) + " " + theme.Muted.Render("→") + " " + devStr
 	if app.IsBrightnessVerb(act.Verb) {
 		line += theme.Secondary.Render(" " + brightnessLevelLabel(act.Verb, act.Level))
+	}
+	if act.Delay > 0 {
+		line += theme.Muted.Render(" after " + app.FormatStepDelay(act.Delay))
 	}
 	return line
 }
@@ -406,9 +411,9 @@ func brightnessLevelLabel(verb string, level int) string {
 }
 
 func (ce *ConfigEditor) renderSceneActionEditor(theme Theme, actionStr string) string {
-	act, err := app.ParseAction(actionStr)
+	act, err := app.ParseSceneStep(actionStr)
 	if err != nil {
-		act = app.Action{Verb: "on"}
+		act = app.SceneStep{Action: app.Action{Verb: "on"}}
 	}
 
 	arrowL := theme.Muted.Render("◀ ")

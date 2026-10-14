@@ -56,7 +56,7 @@ func (ws *WebServer) handleConfigEditGet(w http.ResponseWriter, r *http.Request)
 
 	resp := apiConfigEditResponse{
 		Config: cfg,
-		Meta:   buildConfigEditMeta(cfg, state),
+		Meta:   ws.configEditMeta(cfg, state),
 		// Revision lets the frontend detect, on save, whether the config
 		// changed underneath this edit session (another tab, or an
 		// out-of-band reload) - see handleConfigEditPost.
@@ -544,7 +544,7 @@ func validateEditableConfig(cfg app.EditableConfig, state app.AppState) []string
 
 			for j, actionStr := range st.Actions {
 				actLabel := fmt.Sprintf("%s state %q action #%d (%q)", sceneLabel, st.Name, j+1, actionStr)
-				act, err := app.ParseAction(actionStr)
+				act, err := app.ParseSceneStep(actionStr)
 				if err != nil {
 					errs = append(errs, fmt.Sprintf("%s: %v", actLabel, err))
 					continue
@@ -632,6 +632,9 @@ type apiConfigEditMeta struct {
 	OutputDeviceNames []string                     `json:"output_device_names"`
 	Drivers           []string                     `json:"drivers"`
 	IoSuggestions     map[string][]apiIoSuggestion `json:"io_suggestions"`
+	// SceneRun reports whether POST /api/scenes/run is available, so the
+	// Scene Studio only offers "Run" when it can actually do it.
+	SceneRun bool `json:"scene_run"`
 }
 
 type apiIoSuggestion struct {

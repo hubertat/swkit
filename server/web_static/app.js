@@ -684,6 +684,7 @@
         if (path === '/config') return 'config';
         if (path === '/logs') return 'logs';
         if (path === '/schema') return 'schema';
+        if (path === '/scenes') return 'scenes';
         return 'dashboard';
     }
 
@@ -708,6 +709,18 @@
                 }
             }
             if (window.swkitSchema.discardSilently) window.swkitSchema.discardSilently();
+        }
+
+        // Same guard for the Scene Studio, whose working copy also lives only
+        // in its own module (scenes.js).
+        if (currentTab === 'scenes' && tab !== 'scenes' && window.swkitScenes) {
+            if (window.swkitScenes.hasUnsavedChanges()) {
+                if (!confirm('You have unsaved scene changes. Leave without saving?')) {
+                    history.replaceState(null, '', '/scenes');
+                    return;
+                }
+            }
+            window.swkitScenes.discardSilently();
         }
 
         currentTab = tab;
@@ -737,6 +750,7 @@
             case 'config': renderConfig(state); break;
             case 'logs': renderLogs(); return; // Logs doesn't need state polling
             case 'schema': if (window.swkitSchema) window.swkitSchema.render(state); return; // no diagram re-render on poll; state feeds the live overlay only
+            case 'scenes': if (window.swkitScenes) window.swkitScenes.render(state); return; // editor is built once; polls only refresh live badges
         }
     }
 
@@ -847,12 +861,12 @@
             refresh();
         });
 
-        // Keyboard tab navigation: 1-7 switches tabs
+        // Keyboard tab navigation: 1-8 switches tabs
         document.addEventListener('keydown', function(e) {
             if (document.activeElement && document.activeElement !== document.body) return;
-            const tabs = ['/', '/drivers', '/devices', '/io-debug', '/config', '/logs', '/schema'];
+            const tabs = ['/', '/drivers', '/devices', '/io-debug', '/config', '/logs', '/schema', '/scenes'];
             const n = parseInt(e.key);
-            if (n >= 1 && n <= 7) { e.preventDefault(); navigate(tabs[n - 1]); }
+            if (n >= 1 && n <= tabs.length) { e.preventDefault(); navigate(tabs[n - 1]); }
         });
 
         startRefresh();

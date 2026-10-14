@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>swkit - diagnostics</title>
     <link rel="stylesheet" href="/static/web_static/style.css">
+    <link rel="stylesheet" href="/static/web_static/scenes.css">
 </head>
 <body>
     <div class="app">
@@ -26,6 +27,7 @@
             <a href="/config" data-tab="config"{{if eq .Tab "config"}} class="active"{{end}}><span class="nav-key">5</span> Config</a>
             <a href="/logs" data-tab="logs"{{if eq .Tab "logs"}} class="active"{{end}}><span class="nav-key">6</span> Logs</a>
             <a href="/schema" data-tab="schema"{{if eq .Tab "schema"}} class="active"{{end}}><span class="nav-key">7</span> Schema</a>
+            <a href="/scenes" data-tab="scenes"{{if eq .Tab "scenes"}} class="active"{{end}}><span class="nav-key">8</span> Scenes</a>
         </nav>
 
         <main id="page-content">
@@ -35,5 +37,6 @@
 
     <script src="/static/web_static/app.js"></script>
     <script src="/static/web_static/schema.js"></script>
+    <script src="/static/web_static/scenes.js"></script>
 </body>
 </html>

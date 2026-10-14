@@ -92,12 +92,14 @@ func NewWebServerWithConfig(provider app.StateProvider, port int, logger *log.Lo
 	mux.HandleFunc("/config", ws.handlePage)
 	mux.HandleFunc("/logs", ws.handlePage)
 	mux.HandleFunc("/schema", ws.handlePage)
+	mux.HandleFunc("/scenes", ws.handlePage)
 
 	// API
 	mux.HandleFunc("/api/state", ws.handleApiState)
 	mux.HandleFunc("/api/logs/stream", ws.handleLogsStream)
 	mux.HandleFunc("/api/schema", ws.handleApiSchema)
 	mux.HandleFunc("/api/config/edit", ws.handleApiConfigEdit)
+	mux.HandleFunc("/api/scenes/run", ws.handleApiSceneRun)
 
 	ws.mux = mux
 	ws.server = &http.Server{
@@ -352,6 +354,8 @@ func pageTab(path string) string {
 		return "logs"
 	case "/schema":
 		return "schema"
+	case "/scenes":
+		return "scenes"
 	default:
 		return "dashboard"
 	}
