@@ -488,6 +488,10 @@ func (p *SwKitProvider) buildDimmableLightState(dl *DimmableLight) app.DeviceSta
 
 	if dl.briOut != nil {
 		analogIoId = dl.briOut.String()
+		// Raw readback on purpose, not dl.readLevel: API clients confirm a
+		// command only once a later poll reports it, so reporting the
+		// device's pending (written, unconfirmed) level would confirm writes
+		// the hardware never applied.
 		if raw, err := dl.briOut.GetState(); err == nil {
 			min, max := dl.briOut.GetMinMax()
 			brightness = convertIntRange(raw, min, max, 0, 100)

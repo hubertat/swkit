@@ -94,7 +94,7 @@ golangci-lint run
 **Device Types**:
 - **Light** (`light.go`): Simple on/off light with digital output
 - **ColorLight** (`color_light.go`): RGB/RGBW light with digital output + color control
-- **DimmableLight** (`dimmable_light.go`): brightness light. `AnalogOutName` is required; `DigitalOutName` is optional. With both (typical), the digital output switches on/off and the analog output only sets brightness. Analog-only, the analog output does both: above its minimum = on, off writes the minimum, and on restores the last level (else `DefaultSetpoint`, else 100%). `DefaultSetpoint` is written on startup only when a digital output is present. Shelly `a_out` sets brightness only, so it still needs a `DigitalOutName` (`drivers.AnalogOutputIsBrightnessOnly`)
+- **DimmableLight** (`dimmable_light.go`): brightness light. `AnalogOutName` is required; `DigitalOutName` is optional. With both (typical), the digital output switches on/off and the analog output only sets brightness. Analog-only, the analog output does both: above its minimum = on, off writes the minimum, and on restores the last level (else `DefaultSetpoint`, else 100%). `DefaultSetpoint` is written on startup only when a digital output is present. Device decisions read the analog level through `readLevel`, which reports the last written level until the driver reads it back (or `analogPendingTimeout` passes), since Wago only refreshes analog state on its next poll. Shelly `a_out` sets brightness only, so it still needs a `DigitalOutName` (`drivers.AnalogOutputIsBrightnessOnly`)
 - **Outlet** (`outlet.go`): Simple on/off outlet with digital output
 - **Button** (`button.go`): Stateless switch with push event detection, can control other devices
 

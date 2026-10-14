@@ -2,6 +2,7 @@ package swkit
 
 import (
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/log"
 	drivers "github.com/hubertat/swkit/drivers"
@@ -297,5 +298,93 @@ func TestDimmableLightWithDigitalOutBrightnessIndependentOfOn(t *testing.T) {
 	dl.SetValue(false)
 	if got, _ := aOut.GetState(); got != 40 {
 		t.Errorf("SetValue must not touch brightness with a digital output: native = %d, want 40", got)
+	}
+}
+
+// laggingAnalogOutput models a driver that reports analog state from a cache
+// refreshed only on its next poll (as Wago does): Set writes through, but
+// GetState returns the old value until poll() is called.
+type laggingAnalogOutput struct {
+	written, reported int
+	min, max          int
+}
+
+func (l *laggingAnalogOutput) GetMinMax() (int, int)  { return l.min, l.max }
+func (l *laggingAnalogOutput) GetState() (int, error) { return l.reported, nil }
+func (l *laggingAnalogOutput) Set(v int) error        { l.written = v; return nil }
+func (l *laggingAnalogOutput) String() string         { return "test|a_out|lag" }
+func (l *laggingAnalogOutput) IsHealthy() bool        { return true }
+func (l *laggingAnalogOutput) poll()                  { l.reported = l.written }
+
+func newLaggingDimmableLight(t *testing.T, level int) (*DimmableLight, *laggingAnalogOutput, *time.Time) {
+	t.Helper()
+	aOut := &laggingAnalogOutput{written: level, reported: level, min: 0, max: 100}
+	dl := NewDimmableLight(DimmableLightConfig{Name: "Lag"}, nil, aOut, log.New(nil))
+	clock := time.Unix(1000, 0)
+	dl.now = func() time.Time { return clock }
+	return dl, aOut, &clock
+}
+
+// Off then on before the driver's next poll: the stale readback still shows
+// the light lit, which must not make switch-on a no-op.
+func TestDimmableLightAnalogOnlyRapidOffOnBeforePoll(t *testing.T) {
+	dl, aOut, _ := newLaggingDimmableLight(t, 40)
+
+	dl.SetValue(false)
+	dl.SetValue(true)
+	if aOut.written != 40 {
+		t.Errorf("off then on before a poll: written = %d, want 40 (switch-on must not be skipped)", aOut.written)
+	}
+}
+
+// A newer level set before the driver's next poll must not be replaced by the
+// stale readback when the light is then switched off.
+func TestDimmableLightAnalogOnlyStaleReadbackKeepsNewerLevel(t *testing.T) {
+	dl, aOut, _ := newLaggingDimmableLight(t, 40)
+
+	dl.SetBrightness(70)
+	dl.SetValue(false)
+	aOut.poll()
+	dl.SetValue(true)
+	if aOut.written != 70 {
+		t.Errorf("70%% then off before a poll, then on: written = %d, want 70", aOut.written)
+	}
+}
+
+// Rapid toggles before a poll alternate correctly.
+func TestDimmableLightAnalogOnlyRapidTogglesBeforePoll(t *testing.T) {
+	dl, aOut, _ := newLaggingDimmableLight(t, 60)
+
+	for i, want := range []int{0, 60, 0, 60} {
+		dl.Toggle()
+		if aOut.written != want {
+			t.Fatalf("toggle %d before a poll: written = %d, want %d", i+1, aOut.written, want)
+		}
+	}
+}
+
+// Once the readback matches, or the pending window expires with the hardware
+// disagreeing (lost write, or changed at the dimmer), the readback wins.
+func TestDimmableLightPendingLevelExpires(t *testing.T) {
+	dl, aOut, clock := newLaggingDimmableLight(t, 40)
+
+	dl.SetBrightness(70)
+	if got, _ := dl.readLevel(); got != 70 {
+		t.Fatalf("readLevel within pending window = %d, want written 70", got)
+	}
+
+	*clock = clock.Add(analogPendingTimeout)
+	if got, _ := dl.readLevel(); got != 40 {
+		t.Fatalf("readLevel after pending window with stale hardware = %d, want readback 40", got)
+	}
+
+	dl.SetBrightness(80)
+	aOut.poll()
+	if got, _ := dl.readLevel(); got != 80 {
+		t.Fatalf("readLevel after the confirming poll = %d, want 80", got)
+	}
+	aOut.reported = 25 // changed at the dimmer after the write was confirmed
+	if got, _ := dl.readLevel(); got != 25 {
+		t.Errorf("readLevel after a later external change = %d, want 25", got)
 	}
 }

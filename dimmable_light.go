@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sync"
+	"time"
 
 	"github.com/brutella/hap/accessory"
 	"github.com/brutella/hap/characteristic"
@@ -72,11 +73,31 @@ type DimmableLight struct {
 	hasLastLevel bool
 	onLevel      int // native level for switch-on with no lastLevel
 
+	// pending is the last level written to briOut that the driver has not
+	// reported back yet (see readLevel). Guarded by levelMu.
+	pending pendingLevel
+	now     func() time.Time // clock, swappable in tests
+
 	hk         *accessory.Lightbulb
 	brightness *characteristic.Brightness
 	fault      *characteristic.StatusFault
 
 	lock sync.Mutex
+}
+
+// analogPendingTimeout bounds how long readLevel prefers a written level over
+// a differing readback. Drivers report analog state asynchronously (Wago only
+// on its next poll), so a read straight after Set often returns the old
+// level; past this window a mismatch is taken as real (the write was lost, or
+// the level changed at the dimmer) and the readback wins.
+const analogPendingTimeout = 3 * time.Second
+
+// pendingLevel is a level written to the analog output and not yet confirmed
+// by a readback.
+type pendingLevel struct {
+	active bool
+	level  int
+	at     time.Time
 }
 
 // NewDimmableLight creates a dimmable light. dOut may be nil for an
@@ -89,6 +110,7 @@ func NewDimmableLight(config DimmableLightConfig, dOut drivers.DigitalOutput, aO
 		logger:         logger,
 		onOut:          dOut,
 		briOut:         aOut,
+		now:            time.Now,
 	}
 	min, max := aOut.GetMinMax()
 	if dOut == nil {
@@ -107,7 +129,7 @@ func NewDimmableLight(config DimmableLightConfig, dOut drivers.DigitalOutput, aO
 	logger.Debug("dimmable light created", "name", config.Name, "digitalOut", dOut.String(), "analogOut", aOut.String())
 	if config.DefaultSetpoint > 0 {
 		native := convertIntRange(config.DefaultSetpoint, 0, 100, min, max)
-		if err := aOut.Set(native); err != nil {
+		if err := dl.writeLevel(native); err != nil {
 			logger.Warn("failed to apply default setpoint", "dimmableLight", config.Name, "err", err)
 		} else {
 			logger.Debug("applied default setpoint", "dimmableLight", config.Name, "setpoint", config.DefaultSetpoint, "native", native)
@@ -179,11 +201,45 @@ func (dl *DimmableLight) SetBrightness(pct int) {
 	min, max := dl.briOut.GetMinMax()
 	native := convertIntRange(pct, 0, 100, min, max)
 	dl.logger.Debug("setting dimmable light brightness", "dimmableLight", dl.name, "brightness", pct, "native", native)
-	if err := dl.briOut.Set(native); err != nil {
+	if err := dl.writeLevel(native); err != nil {
 		dl.logger.Error("failed to set dimmable light brightness", "dimmableLight", dl.name, "err", err)
 		return
 	}
 	dl.rememberLevel(native)
+}
+
+// writeLevel writes native to the analog output and, on success, records it
+// as pending so readLevel reports it until the driver catches up.
+func (dl *DimmableLight) writeLevel(native int) error {
+	if err := dl.briOut.Set(native); err != nil {
+		return err
+	}
+	dl.levelMu.Lock()
+	dl.pending = pendingLevel{active: true, level: native, at: dl.now()}
+	dl.levelMu.Unlock()
+	return nil
+}
+
+// readLevel returns the analog output's current native level. Every read of
+// briOut goes through here so that decisions taken right after a write (is
+// the light on? which level to remember?) see the written level rather than
+// a stale readback. The pending level is reported until the driver reads it
+// back, or until analogPendingTimeout passes, whichever comes first.
+func (dl *DimmableLight) readLevel() (int, error) {
+	native, err := dl.briOut.GetState()
+	if err != nil {
+		return 0, err
+	}
+	dl.levelMu.Lock()
+	defer dl.levelMu.Unlock()
+	if !dl.pending.active {
+		return native, nil
+	}
+	if native == dl.pending.level || dl.now().Sub(dl.pending.at) >= analogPendingTimeout {
+		dl.pending.active = false
+		return native, nil
+	}
+	return dl.pending.level, nil
 }
 
 // rememberLevel records native as the level to restore on switch-on, if it is
@@ -226,7 +282,7 @@ func (dl *DimmableLight) Sync(force bool) (err error) {
 
 	var onState bool
 	var onErr error
-	native, briErr := dl.briOut.GetState()
+	native, briErr := dl.readLevel()
 	if dl.onOut != nil {
 		onState, onErr = dl.onOut.GetState()
 	} else if briErr == nil {
@@ -267,7 +323,7 @@ func (dl *DimmableLight) GetState() (bool, error) {
 	if dl.onOut != nil {
 		return dl.onOut.GetState()
 	}
-	native, err := dl.briOut.GetState()
+	native, err := dl.readLevel()
 	if err != nil {
 		return false, err
 	}
@@ -277,7 +333,7 @@ func (dl *DimmableLight) GetState() (bool, error) {
 // GetBrightness reports the current brightness as a HomeKit percentage (0-100),
 // scaling the analog output's native value the same way Sync does.
 func (dl *DimmableLight) GetBrightness() (int, error) {
-	native, err := dl.briOut.GetState()
+	native, err := dl.readLevel()
 	if err != nil {
 		return 0, err
 	}
@@ -302,7 +358,10 @@ func (dl *DimmableLight) SetValue(state bool) {
 
 func (dl *DimmableLight) setAnalogOnly(state bool) {
 	min, _ := dl.briOut.GetMinMax()
-	current, err := dl.briOut.GetState()
+	// readLevel, not briOut.GetState: right after an earlier command the
+	// driver may still report the old level, which would both skip a needed
+	// switch-on and overwrite the newer remembered level.
+	current, err := dl.readLevel()
 	if err == nil {
 		dl.rememberLevel(current)
 	}
@@ -315,7 +374,7 @@ func (dl *DimmableLight) setAnalogOnly(state bool) {
 		target = dl.restoreLevel()
 	}
 	dl.logger.Debug("setting analog-only dimmable light level", "dimmableLight", dl.name, "state", state, "native", target)
-	if err := dl.briOut.Set(target); err != nil {
+	if err := dl.writeLevel(target); err != nil {
 		dl.logger.Error("failed to set dimmable light on state", "dimmableLight", dl.name, "err", err)
 	}
 }
