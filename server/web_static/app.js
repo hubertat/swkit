@@ -191,6 +191,7 @@
                     '<td>' + escHtml(dev.model || '-') + '</td>' +
                     '<td class="mono">' + escHtml(dev.network || '-') + '</td>' +
                     '<td>' + dev.switches + '</td>' +
+                    '<td>' + (dev.lights || 0) + '</td>' +
                     '<td>' + dev.inputs + '</td>' +
                     '<td>' + healthIcon + '</td>' +
                     '</tr>';
@@ -200,7 +201,7 @@
                 : '';
             return '<div class="driver-detail-panel">' + brokerInfo +
                 '<div class="table-wrap"><table>' +
-                '<thead><tr><th>Device ID</th><th>Model</th><th>Network</th><th>Switches</th><th>Inputs</th><th>Health</th></tr></thead>' +
+                '<thead><tr><th>Device ID</th><th>Model</th><th>Network</th><th>Switches</th><th>Lights</th><th>Inputs</th><th>Health</th></tr></thead>' +
                 '<tbody>' + rows + '</tbody>' +
                 '</table></div></div>';
         }
