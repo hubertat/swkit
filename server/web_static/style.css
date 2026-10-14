@@ -1482,3 +1482,10 @@ td.mono {
     opacity: 0.4;
     cursor: not-allowed;
 }
+
+/* Link from the schema scene form to the Scenes tab (scenes.js) */
+.schema-studio-link {
+    display: inline-block;
+    margin: 4px 0 10px;
+    text-decoration: none;
+}

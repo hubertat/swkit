@@ -528,6 +528,9 @@ func (sw *SwKit) Close() (err error) {
 	if sw.timed != nil {
 		sw.timed.Close()
 	}
+	for _, scene := range sw.scenes {
+		scene.Close()
+	}
 
 	for _, driver := range sw.ioDrivers {
 		if driver != nil {

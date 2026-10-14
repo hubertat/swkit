@@ -1168,3 +1168,38 @@ func TestConfigEdit_ValidationCollectsAllErrorsAtOnce(t *testing.T) {
 		t.Errorf("expected at least 4 collected errors, got %d: %v", len(errs), errs)
 	}
 }
+
+// ---- Delayed scene steps ----
+
+func TestConfigEdit_ValidationSceneDelayedStepsAccepted(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		DimmableLights: []app.DimmableLightEditConfig{{Name: "Hall", DigitalOutName: "gpio|d_out|5", AnalogOutName: "gpio|a_out|1"}},
+		Scenes: []app.SceneEditConfig{{
+			Name: "Evening",
+			States: []app.SceneStateEditConfig{
+				{Name: "off", Actions: []string{"off:Hall"}},
+				{Name: "cozy", Actions: []string{"brightness:60:Hall", "after:30s:brightness:30:Hall", "after:2h:off:Hall"}},
+			},
+		}},
+	}
+	body, _ := json.Marshal(apiConfigEditPostBody{Config: cfg, Revision: fakeConfigRevision(baseFixtureConfig())})
+	code, resp := doConfigEditPost(t, ws, string(body))
+	if code != 200 {
+		t.Fatalf("status = %d, want 200 for valid delayed steps, errors=%v", code, resp.Errors)
+	}
+}
+
+func TestConfigEdit_ValidationSceneDelayTooLong(t *testing.T) {
+	ws := newValidationTestServer(t)
+	cfg := app.EditableConfig{
+		Lights: []app.LightEditConfig{{Name: "Porch", DigitalOutName: "gpio|d_out|5"}},
+		Scenes: []app.SceneEditConfig{{
+			Name: "Away",
+			States: []app.SceneStateEditConfig{
+				{Name: "on", Actions: []string{"after:48h:off:Porch"}},
+			},
+		}},
+	}
+	postAndExpectErrors(t, ws, cfg, "exceeds the maximum")
+}

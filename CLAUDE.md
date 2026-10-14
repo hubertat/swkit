@@ -113,6 +113,15 @@ golangci-lint run
 - Uses the control JSON API and mirrors the web UI's command/confirmation model (`presto/src/model.py` is a port of `control.js`); keep the two in step when changing that behaviour or the API.
 - Develop with `presto/sim/` (PC simulator with screenshots, MicroPython unix-port check, `sim/test_model.py`); deploy with `presto/deploy.sh`. See `presto/README.md`.
 
+**Scenes (`scene.go`, `app/scene_step.go`)** - Multi-state scenes; state 0 is "Off" by convention and `Toggle()` cycles states:
+- A state is a list of step strings: `on|off|toggle:<device>`, `brightness:<pct>:<device>`, `brightness_up|brightness_down:<step>:<device>`, each optionally prefixed with `after:<duration>:` (Go duration, max 24h), e.g. `after:10m:off:Porch`. Parse with `app.ParseSceneStep`, never `app.ParseAction` (that is the button grammar, which deliberately rejects delays).
+- `Scene.Activate` applies immediate steps synchronously and schedules delayed ones, one timer per distinct delay; steps sharing a delay run in config order. Activating any state cancels the previous activation's pending steps (so "Off" stops a running sequence); `SwKit.Close` → `Scene.Close` cancels everything on reload/shutdown.
+- All step application is serialized by `Scene.applyMu`, and a delayed step re-checks its generation under it, so a stale delayed step can never land after a later activation (e.g. switch a light back on after "Off"). `sc.mu` (generation/timers) is never held across a driver call.
+- Config order is execution order, so editors must not reorder steps: the Scene Studio merges only adjacent steps into a "moment", writes them back in list order, and returns untouched states verbatim.
+- On a dimmable light, power and brightness are separate outputs: "on at 60%" is two steps, `brightness:60:X` then `on:X`.
+
+**Scene Studio (`server/web_static/scenes.js`, `scenes.css`, tab `/scenes`)** - Visual scene editor in the diagnostics web UI: device board (what), draggable timeline (when), per-device inspector. Saves through `/api/config/edit` with the revision handshake and sends untouched scenes back verbatim. `POST /api/scenes/run {scene, state}` activates a saved state; it is enabled only when the provider implements `ActivateSceneState` (advertised as `meta.scene_run`) and has the same CSRF checks as config saves.
+
 ### Key Patterns
 
 1. **IO Resolution Flow**:

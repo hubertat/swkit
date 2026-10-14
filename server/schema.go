@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/hubertat/swkit/app"
 	"github.com/hubertat/swkit/drivers"
@@ -209,14 +210,14 @@ func buildSchemaGraph(state app.AppState, cfg *app.EditableConfig) apiSchemaResp
 			fromID := deviceNodeId(app.DeviceTypeScene, sc.Name)
 			for _, st := range sc.States {
 				for _, actionStr := range st.Actions {
-					act, err := app.ParseAction(actionStr)
+					act, err := app.ParseSceneStep(actionStr)
 					if err != nil {
 						// Unparseable actions are diagnosed elsewhere (e.g.
 						// scene setup); silently skip them here.
 						continue
 					}
 					toID := resolveTarget(act.Device, targetIndex, missingNodes, &resp.Nodes)
-					key := fmt.Sprintf("%s|%s|%s|%s|%d", fromID, toID, st.Name, act.Verb, act.Level)
+					key := fmt.Sprintf("%s|%s|%s|%s|%d|%d", fromID, toID, st.Name, act.Verb, act.Level, act.Delay)
 					if seen[key] {
 						continue
 					}
@@ -229,6 +230,7 @@ func buildSchemaGraph(state app.AppState, cfg *app.EditableConfig) apiSchemaResp
 						State:  st.Name,
 						Action: act.Verb,
 						Level:  &level,
+						Delay:  delayString(act.Delay),
 					})
 				}
 			}
@@ -443,4 +445,14 @@ type apiSchemaEdge struct {
 	Action string `json:"action,omitempty"` // control + scene_action edges
 	Level  *int   `json:"level,omitempty"`  // control + scene_action edges
 	State  string `json:"state,omitempty"`  // scene_action edges
+	Delay  string `json:"delay,omitempty"`  // scene_action edges: e.g. "10m" for a delayed step
+}
+
+// delayString renders a scene step delay for the schema API, empty for an
+// immediate step.
+func delayString(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return app.FormatStepDelay(d)
 }

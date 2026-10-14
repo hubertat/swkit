@@ -739,6 +739,38 @@ func (p *SwKitProvider) AdjustDeviceBrightness(index int, delta int) app.Control
 	}
 }
 
+// ActivateSceneState activates the given state of the scene with the given
+// name, applying its immediate steps and scheduling its delayed ones. A
+// partial failure still leaves the state active (see Scene.Activate) and is
+// reported in the result's Error.
+func (p *SwKitProvider) ActivateSceneState(name string, stateIndex int) app.ControlResult {
+	// See ToggleDevice for why p.mu is released before the scene call below:
+	// Activate reaches into drivers and can block.
+	p.mu.RLock()
+	var scene *Scene
+	for _, sc := range p.sw.scenes {
+		if sc.name == name {
+			scene = sc
+			break
+		}
+	}
+	p.mu.RUnlock()
+	if scene == nil {
+		return app.ControlResult{DeviceName: name, Action: "activate", Error: fmt.Errorf("%w: %q (save the scene first)", app.ErrSceneNotFound, name)}
+	}
+	names := scene.StateNames()
+	if stateIndex < 0 || stateIndex >= len(names) {
+		return app.ControlResult{DeviceName: name, Action: "activate", Error: fmt.Errorf("%w: %q has no state #%d", app.ErrSceneNotFound, name, stateIndex)}
+	}
+	err := scene.Activate(stateIndex)
+	return app.ControlResult{
+		DeviceName: name,
+		Action:     "activate " + names[stateIndex],
+		NewState:   stateIndex != 0,
+		Error:      err,
+	}
+}
+
 // SetDeviceValueFor sets the controllable device at the given index to state for
 // the given duration (seconds), then reverts to its prior state.
 func (p *SwKitProvider) SetDeviceValueFor(index int, state bool, seconds int) app.ControlResult {

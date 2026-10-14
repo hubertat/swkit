@@ -2001,13 +2001,28 @@
         return verb === 'brightness' || verb === 'brightness_up' || verb === 'brightness_down';
     }
 
-    // parseActionString / formatActionString mirror app.ParseAction / Action.String
-    // (action.go): "<verb>:<device>" for on/off/toggle, "<verb>:<level>:<device>"
-    // for the brightness family. Used client-side for rename propagation and
-    // for building the live edit-mode diagram's scene_action edges.
+    // parseActionString / formatActionString mirror app.ParseSceneStep /
+    // SceneStep.String (scene_step.go): "<verb>:<device>" for on/off/toggle,
+    // "<verb>:<level>:<device>" for the brightness family, optionally prefixed
+    // with "after:<duration>:" for a delayed scene step. The delay is carried
+    // through untouched so editing a step here (or renaming its device) never
+    // drops it. Used client-side for rename propagation and for building the
+    // live edit-mode diagram's scene_action edges.
     function parseActionString(s) {
         if (!s) return null;
-        const parts = String(s).split(':');
+        let parts = String(s).split(':');
+        let delay = '';
+        if ((parts[0] || '').toLowerCase() === 'after') {
+            if (parts.length < 3 || !parts[1]) return null;
+            delay = parts[1];
+            parts = parts.slice(2);
+        }
+        const step = parseBareAction(parts);
+        if (step) step.delay = delay;
+        return step;
+    }
+
+    function parseBareAction(parts) {
         const verb = (parts[0] || '').toLowerCase();
         if (verb === 'on' || verb === 'off' || verb === 'toggle') {
             if (parts.length !== 2) return null;
@@ -2023,8 +2038,9 @@
     }
 
     function formatActionString(a) {
-        if (isBrightnessVerb(a.verb)) return a.verb + ':' + a.level + ':' + a.device;
-        return a.verb + ':' + a.device;
+        const prefix = a.delay ? 'after:' + a.delay + ':' : '';
+        if (isBrightnessVerb(a.verb)) return prefix + a.verb + ':' + a.level + ':' + a.device;
+        return prefix + a.verb + ':' + a.device;
     }
 
     // sanitizeWorkingCopy strips the internal-only _editId/_isNew bookkeeping
@@ -2548,6 +2564,15 @@
 
     function buildSceneForm(panel, entry) {
         buildNameField(panel, entry, 'scene');
+        // The Scenes tab is the richer editor (timeline, delays, brightness,
+        // Run). It has its own working copy, so unsaved edits here would be
+        // lost by going there - confirm first.
+        const studio = mkEl('a', { class: 'io-filter-btn schema-studio-link', href: '/scenes?scene=' + encodeURIComponent(entry.Name || '') },
+            'Open in the Scenes tab (timeline, delays, brightness) \u2192');
+        studio.addEventListener('click', function(e) {
+            if (S.dirty && !confirm('Leave the schema editor? Your unsaved changes here will be lost.')) e.preventDefault();
+        });
+        panel.appendChild(studio);
         panel.appendChild(mkEl('div', { class: 'schema-panel-section' }, 'States'));
         entry.States = entry.States || [];
         if (entry.States.length < 2) {
