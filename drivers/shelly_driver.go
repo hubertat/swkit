@@ -69,6 +69,15 @@ const (
 
 const componentLight = "light"
 
+// outputStateKey keys outputLastChanged/prevSwitchStates. Lights get their own
+// namespace so switch N and light N of one device never share an entry.
+func outputStateKey(deviceId string, kind shellyOutputKind, no int) string {
+	if kind == outputKindLight {
+		return fmt.Sprintf("%s:light:%d", deviceId, no)
+	}
+	return fmt.Sprintf("%s:%d", deviceId, no)
+}
+
 func getShellyIoId(deviceId string, inputNo int) string {
 	return fmt.Sprintf("%s%s%d", deviceId, idSeparator, inputNo)
 }
@@ -100,9 +109,9 @@ type ShellyIO struct {
 	devicesMu sync.RWMutex // protects devices slice and topicRoots map
 	stateMu   sync.RWMutex // protects outputLastChanged and inputLastEvent maps
 
-	outputLastChanged map[string]time.Time // key: "deviceId:switchNo"
+	outputLastChanged map[string]time.Time // key: outputStateKey
 	inputLastEvent    map[string]time.Time // key: "deviceId:inputNo"
-	prevSwitchStates  map[string]bool      // key: "deviceId:switchNo", last known state for change detection
+	prevSwitchStates  map[string]bool      // key: outputStateKey, last known on state for change detection
 }
 
 func (she *ShellyIO) Setup(ctx context.Context, ios []string) (err error) {
@@ -565,8 +574,8 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 			she.detectSwitchChanges(dev)
 
 			return true
-		case "Switch.Set":
-			// For Switch.Set responses, capture current state and check after a brief delay
+		case "Switch.Set", "Light.Set":
+			// For Switch.Set/Light.Set responses, capture current state and check after a brief delay
 			// to allow for any device state synchronization
 			outStates := she.captureOutputStates(dev.Id)
 			go func() {
@@ -617,32 +626,7 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 				return false
 			}
 
-			for _, e := range evs {
-				switch e.ComponentType {
-				case components.ComponentTypeInput:
-					she.ioMu.RLock()
-					for _, in := range she.inputs {
-						if in.deviceId == dev.Id && uint(in.inputNo) == e.ComponentId {
-							if !in.findAndFireEvent(e.EventType) {
-								she.logger.Debug("shelly input event not handled (no matching subscription)", "device", dev.Id, "input", in.inputNo, "event", e.EventType)
-							}
-						}
-					}
-					she.ioMu.RUnlock()
-					key := fmt.Sprintf("%s:%d", dev.Id, e.ComponentId)
-					she.stateMu.Lock()
-					she.inputLastEvent[key] = time.Now()
-					she.stateMu.Unlock()
-				default:
-					she.logger.Debug("unsupported component type", "device", dev.Id, "componentType", e.ComponentType)
-				}
-			}
-
-			if err != nil {
-				she.logger.Error("failed to parse events", "device", dev.Id, "error", err)
-				return false
-			}
-
+			she.dispatchEvents(dev.Id, evs)
 			return true
 		default:
 			she.logger.Warn("handling notification, unknown method", "method", msg.Method)
@@ -654,14 +638,39 @@ func (she *ShellyIO) HandleRpcMessage(msg *mqtt.RpcMessage, topic string) bool {
 	}
 }
 
-// captureOutputStates captures current states for outputs belonging to a specific device
+// dispatchEvents fires input subscriptions for a device's NotifyEvent events.
+func (she *ShellyIO) dispatchEvents(deviceId string, evs []shelly.Event) {
+	for _, e := range evs {
+		switch e.ComponentType {
+		case components.ComponentTypeInput:
+			she.ioMu.RLock()
+			for _, in := range she.inputs {
+				if in.deviceId == deviceId && uint(in.inputNo) == e.ComponentId {
+					if !in.findAndFireEvent(e.EventType) {
+						she.logger.Debug("shelly input event not handled (no matching subscription)", "device", deviceId, "input", in.inputNo, "event", e.EventType)
+					}
+				}
+			}
+			she.ioMu.RUnlock()
+			key := fmt.Sprintf("%s:%d", deviceId, e.ComponentId)
+			she.stateMu.Lock()
+			she.inputLastEvent[key] = time.Now()
+			she.stateMu.Unlock()
+		default:
+			she.logger.Debug("unsupported component type", "device", deviceId, "componentType", e.ComponentType)
+		}
+	}
+}
+
+// captureOutputStates captures current states for outputs belonging to a specific device.
+// GetState reads the component that backs the output (switch or light).
 func (she *ShellyIO) captureOutputStates(deviceId string) map[string]bool {
 	outStates := map[string]bool{}
 	she.ioMu.RLock()
 	defer she.ioMu.RUnlock()
 	for _, o := range she.outputs {
 		if o.deviceId == deviceId {
-			if state, err := o.dev.GetOutputState(o.switchNo); err == nil {
+			if state, err := o.GetState(); err == nil {
 				outStates[o.String()] = state
 			}
 		}
@@ -684,8 +693,8 @@ func (she *ShellyIO) notifyStateChanges(oldStates map[string]bool, msgType, meth
 	var pending []pendingNotification
 	for _, o := range she.outputs {
 		if oldState, present := oldStates[o.String()]; present && o.onStateUpdate != nil {
-			if state, err := o.dev.GetOutputState(o.switchNo); err == nil && state != oldState {
-				key := fmt.Sprintf("%s:%d", o.deviceId, o.switchNo)
+			if state, err := o.GetState(); err == nil && state != oldState {
+				key := outputStateKey(o.deviceId, o.kind, o.switchNo)
 				pending = append(pending, pendingNotification{
 					name:     o.String(),
 					key:      key,
@@ -713,8 +722,8 @@ func (she *ShellyIO) notifyStateChanges(oldStates map[string]bool, msgType, meth
 	}
 }
 
-// detectSwitchChanges compares each switch's current state against the last recorded state
-// and updates outputLastChanged for any that changed. Works for all discovered devices,
+// detectSwitchChanges compares each switch's and light's current on state against the last
+// recorded state and updates outputLastChanged for any that changed. Works for all discovered devices,
 // regardless of whether they have entries in she.outputs.
 // It also snapshots the current state into prevSwitchStates for the next comparison.
 func (she *ShellyIO) detectSwitchChanges(dev *shelly.ShellyDevice) {
@@ -725,7 +734,12 @@ func (she *ShellyIO) detectSwitchChanges(dev *shelly.ShellyDevice) {
 	var current []kv
 	for i := 0; i < dev.SwitchCount(); i++ {
 		if state, err := dev.GetOutputState(i); err == nil {
-			current = append(current, kv{fmt.Sprintf("%s:%d", dev.Id, i), state})
+			current = append(current, kv{outputStateKey(dev.Id, outputKindSwitch, i), state})
+		}
+	}
+	for i := 0; i < dev.LightCount(); i++ {
+		if on, _, err := dev.GetLightState(i); err == nil {
+			current = append(current, kv{outputStateKey(dev.Id, outputKindLight, i), on})
 		}
 	}
 	if len(current) == 0 {
@@ -973,6 +987,7 @@ type ShellyDeviceInfo struct {
 	Model    string `json:"model"`
 	Network  string `json:"network"`
 	Switches int    `json:"switches"`
+	Lights   int    `json:"lights"`
 	Inputs   int    `json:"inputs"`
 	Healthy  bool   `json:"healthy"`
 }
@@ -988,6 +1003,7 @@ func (sio *ShellyIO) DriverDetails() interface{} {
 			Model:    dev.Model(),
 			Network:  dev.NetworkInfo(),
 			Switches: dev.SwitchCount(),
+			Lights:   dev.LightCount(),
 			Inputs:   dev.InputCount(),
 			Healthy:  dev.HealthCheck() == nil,
 		})
@@ -1032,7 +1048,7 @@ func (she *ShellyIO) GetIoDebugSnapshot() IoDebugSnapshot {
 			if s, err := dev.GetOutputState(i); err == nil {
 				state = s
 			}
-			key := fmt.Sprintf("%s:%d", dev.Id, i)
+			key := outputStateKey(dev.Id, outputKindSwitch, i)
 			points = append(points, IoPointState{
 				Index:       outputIdx,
 				Name:        fmt.Sprintf("%s:switch%d", dev.Id, i),
@@ -1068,7 +1084,7 @@ func (she *ShellyIO) GetIoDebugSnapshot() IoDebugSnapshot {
 				on = o
 				brightness = int(b + 0.5)
 			}
-			key := fmt.Sprintf("%s:%d", dev.Id, i)
+			key := outputStateKey(dev.Id, outputKindLight, i)
 			points = append(points, IoPointState{
 				Index:       analogIdx,
 				Name:        fmt.Sprintf("%s:light%d", dev.Id, i),

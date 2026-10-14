@@ -164,6 +164,7 @@ golangci-lint run
 - Device discovery and matching via status messages
 - Supports inputs (switches) and outputs (relays)
 - IO ID format: `<device_id>:<component_index>` (e.g., `shellyplus1pm-ABCD1234:0`)
+- Dimmers (Light component, e.g. Plus 0-10V Dimmer: `light:0`, `input:0`, `input:1`): `shelly|d_out|<dev>:light:0` for on/off, `shelly|a_out|<dev>:light:0` for brightness, `shelly|d_in|<dev>:<n>` for input events. Output state callbacks and `outputLastChanged` keys go through `outputStateKey`, which keeps switch and light indexes apart
 - Health monitoring with periodic status checks
 
 **Grenton Driver** (`drivers/grentonio_driver.go`):
