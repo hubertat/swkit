@@ -588,7 +588,8 @@ func (p *SwKitProvider) buildButtonState(button *Button) app.DeviceState {
 }
 
 func (p *SwKitProvider) buildSceneState(scene *Scene) app.DeviceState {
-	idx := scene.CurrentState()
+	// One snapshot, so the next index always belongs to this current index.
+	idx, next := scene.ToggleInfo()
 	return app.DeviceState{
 		Name:            scene.name,
 		Type:            app.DeviceTypeScene,
@@ -597,6 +598,7 @@ func (p *SwKitProvider) buildSceneState(scene *Scene) app.DeviceState {
 		HomeKitEnabled:  false, // scenes have no HomeKit representation yet
 		SceneStateIndex: idx,
 		SceneStateNames: scene.StateNames(),
+		SceneNextIndex:  next,
 	}
 }
 
@@ -631,6 +633,28 @@ func (p *SwKitProvider) ToggleDevice(index int) app.ControlResult {
 			DeviceName: deviceName,
 			Action:     "toggle",
 			Error:      fmt.Errorf("buttons cannot be toggled"),
+		}
+	}
+
+	// A scene reports the state it actually selected, so the result is
+	// authoritative even when another controller toggles it concurrently
+	// (re-reading CurrentState afterwards could already see their choice).
+	if scene, ok := device.(*Scene); ok {
+		if len(scene.StateNames()) == 0 {
+			return app.ControlResult{DeviceName: scene.Name(), Action: "toggle"}
+		}
+		idx, err := scene.ToggleState()
+		if err != nil {
+			// The state is still selected (see Scene.ToggleState); a
+			// partial step failure is logged, as Scene.Toggle does, not
+			// turned into a failed request.
+			scene.logger.Error("scene toggle failed", "scene", scene.Name(), "err", err)
+		}
+		return app.ControlResult{
+			DeviceName: scene.Name(),
+			Action:     "toggle",
+			NewState:   idx != 0,
+			SceneIndex: &idx,
 		}
 	}
 

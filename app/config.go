@@ -85,8 +85,19 @@ type ButtonEditConfig struct {
 // kept as raw strings here, since that grammar differs from the button control
 // grammar.
 type SceneEditConfig struct {
-	Name   string
-	States []SceneStateEditConfig
+	Name string
+	// Devices is the scene's device list. nil (absent or null in JSON) means a
+	// legacy scene whose steps may target any valid device; non-nil makes it
+	// a managed scene, see ValidateSceneConfig. nil and empty are different
+	// (an empty list is invalid, never legacy), so copies must preserve
+	// nil-ness (slices.Clone does) and the JSON tag keeps [] while omitting
+	// nil.
+	Devices []string `json:",omitzero"`
+	// ToggleTimeoutSeconds, when > 0, makes a Toggle return to state 0 once
+	// the scene has stayed in another state this long (0 = disabled,
+	// max MaxSceneToggleTimeoutSeconds).
+	ToggleTimeoutSeconds int `json:",omitzero"`
+	States               []SceneStateEditConfig
 	// DisableHomekit is reserved; scenes have no HomeKit representation yet.
 	// It is carried through here purely so a config save does not silently
 	// erase the value already set in config.json (mirrors SceneConfig).

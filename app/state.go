@@ -97,6 +97,11 @@ type DeviceState struct {
 
 	SceneStateIndex int      // scenes only: index of the active state (0 = off)
 	SceneStateNames []string // scenes only: names of all states, in order
+	// SceneNextIndex (scenes only) is the state a toggle would select now:
+	// usually SceneStateIndex+1 (wrapping), or 0 once the scene's toggle
+	// timeout has expired. Read in one snapshot with SceneStateIndex. A
+	// prediction for clients; the toggle itself decides authoritatively.
+	SceneNextIndex int
 }
 
 // ButtonControlRelation describes a button's control mapping
@@ -169,4 +174,7 @@ type ControlResult struct {
 	Action     string // "toggle", "on", "off"
 	NewState   bool
 	Error      error
+	// SceneIndex is set by a scene toggle: the state the scene actually
+	// selected (authoritative). nil for every other action and device.
+	SceneIndex *int
 }
