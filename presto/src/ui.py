@@ -891,6 +891,11 @@ class UI:
                 g.rrect(20 + i * (dw + 8), y, dw, 8, 4, VIOLET if i == idx else SURFACE_2)
             g.text("%d of %d" % (idx + 1, count), W - 20, y + 9, 15, DIM, 2)
             y += 28
+            sn = d.get("scene_next")
+            if isinstance(sn, int) and sn != (idx + 1) % count:
+                # An idle timeout is due: the next tap goes back to the first state.
+                g.text("Next tap: Off (first state)", 20, y + 6, 16, AMBER, 0, W - 40)
+                y += 24
             self.button(16, y, W - 32, 68, "Next state", "scene_next", None, "primary", icon="chevron_right", size=22)
             y += 84
         else:

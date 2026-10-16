@@ -101,6 +101,7 @@ class Intent:
         self.in_flight = False
         self.debounce_at = None   # ticks when a debounced value is due
         self.queue = []
+        self.resolve_any = False  # scene: the last toggle ack carried scene_index
         self.expire_at = None     # waiting -> unconfirmed
         self.clear_at = None      # unconfirmed -> dropped
 
@@ -313,15 +314,31 @@ class Model:
 
     async def _send(self, index, it, job):
         try:
-            await self.client.post(job["path"], job.get("body"), CMD_TIMEOUT_S)
+            resp = await self.client.post(job["path"], job.get("body"), CMD_TIMEOUT_S)
         except Exception as e:  # noqa: BLE001 - any failure is reported the same way
             it.in_flight = False
             self.fail(index, it, job["verb"], e)
             return
         it.in_flight = False
+        if job.get("scene"):
+            self.scene_acked(index, it, resp)
         if job.get("ack"):
             self.notify(job["ack"])
         self.pump(index, it)
+
+    def scene_acked(self, index, it, resp):
+        """Reconciles a scene intent with the state the server actually
+        selected: that index, advanced once per toggle still queued."""
+        if self.get_intent(index, it.slot) is not it:
+            return
+        dev = self.devices.get(index) or {}
+        count = dev.get("scene_count") or 2
+        si = resp.get("scene_index") if isinstance(resp, dict) else None
+        if isinstance(si, int) and not isinstance(si, bool):
+            it.target = (si + len(it.queue)) % count
+            it.resolve_any = True
+        else:
+            it.resolve_any = False  # older server: only an exact match confirms
 
     def acknowledge(self, index, it):
         if self.get_intent(index, it.slot) is not it:
@@ -382,6 +399,11 @@ class Model:
         if it.kind == "bri":
             return abs((dev.get("brightness") or 0) - it.target) <= 1
         if it.kind == "scene":
+            # The server answered the last toggle authoritatively, so a poll
+            # that started after that answer settles the intent whatever it
+            # reports (another controller may have moved the scene since).
+            if it.resolve_any and it.phase == "waiting":
+                return True
             return (dev.get("scene_index") or 0) == it.target
         return False
 
@@ -395,10 +417,21 @@ class Model:
         name = dev["name"]
         if dev.get("type") == "scene":
             prev = self.get_intent(index, "power")
-            frm = prev.target if _live(prev) and prev.kind == "scene" else (dev.get("scene_index") or 0)
+            count = dev.get("scene_count") or 2
+            was_live = _live(prev) and prev.kind == "scene"
             it = self.intent_for(dev, "power", "scene")
-            it.target = (frm + 1) % (dev.get("scene_count") or 2)
-            it.queue.append({"path": base + "toggle", "verb": "switch " + name})
+            # The server picks the next state (a toggle timeout may send it
+            # back to state 0): the first tap follows its prediction, scene_next;
+            # taps on a live intent step on from the previous target.
+            sn = dev.get("scene_next")
+            if was_live:
+                it.target = (prev.target + 1) % count
+            elif isinstance(sn, int) and not isinstance(sn, bool):
+                it.target = sn % count
+            else:
+                it.target = ((dev.get("scene_index") or 0) + 1) % count
+            it.resolve_any = False
+            it.queue.append({"path": base + "toggle", "verb": "switch " + name, "scene": True})
         else:
             it = self.intent_for(dev, "power", "power")
             it.target = target
