@@ -257,8 +257,10 @@ func (cs *ControlServer) handleDeviceList(w http.ResponseWriter, r *http.Request
 		if d.Type == app.DeviceTypeScene {
 			resp.SceneIndex = d.SceneStateIndex
 			resp.SceneCount = len(d.SceneStateNames)
-			next := d.SceneNextIndex
-			resp.SceneNext = &next
+			if len(d.SceneStateNames) > 0 { // a scene with no states has no next state
+				next := d.SceneNextIndex
+				resp.SceneNext = &next
+			}
 			if d.SceneStateIndex >= 0 && d.SceneStateIndex < len(d.SceneStateNames) {
 				resp.SceneState = d.SceneStateNames[d.SceneStateIndex]
 			}

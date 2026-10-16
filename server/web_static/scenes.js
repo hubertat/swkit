@@ -199,7 +199,7 @@
             return { delay: delay, delayRaw: delayRaw, verb: verb, level: 0, device: parts[1] };
         }
         if (isBri(verb)) {
-            if (parts.length !== 3 || !/^-?\d+$/.test(parts[1])) return null;
+            if (parts.length !== 3 || !/^[+-]?\d+$/.test(parts[1])) return null;
             return { delay: delay, delayRaw: delayRaw, verb: verb, level: parseInt(parts[1], 10), device: parts[2] };
         }
         return null;
@@ -391,6 +391,9 @@
             const resp = await fetch('/api/config/edit', { cache: 'no-store' });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error((data.errors && data.errors.join('; ')) || 'HTTP ' + resp.status);
+            // An open dialog holds the old scene objects; confirming it would
+            // edit a detached copy.
+            closeDialog();
             S.config = data.config;
             S.meta = data.meta || {};
             S.revision = data.revision || '';

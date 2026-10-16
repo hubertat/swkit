@@ -356,7 +356,8 @@ function confirms(it, dev, pollStartedAt) {
             // so a poll that started after that answer settles the intent whatever
             // it reports: a different value means another controller moved the
             // scene since, not that this tap failed.
-            if (it.resolveAny && it.phase === 'waiting') return true;
+            // An ack followed by failing polls can already have gone amber.
+            if (it.resolveAny && pollStartedAt >= it.ackAt && (it.phase === 'waiting' || it.phase === 'unconfirmed')) return true;
             return (dev.scene_index || 0) === it.target;
     }
     return false;

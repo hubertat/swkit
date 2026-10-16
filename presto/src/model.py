@@ -402,7 +402,8 @@ class Model:
             # The server answered the last toggle authoritatively, so a poll
             # that started after that answer settles the intent whatever it
             # reports (another controller may have moved the scene since).
-            if it.resolve_any and it.phase == "waiting":
+            # An ack followed by failing polls can already have gone amber.
+            if it.resolve_any and ticks_diff(poll_started_at, it.ack_at) >= 0 and it.phase in ("waiting", "unconfirmed"):
                 return True
             return (dev.get("scene_index") or 0) == it.target
         return False
