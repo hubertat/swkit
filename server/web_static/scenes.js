@@ -1129,6 +1129,8 @@
                 if (ms % 1000) { err.textContent = 'Use whole seconds.'; err.hidden = false; return; }
                 if (ms > MAX_TIMEOUT_S * 1000) { err.textContent = 'The longest timeout is 24 h.'; err.hidden = false; return; }
                 err.hidden = true;
+                // A value that matches a preset lights up that chip instead.
+                if (TIMEOUT_PRESETS_S.indexOf(ms / 1000) >= 0) { set(ms / 1000); return; }
                 if (ms / 1000 !== v) { sc.toggleTimeout = ms / 1000; changed(); }
             });
             input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
