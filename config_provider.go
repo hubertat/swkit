@@ -138,9 +138,7 @@ func (p *SwKitConfigProvider) editableConfigLocked() app.EditableConfig {
 
 	for _, s := range p.sw.Scenes {
 		sc := app.SceneEditConfig{
-			Name: s.Name,
-			// slices.Clone keeps nil (legacy scene) distinct from an
-			// empty list (invalid managed scene).
+			Name:                 s.Name,
 			Devices:              slices.Clone(s.Devices),
 			ToggleTimeoutSeconds: s.ToggleTimeoutSeconds,
 			DisableHomekit:       s.DisableHomekit,
@@ -262,7 +260,7 @@ func (p *SwKitConfigProvider) saveConfigLocked(config app.EditableConfig) error 
 	for i, s := range config.Scenes {
 		sc := SceneConfig{
 			Name:                 s.Name,
-			Devices:              slices.Clone(s.Devices), // nil stays nil, [] stays []
+			Devices:              slices.Clone(s.Devices),
 			ToggleTimeoutSeconds: s.ToggleTimeoutSeconds,
 			DisableHomekit:       s.DisableHomekit,
 		}

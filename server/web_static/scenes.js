@@ -370,6 +370,9 @@
         if (S.loading) return;
         S.loading = true;
         S.loadError = null;
+        // "/scenes?new=1" (the Schema tab's "create a scene" link) opens the
+        // New scene dialog once the config is loaded.
+        const openNew = !keep && new URLSearchParams(location.search).get('new') === '1';
         try {
             const resp = await fetch('/api/config/edit', { cache: 'no-store' });
             const data = await resp.json().catch(() => ({}));
@@ -405,6 +408,7 @@
         } finally {
             S.loading = false;
             renderAll();
+            if (openNew && S.loaded) openNewSceneDialog();
         }
     }
 

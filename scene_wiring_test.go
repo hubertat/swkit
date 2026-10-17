@@ -2,6 +2,8 @@ package swkit
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/log"
@@ -19,7 +21,7 @@ func TestSetupBuildsAndResolvesScenes(t *testing.T) {
 			{Name: "L2", DigitalOutName: "mock_driver|d_out|2"},
 		},
 		Scenes: []SceneConfig{
-			{Name: "Movie", States: []SceneStateConfig{
+			{Name: "Movie", Devices: []string{"L1", "L2"}, States: []SceneStateConfig{
 				{Name: "off", Actions: []string{"off:L1", "off:L2"}},
 				{Name: "on", Actions: []string{"on:L1", "off:L2"}},
 			}},
@@ -64,11 +66,11 @@ func TestSetupSceneReferencesEarlierScene(t *testing.T) {
 		FakeDriver: &drivers.MockIoDriver{},
 		Lights:     []LightConfig{{Name: "L1", DigitalOutName: "mock_driver|d_out|1"}},
 		Scenes: []SceneConfig{
-			{Name: "Inner", States: []SceneStateConfig{
+			{Name: "Inner", Devices: []string{"L1"}, States: []SceneStateConfig{
 				{Name: "off", Actions: []string{"off:L1"}},
 				{Name: "on", Actions: []string{"on:L1"}},
 			}},
-			{Name: "Outer", States: []SceneStateConfig{
+			{Name: "Outer", Devices: []string{"Inner"}, States: []SceneStateConfig{
 				{Name: "off", Actions: []string{"off:Inner"}},
 				{Name: "on", Actions: []string{"on:Inner"}},
 			}},
@@ -97,10 +99,10 @@ func TestSetupSceneReferencesLaterSceneFails(t *testing.T) {
 		FakeDriver: &drivers.MockIoDriver{},
 		Lights:     []LightConfig{{Name: "L1", DigitalOutName: "mock_driver|d_out|1"}},
 		Scenes: []SceneConfig{
-			{Name: "Outer", States: []SceneStateConfig{
+			{Name: "Outer", Devices: []string{"Inner"}, States: []SceneStateConfig{
 				{Name: "on", Actions: []string{"on:Inner"}},
 			}},
-			{Name: "Inner", States: []SceneStateConfig{
+			{Name: "Inner", Devices: []string{"L1"}, States: []SceneStateConfig{
 				{Name: "on", Actions: []string{"on:L1"}},
 			}},
 		},
@@ -108,6 +110,37 @@ func TestSetupSceneReferencesLaterSceneFails(t *testing.T) {
 
 	if err := sw.Setup(context.Background(), log.New(nil)); err == nil {
 		t.Fatal("expected Setup to fail: Outer references later-defined Inner")
+	}
+}
+
+// TestSetupRejectsSceneWithoutDevices: a config.json scene without a Devices
+// list (the old format) refuses to start, with an error that says how to fix
+// it, suggesting the devices the scene's steps already use.
+func TestSetupRejectsSceneWithoutDevices(t *testing.T) {
+	raw := `{
+		"Name": "t",
+		"Lights": [
+			{"Name": "Kitchen", "DigitalOutName": "mock_driver|d_out|1"},
+			{"Name": "Hall", "DigitalOutName": "mock_driver|d_out|2"}
+		],
+		"Scenes": [{"Name": "Evening", "States": [
+			{"Name": "Off", "Actions": ["off:Kitchen", "off:Hall"]},
+			{"Name": "On", "Actions": ["on:Kitchen", "after:10m:off:Kitchen"]}
+		]}]
+	}`
+	var sw SwKit
+	if err := json.Unmarshal([]byte(raw), &sw); err != nil {
+		t.Fatal(err)
+	}
+	sw.FakeDriver = &drivers.MockIoDriver{}
+
+	err := sw.Setup(context.Background(), log.New(nil))
+	if err == nil {
+		t.Fatal("expected Setup to fail for a scene without Devices")
+	}
+	want := `scene "Evening": Devices is required: list the devices this scene controls, e.g. "Devices": ["Kitchen", "Hall"]`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("Setup error = %q, want it to contain %q", err, want)
 	}
 }
 
@@ -135,7 +168,8 @@ func TestButtonDrivesScene(t *testing.T) {
 	a := newTestLight("A", false)
 
 	scene, err := NewScene(SceneConfig{
-		Name: "S",
+		Name:    "S",
+		Devices: []string{"A"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			{Name: "on", Actions: []string{"on:A"}},

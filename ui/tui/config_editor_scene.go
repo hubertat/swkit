@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,17 +26,16 @@ func (ce *ConfigEditor) currentSceneItem() (*app.SceneEditConfig, bool) {
 }
 
 // sceneTargetOptions returns the devices a step of scene may target: the
-// scene's own device list for a managed scene (Devices != nil), otherwise
-// every output device name (legacy scene).
+// scene's own device list.
 func (ce *ConfigEditor) sceneTargetOptions(scene *app.SceneEditConfig) []string {
-	if scene != nil && scene.Devices != nil {
-		return scene.Devices
+	if scene == nil {
+		return nil
 	}
-	return ce.config.OutputDeviceNames
+	return scene.Devices
 }
 
 // firstSceneTarget returns the default target for a new step of scene: its
-// first listed device for a managed scene, else the first output device.
+// first listed device, or "" when the list is empty.
 func (ce *ConfigEditor) firstSceneTarget(scene *app.SceneEditConfig) string {
 	if opts := ce.sceneTargetOptions(scene); len(opts) > 0 {
 		return opts[0]
@@ -43,7 +43,161 @@ func (ce *ConfigEditor) firstSceneTarget(scene *app.SceneEditConfig) string {
 	return ""
 }
 
-// ---- Scene screen (name + list of states) ----
+// sceneDeviceCandidate is one row of the scene device checklist.
+type sceneDeviceCandidate struct {
+	name string
+	kind string // "light", "dimmable", "outlet", "color light", "scene" or "unknown"
+}
+
+// sceneDeviceCandidates returns the devices the scene at sceneIdx may list,
+// in the same order as the config: lights, dimmable lights, outlets, color
+// lights (from runtime state, as they are not part of the editable config)
+// and the scenes defined before it (a scene may only target earlier scenes,
+// never itself or a later one). Listed devices that are none of these (e.g.
+// renamed or deleted since) are appended as "unknown" so they can be removed.
+func (ce *ConfigEditor) sceneDeviceCandidates(sceneIdx int) []sceneDeviceCandidate {
+	var out []sceneDeviceCandidate
+	seen := make(map[string]bool)
+	add := func(name, kind string) {
+		if strings.TrimSpace(name) == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, sceneDeviceCandidate{name: name, kind: kind})
+	}
+	for _, l := range ce.config.Lights {
+		add(l.Name, "light")
+	}
+	for _, dl := range ce.config.DimmableLights {
+		add(dl.Name, "dimmable")
+	}
+	for _, o := range ce.config.Outlets {
+		add(o.Name, "outlet")
+	}
+	for _, d := range ce.deviceStates {
+		if d.Type == app.DeviceTypeColorLight {
+			add(d.Name, "color light")
+		}
+	}
+	for i := 0; i < sceneIdx && i < len(ce.config.Scenes); i++ {
+		add(ce.config.Scenes[i].Name, "scene")
+	}
+	if sceneIdx >= 0 && sceneIdx < len(ce.config.Scenes) {
+		for _, d := range ce.config.Scenes[sceneIdx].Devices {
+			add(d, "unknown")
+		}
+	}
+	return out
+}
+
+// currentSceneIndex returns the index in ce.config.Scenes of the scene
+// selected in the list, or -1.
+func (ce *ConfigEditor) currentSceneIndex() int {
+	if _, ok := ce.currentSceneItem(); !ok {
+		return -1
+	}
+	return ce.items[ce.cursor].index
+}
+
+// addSceneDevice adds name to the scene's device list. Like the web Scene
+// Studio, a device joins switched off in state 0 ("off:<d>" appended to its
+// steps) and left unchanged in the other states; while the checklist was
+// opened on a brand new scene (no states yet), it instead builds the
+// Studio's starting point: "Off" with every chosen device off and "On" with
+// every chosen device on.
+func (ce *ConfigEditor) addSceneDevice(scene *app.SceneEditConfig, name string) {
+	if slices.Contains(scene.Devices, name) {
+		return
+	}
+	scene.Devices = append(scene.Devices, name)
+	if ce.sceneDevicesNewScene && len(scene.States) == 0 {
+		scene.States = []app.SceneStateEditConfig{{Name: "Off"}, {Name: "On"}}
+	}
+	if len(scene.States) == 0 {
+		scene.States = []app.SceneStateEditConfig{{Name: "Off"}}
+	}
+	scene.States[0].Actions = append(scene.States[0].Actions, app.Action{Verb: "off", Device: name}.String())
+	if ce.sceneDevicesNewScene && len(scene.States) > 1 {
+		scene.States[1].Actions = append(scene.States[1].Actions, app.Action{Verb: "on", Device: name}.String())
+	}
+	ce.markDirty()
+}
+
+// removeSceneDevice drops name from the scene's device list and strips every
+// step that targets it from every state, delayed steps included. Steps that
+// do not parse are left alone.
+func (ce *ConfigEditor) removeSceneDevice(scene *app.SceneEditConfig, name string) {
+	idx := slices.Index(scene.Devices, name)
+	if idx < 0 {
+		return
+	}
+	scene.Devices = slices.Delete(scene.Devices, idx, idx+1)
+	for i := range scene.States {
+		scene.States[i].Actions = slices.DeleteFunc(scene.States[i].Actions, func(a string) bool {
+			step, err := app.ParseSceneStep(a)
+			return err == nil && step.Device == name
+		})
+	}
+	ce.markDirty()
+}
+
+// openSceneDevices opens the device checklist for the current scene.
+func (ce *ConfigEditor) openSceneDevices(scene *app.SceneEditConfig) {
+	ce.sceneDeviceCursor = 0
+	ce.sceneDevicesNewScene = len(scene.States) == 0 && len(scene.Devices) == 0
+	ce.mode = ConfigModeSceneDevices
+}
+
+// updateSceneDevices handles keys in the scene device checklist.
+func (ce *ConfigEditor) updateSceneDevices(msg tea.Msg) tea.Cmd {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return nil
+	}
+	scene, ok := ce.currentSceneItem()
+	if !ok {
+		ce.mode = ConfigModeList
+		return nil
+	}
+	candidates := ce.sceneDeviceCandidates(ce.currentSceneIndex())
+
+	switch keyMsg.String() {
+	case "up", "k":
+		if ce.sceneDeviceCursor > 0 {
+			ce.sceneDeviceCursor--
+		}
+	case "down", "j":
+		if ce.sceneDeviceCursor < len(candidates)-1 {
+			ce.sceneDeviceCursor++
+		}
+	case " ", "space":
+		if ce.sceneDeviceCursor < 0 || ce.sceneDeviceCursor >= len(candidates) {
+			return nil
+		}
+		c := candidates[ce.sceneDeviceCursor]
+		if slices.Contains(scene.Devices, c.name) {
+			ce.removeSceneDevice(scene, c.name)
+			ce.statusMsg = fmt.Sprintf("Removed %s and its steps", c.name)
+			// An "unknown" row disappears once unlisted.
+			if n := len(ce.sceneDeviceCandidates(ce.currentSceneIndex())); ce.sceneDeviceCursor >= n && n > 0 {
+				ce.sceneDeviceCursor = n - 1
+			}
+		} else {
+			ce.addSceneDevice(scene, c.name)
+			ce.statusMsg = ""
+		}
+	case "enter", "esc":
+		ce.fieldCursor = 1 // back onto the Devices row
+		ce.mode = ConfigModeEditScene
+	}
+	return nil
+}
+
+// ---- Scene screen (name + device list + list of states) ----
+
+// sceneStateFieldOffset is the field index of the first state row on the
+// scene screen (after Name and Devices).
+const sceneStateFieldOffset = 2
 
 // updateEditScene handles keys while editing a scene (name + its states).
 func (ce *ConfigEditor) updateEditScene(msg tea.Msg) tea.Cmd {
@@ -62,7 +216,7 @@ func (ce *ConfigEditor) updateEditScene(msg tea.Msg) tea.Cmd {
 		return ce.handleSceneNameEditing(keyMsg, scene)
 	}
 
-	totalFields := 1 + len(scene.States) // Name + one row per state
+	totalFields := sceneStateFieldOffset + len(scene.States) // Name + Devices + one row per state
 
 	switch keyMsg.String() {
 	case "up", "k":
@@ -77,8 +231,12 @@ func (ce *ConfigEditor) updateEditScene(msg tea.Msg) tea.Cmd {
 		if ce.fieldCursor == 0 {
 			return ce.startEditingSceneField(scene)
 		}
+		if ce.fieldCursor == 1 {
+			ce.openSceneDevices(scene)
+			return nil
+		}
 		// Drill into the selected state.
-		ce.sceneStateIndex = ce.fieldCursor - 1
+		ce.sceneStateIndex = ce.fieldCursor - sceneStateFieldOffset
 		ce.fieldCursor = 0
 		ce.sceneActionEditing = false
 		ce.mode = ConfigModeEditSceneState
@@ -87,13 +245,13 @@ func (ce *ConfigEditor) updateEditScene(msg tea.Msg) tea.Cmd {
 			Name: fmt.Sprintf("state %d", len(scene.States)),
 		})
 		ce.dirty = true
-		ce.fieldCursor = len(scene.States) // last state row
+		ce.fieldCursor = sceneStateFieldOffset + len(scene.States) - 1 // last state row
 	case "d", "delete":
-		stIdx := ce.fieldCursor - 1
+		stIdx := ce.fieldCursor - sceneStateFieldOffset
 		if stIdx >= 0 && stIdx < len(scene.States) {
 			scene.States = append(scene.States[:stIdx], scene.States[stIdx+1:]...)
 			ce.dirty = true
-			if ce.fieldCursor > len(scene.States) {
+			if ce.fieldCursor >= sceneStateFieldOffset+len(scene.States) && ce.fieldCursor > 0 {
 				ce.fieldCursor--
 			}
 		}
@@ -183,7 +341,12 @@ func (ce *ConfigEditor) updateEditSceneState(msg tea.Msg) tea.Cmd {
 		ce.sceneActionField = 0
 		ce.sceneActionEditing = true
 	case "a":
-		state.Actions = append(state.Actions, app.Action{Verb: "on", Device: ce.firstSceneTarget(scene)}.String())
+		target := ce.firstSceneTarget(scene)
+		if target == "" {
+			ce.statusMsg = "Choose the scene's devices first (Devices row on the scene screen)"
+			return nil
+		}
+		state.Actions = append(state.Actions, app.Action{Verb: "on", Device: target}.String())
 		ce.dirty = true
 		ce.fieldCursor = len(state.Actions) // last action row
 	case "d", "delete":
@@ -196,7 +359,7 @@ func (ce *ConfigEditor) updateEditSceneState(msg tea.Msg) tea.Cmd {
 			}
 		}
 	case "esc":
-		ce.fieldCursor = 1 + ce.sceneStateIndex // return cursor onto this state row
+		ce.fieldCursor = sceneStateFieldOffset + ce.sceneStateIndex // return cursor onto this state row
 		ce.mode = ConfigModeEditScene
 	}
 
@@ -274,14 +437,14 @@ func (ce *ConfigEditor) adjustSceneActionLevel(state *app.SceneStateEditConfig, 
 }
 
 // cycleSceneActionField mutates the action string at actIdx by cycling the
-// currently focused sub-field. In a managed scene the device cycles through
-// the scene's own device list only.
+// currently focused sub-field. The device cycles through the scene's own
+// device list only.
 func (ce *ConfigEditor) cycleSceneActionField(scene *app.SceneEditConfig, state *app.SceneStateEditConfig, actIdx, direction int) {
 	// Parsed as a scene step so a delay set elsewhere (web Scene Studio or
 	// config.json) survives editing the verb, device or level here.
 	act, err := app.ParseSceneStep(state.Actions[actIdx])
 	if err != nil {
-		// Unparseable (e.g. legacy/hand-edited) — reset to a sane default.
+		// Unparseable (e.g. hand-edited) — reset to a sane default.
 		act = app.SceneStep{Action: app.Action{Verb: "on", Device: ce.firstSceneTarget(scene)}}
 	}
 
@@ -312,15 +475,19 @@ func (ce *ConfigEditor) viewEditScene(theme Theme) string {
 	title := theme.BoxTitle.Render(IconScene + " Edit Scene")
 	fields := []string{title, ""}
 	fields = append(fields, ce.renderTextField(theme, "Name", scene.Name, 0))
-	fields = append(fields, renderSceneSettings(theme, scene)...)
+	fields = append(fields, ce.renderSceneSettings(theme, scene)...)
 
 	fields = append(fields, "")
 	fields = append(fields, theme.BoxTitle.Render("States (index 0 = off)"))
 	if len(scene.States) == 0 {
-		fields = append(fields, theme.Muted.Render("  No states. Press 'a' to add one."))
+		if len(scene.Devices) == 0 {
+			fields = append(fields, theme.Muted.Render("  No states. Choose the devices first: Off and On are created."))
+		} else {
+			fields = append(fields, theme.Muted.Render("  No states. Press 'a' to add one."))
+		}
 	}
 	for i, st := range scene.States {
-		fields = append(fields, ce.renderSceneStateRow(theme, st, 1+i))
+		fields = append(fields, ce.renderSceneStateRow(theme, st, sceneStateFieldOffset+i))
 	}
 
 	content := strings.Join(fields, "\n")
@@ -329,27 +496,59 @@ func (ce *ConfigEditor) viewEditScene(theme Theme) string {
 	return result
 }
 
-// renderSceneSettings shows the scene's device list and toggle timeout,
-// read-only: both are edited in the web Scene Studio (the TUI only keeps
-// them intact).
-func renderSceneSettings(theme Theme, scene *app.SceneEditConfig) []string {
-	var devices string
-	switch {
-	case scene.Devices == nil:
-		devices = theme.Muted.Render("legacy (any device)")
-	case len(scene.Devices) == 0:
-		devices = theme.Muted.Render("[empty - invalid]")
-	default:
+// renderSceneSettings shows the scene's device list (field 1; Enter opens
+// the checklist) and its toggle timeout, which is read-only here (edited in
+// the web Scene Studio; the TUI only keeps it intact).
+func (ce *ConfigEditor) renderSceneSettings(theme Theme, scene *app.SceneEditConfig) []string {
+	devices := theme.Muted.Render("[none - required, press Enter to choose]")
+	if len(scene.Devices) > 0 {
 		devices = theme.Primary.Render(strings.Join(scene.Devices, ", "))
+	}
+	prefix := "  "
+	if ce.fieldCursor == 1 {
+		prefix = "▶ "
 	}
 	timeout := theme.Muted.Render("off")
 	if scene.ToggleTimeoutSeconds > 0 {
 		timeout = theme.Primary.Render(app.FormatStepDelay(time.Duration(scene.ToggleTimeoutSeconds) * time.Second))
 	}
 	return []string{
-		"  " + theme.Secondary.Render("Devices: ") + devices,
+		prefix + theme.Secondary.Render("Devices: ") + devices,
 		"  " + theme.Secondary.Render("Back to off after: ") + timeout,
 	}
+}
+
+// viewSceneDevices renders the scene device checklist.
+func (ce *ConfigEditor) viewSceneDevices(theme Theme) string {
+	scene, ok := ce.currentSceneItem()
+	if !ok {
+		return theme.Muted.Render("No item selected")
+	}
+	candidates := ce.sceneDeviceCandidates(ce.currentSceneIndex())
+
+	lines := []string{theme.BoxTitle.Render(IconScene + " Scene Devices — " + theme.Primary.Render(scene.Name)), ""}
+	if len(candidates) == 0 {
+		lines = append(lines, theme.Muted.Render("  No devices available. Add a light or outlet first."))
+	}
+	for i, c := range candidates {
+		prefix := "  "
+		style := theme.ListItem
+		if i == ce.sceneDeviceCursor {
+			prefix = "▶ "
+			style = theme.ListItemSelected
+		}
+		box := "[ ]"
+		if slices.Contains(scene.Devices, c.name) {
+			box = "[x]"
+		}
+		lines = append(lines, style.Render(prefix+box+" "+theme.Primary.Render(padRight(c.name, 22))+" "+theme.Muted.Render(c.kind)))
+	}
+	lines = append(lines, "", theme.Muted.Render("  Adding a device switches it off in state 0."),
+		theme.Muted.Render("  Removing one deletes its steps from every state."))
+
+	result := theme.Box.Width(55).Render(strings.Join(lines, "\n"))
+	result += ce.viewStatus(theme)
+	return result
 }
 
 func (ce *ConfigEditor) renderSceneStateRow(theme Theme, st app.SceneStateEditConfig, fieldIdx int) string {
@@ -379,7 +578,7 @@ func (ce *ConfigEditor) viewEditSceneState(theme Theme) string {
 	fields = append(fields, "")
 	fields = append(fields, theme.BoxTitle.Render("Actions"))
 	if len(ce.sceneTargetOptions(scene)) == 0 {
-		fields = append(fields, theme.Muted.Render("  No target devices available."))
+		fields = append(fields, theme.Muted.Render("  This scene has no devices. Choose them on the scene screen."))
 	} else if len(state.Actions) == 0 {
 		fields = append(fields, theme.Muted.Render("  No actions. Press 'a' to add one."))
 	}

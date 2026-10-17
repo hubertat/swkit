@@ -20,7 +20,7 @@ func sceneDevicesConfig(scenes ...app.SceneEditConfig) app.EditableConfig {
 	}
 }
 
-func managedScene(name string, devices []string, states ...app.SceneStateEditConfig) app.SceneEditConfig {
+func sceneWithDevices(name string, devices []string, states ...app.SceneStateEditConfig) app.SceneEditConfig {
 	return app.SceneEditConfig{Name: name, Devices: devices, States: states}
 }
 
@@ -48,8 +48,8 @@ func postExpectOK(t *testing.T, cfg app.EditableConfig) *fakeSavingConfigProvide
 	return provider
 }
 
-func TestConfigEdit_ManagedSceneValid(t *testing.T) {
-	sc := managedScene("Evening", []string{" Kitchen ", "Hall", "Mood"}, offOn("Kitchen", "Hall", "Mood")...)
+func TestConfigEdit_SceneDevicesValid(t *testing.T) {
+	sc := sceneWithDevices("Evening", []string{" Kitchen ", "Hall", "Mood"}, offOn("Kitchen", "Hall", "Mood")...)
 	sc.ToggleTimeoutSeconds = 1800
 	// Delayed steps are allowed (state 0 included), and order is kept.
 	sc.States[1].Actions = append([]string{"after:10m:off:Hall"}, sc.States[1].Actions...)
@@ -68,37 +68,48 @@ func TestConfigEdit_ManagedSceneValid(t *testing.T) {
 	}
 }
 
-func TestConfigEdit_LegacySceneUnaffected(t *testing.T) {
+func TestConfigEdit_SceneWithoutDevicesRejected(t *testing.T) {
 	sc := app.SceneEditConfig{Name: "Old", States: []app.SceneStateEditConfig{
-		{Name: "off", Actions: []string{"off:Kitchen"}},
-		{Name: "on", Actions: []string{"on:Hall", "on:Mood"}},
+		{Name: "off", Actions: []string{"off:Kitchen", "bogus", "off:Hall"}},
+		{Name: "on", Actions: []string{"on:Hall", "on:Mood", "after:5m:off:Kitchen"}},
 	}}
-	p := postExpectOK(t, sceneDevicesConfig(sc))
-	if p.saved.Scenes[0].Devices != nil {
-		t.Errorf("legacy scene saved with Devices %#v, want nil", p.saved.Scenes[0].Devices)
+	errs := postAndExpectErrors(t, newValidationTestServer(t), sceneDevicesConfig(sc),
+		`scene "Old": Devices is required: list the devices this scene controls, e.g. "Devices": ["Kitchen", "Hall", "Mood"]`)
+	// The missing list is reported once, not once per step.
+	joined := strings.Join(errs, "\n")
+	if n := strings.Count(joined, "Devices is required"); n != 1 || strings.Contains(joined, "not in the scene's Devices list") {
+		t.Errorf("missing Devices should be reported exactly once: %v", errs)
 	}
 
-	// A legacy scene may use the toggle timeout too.
-	sc.ToggleTimeoutSeconds = 600
-	postExpectOK(t, sceneDevicesConfig(sc))
+	// A scene without steps gets a generic example.
+	postAndExpectErrors(t, newValidationTestServer(t), sceneDevicesConfig(app.SceneEditConfig{Name: "Bare", States: []app.SceneStateEditConfig{{Name: "off"}}}),
+		`scene "Bare": Devices is required: list the devices this scene controls, e.g. "Devices": ["Kitchen", "Hall"]`)
 }
 
-func TestConfigEdit_ExplicitNullDevicesIsLegacy(t *testing.T) {
-	provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
-	ws := newConfigEditTestServer(t, baseFixtureState(), provider)
-	body := `{"revision":"` + provider.Revision() + `","config":{
-		"Lights":[{"Name":"Kitchen","DigitalOutName":"gpio|d_out|5"}],
-		"Scenes":[{"Name":"S","Devices":null,"States":[{"Name":"off","Actions":["off:Kitchen"]}]}]}}`
-	code, resp := doConfigEditPost(t, ws, body)
-	if code != 200 {
-		t.Fatalf("status = %d, errors=%v", code, resp.Errors)
-	}
-	if provider.saved.Scenes[0].Devices != nil {
-		t.Errorf("null Devices saved as %#v, want nil", provider.saved.Scenes[0].Devices)
+func TestConfigEdit_NullAndEmptyDevicesRejected(t *testing.T) {
+	for _, devices := range []string{`null`, `[]`} {
+		t.Run(devices, func(t *testing.T) {
+			provider := &fakeSavingConfigProvider{cfg: baseFixtureConfig()}
+			ws := newConfigEditTestServer(t, baseFixtureState(), provider)
+			body := `{"revision":"` + provider.Revision() + `","config":{
+				"Lights":[{"Name":"Kitchen","DigitalOutName":"gpio|d_out|5"}],
+				"Scenes":[{"Name":"S","Devices":` + devices + `,"States":[{"Name":"off","Actions":["off:Kitchen"]}]}]}}`
+			code, resp := doConfigEditPost(t, ws, body)
+			if code != 400 {
+				t.Fatalf("status = %d, want 400, errors=%v", code, resp.Errors)
+			}
+			want := `scene "S": Devices is required: list the devices this scene controls, e.g. "Devices": ["Kitchen"]`
+			if !strings.Contains(strings.Join(resp.Errors, " | "), want) {
+				t.Errorf("errors = %v, want %q", resp.Errors, want)
+			}
+			if provider.saveCalls != 0 {
+				t.Errorf("SaveConfig called %d times, want 0", provider.saveCalls)
+			}
+		})
 	}
 }
 
-func TestConfigEdit_ManagedSceneValidation(t *testing.T) {
+func TestConfigEdit_SceneDevicesValidation(t *testing.T) {
 	cases := []struct {
 		name   string
 		scenes []app.SceneEditConfig
@@ -106,40 +117,40 @@ func TestConfigEdit_ManagedSceneValidation(t *testing.T) {
 	}{
 		{
 			name:   "empty list",
-			scenes: []app.SceneEditConfig{managedScene("Evening", []string{}, app.SceneStateEditConfig{Name: "Off"})},
-			want:   []string{`scene "Evening": Devices must not be empty`},
+			scenes: []app.SceneEditConfig{sceneWithDevices("Evening", []string{}, app.SceneStateEditConfig{Name: "Off"})},
+			want:   []string{`scene "Evening": Devices is required: list the devices this scene controls, e.g. "Devices": ["Kitchen", "Hall"]`},
 		},
 		{
 			name:   "blank entry",
-			scenes: []app.SceneEditConfig{managedScene("Evening", []string{"Kitchen", "  "}, offOn("Kitchen")...)},
+			scenes: []app.SceneEditConfig{sceneWithDevices("Evening", []string{"Kitchen", "  "}, offOn("Kitchen")...)},
 			want:   []string{`scene "Evening": Devices entry #2: device name must not be empty`},
 		},
 		{
 			name:   "unknown device",
-			scenes: []app.SceneEditConfig{managedScene("Evening", []string{"Kitchen", "Ghost"}, offOn("Kitchen")...)},
+			scenes: []app.SceneEditConfig{sceneWithDevices("Evening", []string{"Kitchen", "Ghost"}, offOn("Kitchen")...)},
 			want:   []string{`scene "Evening": Devices entry "Ghost": target device "Ghost" does not exist`},
 		},
 		{
 			name:   "duplicate",
-			scenes: []app.SceneEditConfig{managedScene("Evening", []string{"Kitchen", "Kitchen"}, offOn("Kitchen")...)},
+			scenes: []app.SceneEditConfig{sceneWithDevices("Evening", []string{"Kitchen", "Kitchen"}, offOn("Kitchen")...)},
 			want:   []string{`scene "Evening": Devices: duplicate device "Kitchen"`},
 		},
 		{
 			name:   "self",
-			scenes: []app.SceneEditConfig{managedScene("Evening", []string{"Kitchen", "Evening"}, offOn("Kitchen")...)},
+			scenes: []app.SceneEditConfig{sceneWithDevices("Evening", []string{"Kitchen", "Evening"}, offOn("Kitchen")...)},
 			want:   []string{`Devices entry "Evening": scene "Evening" cannot target itself`},
 		},
 		{
 			name: "later scene",
 			scenes: []app.SceneEditConfig{
-				managedScene("Evening", []string{"Kitchen", "Night"}, offOn("Kitchen")...),
-				{Name: "Night", States: []app.SceneStateEditConfig{{Name: "off"}}},
+				sceneWithDevices("Evening", []string{"Kitchen", "Night"}, offOn("Kitchen")...),
+				sceneWithDevices("Night", []string{"Hall"}, app.SceneStateEditConfig{Name: "off"}),
 			},
 			want: []string{`Devices entry "Night": target scene "Night" is defined later than this scene`},
 		},
 		{
 			name:   "step outside list",
-			scenes: []app.SceneEditConfig{managedScene("Evening", []string{"Kitchen"}, offOn("Kitchen", "Hall")...)},
+			scenes: []app.SceneEditConfig{sceneWithDevices("Evening", []string{"Kitchen"}, offOn("Kitchen", "Hall")...)},
 			want: []string{
 				`scene "Evening": state "Off" action #2 ("off:Hall"): device "Hall" is not in the scene's Devices list`,
 				`state "On" action #2 ("on:Hall")`,
@@ -147,12 +158,12 @@ func TestConfigEdit_ManagedSceneValidation(t *testing.T) {
 		},
 		{
 			name:   "no states",
-			scenes: []app.SceneEditConfig{managedScene("Evening", []string{"Kitchen"})},
-			want:   []string{"needs at least one state"},
+			scenes: []app.SceneEditConfig{sceneWithDevices("Evening", []string{"Kitchen"})},
+			want:   []string{`scene "Evening": a scene needs at least one state (state 0, "Off")`},
 		},
 		{
 			name:   "timeout negative",
-			scenes: []app.SceneEditConfig{{Name: "Evening", ToggleTimeoutSeconds: -5, States: offOn("Kitchen")}},
+			scenes: []app.SceneEditConfig{{Name: "Evening", Devices: []string{"Kitchen"}, ToggleTimeoutSeconds: -5, States: offOn("Kitchen")}},
 			want:   []string{`scene "Evening": ToggleTimeoutSeconds -5 out of range (0-86400)`},
 		},
 		{
@@ -168,9 +179,9 @@ func TestConfigEdit_ManagedSceneValidation(t *testing.T) {
 	}
 }
 
-func TestConfigEdit_ManagedSceneMayListEarlierScene(t *testing.T) {
+func TestConfigEdit_SceneMayListEarlierScene(t *testing.T) {
 	postExpectOK(t, sceneDevicesConfig(
-		app.SceneEditConfig{Name: "Night", States: []app.SceneStateEditConfig{{Name: "off"}, {Name: "on"}}},
-		managedScene("Evening", []string{"Kitchen", "Night"}, offOn("Kitchen", "Night")...),
+		sceneWithDevices("Night", []string{"Hall"}, offOn("Hall")...),
+		sceneWithDevices("Evening", []string{"Kitchen", "Night"}, offOn("Kitchen", "Night")...),
 	))
 }

@@ -82,7 +82,7 @@ func newTimeoutScene(t *testing.T, n int, timeoutSeconds int) (*Scene, *fakeCloc
 		}
 		states = append(states, SceneStateConfig{Name: fmt.Sprintf("s%d", i), Actions: []string{verb + ":A"}})
 	}
-	sc, err := NewScene(SceneConfig{Name: "T", ToggleTimeoutSeconds: timeoutSeconds, States: states}, resolverFrom(a), log.New(nil))
+	sc, err := NewScene(SceneConfig{Name: "T", Devices: []string{"A"}, ToggleTimeoutSeconds: timeoutSeconds, States: states}, resolverFrom(a), log.New(nil))
 	if err != nil {
 		t.Fatalf("NewScene: %v", err)
 	}
@@ -180,11 +180,14 @@ func TestSceneToggleTimeoutResetBySetValue(t *testing.T) {
 	}
 }
 
+// NewScene rejects a scene without states, but the runtime still guards
+// against one; build a valid scene and drop its states to exercise that.
 func TestSceneToggleInfoEmptyScene(t *testing.T) {
-	sc, err := NewScene(SceneConfig{Name: "E"}, resolverFrom(), log.New(nil))
+	sc, err := NewScene(SceneConfig{Name: "E", Devices: []string{"A"}, States: []SceneStateConfig{{Name: "Off"}}}, resolverFrom(newTestLight("A", false)), log.New(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
+	sc.states = nil
 	if cur, next := sc.ToggleInfo(); cur != 0 || next != 0 {
 		t.Errorf("ToggleInfo = (%d, %d), want (0, 0)", cur, next)
 	}
@@ -324,7 +327,8 @@ func TestSceneConcurrentTogglesDistinctAndConsistent(t *testing.T) {
 func TestSceneSelectionPublishedBeforeApplyAndFIFO(t *testing.T) {
 	a := newRecordingDevice("A")
 	sc, err := NewScene(SceneConfig{
-		Name: "F",
+		Name:    "F",
+		Devices: []string{"A"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			{Name: "one", Actions: []string{"brightness:10:A"}},
@@ -376,7 +380,8 @@ func TestSceneSelectionPublishedBeforeApplyAndFIFO(t *testing.T) {
 func TestSceneDelayedStepWaitsForOwnImmediateSteps(t *testing.T) {
 	a := newRecordingDevice("A")
 	sc, err := NewScene(SceneConfig{
-		Name: "D",
+		Name:    "D",
+		Devices: []string{"A"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			{Name: "one", Actions: []string{"brightness:10:A"}},
@@ -417,7 +422,8 @@ func TestSceneDelayedStepWaitsForOwnImmediateSteps(t *testing.T) {
 func TestSceneCloseDoesNotWaitForStuckActivation(t *testing.T) {
 	a := newRecordingDevice("A")
 	sc, err := NewScene(SceneConfig{
-		Name: "X",
+		Name:    "X",
+		Devices: []string{"A"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			{Name: "on", Actions: []string{"on:A", "after:1m:brightness:80:A"}},
@@ -459,7 +465,7 @@ func TestSceneCloseDoesNotWaitForStuckActivation(t *testing.T) {
 	}
 }
 
-func TestSceneManagedConfigErrors(t *testing.T) {
+func TestSceneConfigErrors(t *testing.T) {
 	a := newTestLight("A", false)
 	b := newTestLight("B", false)
 	resolve := resolverFrom(a, b)
@@ -472,19 +478,19 @@ func TestSceneManagedConfigErrors(t *testing.T) {
 		conf SceneConfig
 		want string // "" = must succeed
 	}{
-		{"legacy nil list", SceneConfig{Name: "S", States: []SceneStateConfig{{Name: "Off", Actions: []string{"off:B"}}}}, ""},
-		{"managed ok", SceneConfig{Name: "S", Devices: []string{"A", "B"}, ToggleTimeoutSeconds: 1800, States: states}, ""},
+		{"missing list", SceneConfig{Name: "S", States: states}, `Devices is required: list the devices this scene controls, e.g. "Devices": ["A"]`},
+		{"ok", SceneConfig{Name: "S", Devices: []string{"A", "B"}, ToggleTimeoutSeconds: 1800, States: states}, ""},
 		{"state 0 unconstrained but listed", SceneConfig{Name: "S", Devices: []string{"A"}, States: []SceneStateConfig{{Name: "Off", Actions: []string{"after:5m:off:A"}}}}, ""},
-		{"empty list", SceneConfig{Name: "S", Devices: []string{}, States: []SceneStateConfig{{Name: "Off"}}}, "Devices must not be empty"},
+		{"empty list", SceneConfig{Name: "S", Devices: []string{}, States: []SceneStateConfig{{Name: "Off"}}}, `Devices is required: list the devices this scene controls, e.g. "Devices": ["Kitchen", "Hall"]`},
 		{"unknown device", SceneConfig{Name: "S", Devices: []string{"A", "Ghost"}, States: states}, `unknown device "Ghost"`},
 		{"duplicate device", SceneConfig{Name: "S", Devices: []string{"A", "A"}, States: states}, `duplicate device "A"`},
 		{"blank device", SceneConfig{Name: "S", Devices: []string{"A", " "}, States: states}, "device name must not be empty"},
 		{"self", SceneConfig{Name: "S", Devices: []string{"A", "S"}, States: states}, "cannot target itself"},
 		{"step outside list", SceneConfig{Name: "S", Devices: []string{"B"}, States: states}, `device "A" is not in the scene's Devices list`},
 		{"no states", SceneConfig{Name: "S", Devices: []string{"A"}}, "needs at least one state"},
-		{"timeout negative", SceneConfig{Name: "S", ToggleTimeoutSeconds: -1, States: states}, "ToggleTimeoutSeconds -1 out of range"},
-		{"timeout too long", SceneConfig{Name: "S", ToggleTimeoutSeconds: 86401, States: states}, "ToggleTimeoutSeconds 86401 out of range"},
-		{"timeout max", SceneConfig{Name: "S", ToggleTimeoutSeconds: 86400, States: states}, ""},
+		{"timeout negative", SceneConfig{Name: "S", Devices: []string{"A"}, ToggleTimeoutSeconds: -1, States: states}, "ToggleTimeoutSeconds -1 out of range"},
+		{"timeout too long", SceneConfig{Name: "S", Devices: []string{"A"}, ToggleTimeoutSeconds: 86401, States: states}, "ToggleTimeoutSeconds 86401 out of range"},
+		{"timeout max", SceneConfig{Name: "S", Devices: []string{"A"}, ToggleTimeoutSeconds: 86400, States: states}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -498,7 +504,7 @@ func TestSceneManagedConfigErrors(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("NewScene error = %v, want one containing %q", err, tc.want)
 			}
-			if !strings.Contains(err.Error(), "scene S:") {
+			if !strings.HasPrefix(err.Error(), `scene "S": `) {
 				t.Errorf("error %q should name the scene", err)
 			}
 		})

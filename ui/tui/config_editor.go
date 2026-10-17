@@ -27,6 +27,7 @@ const (
 	ConfigModeEditButton
 	ConfigModeEditScene        // edit a scene: name + list of states
 	ConfigModeEditSceneState   // edit one state of a scene: name + list of actions
+	ConfigModeSceneDevices     // checklist of the current scene's devices
 	ConfigModeAddSelector      // inline device type picker when pressing 'a'
 	ConfigModeIoPicker         // inline IO point browser for IO field assignment
 	ConfigModeCtrlWizardDevice // wizard step 1: pick target output device
@@ -131,6 +132,12 @@ type ConfigEditor struct {
 	sceneStateIndex    int  // which state of the current scene is being edited
 	sceneActionEditing bool // inline action editor active
 	sceneActionField   int  // 0=action, 1=device, 2=level
+	sceneDeviceCursor  int  // cursor in the scene device checklist
+	// sceneDevicesNewScene is set when the checklist was opened on a brand
+	// new scene (no states, no devices): each device chosen then is added
+	// off in state 0 and on in state 1 ("Off"/"On", created on the first
+	// pick), mirroring the web Scene Studio's new-scene default.
+	sceneDevicesNewScene bool
 
 	// Type selector state (ConfigModeAddSelector)
 	addTypeCursor int
@@ -423,6 +430,8 @@ func (ce *ConfigEditor) Update(msg tea.Msg) tea.Cmd {
 		return ce.updateEditScene(msg)
 	case ConfigModeEditSceneState:
 		return ce.updateEditSceneState(msg)
+	case ConfigModeSceneDevices:
+		return ce.updateSceneDevices(msg)
 	case ConfigModeAddSelector:
 		keyMsg, ok := msg.(tea.KeyMsg)
 		if !ok {
@@ -1586,6 +1595,8 @@ func (ce *ConfigEditor) View(theme Theme, height int) string {
 		return ce.viewEditScene(theme)
 	case ConfigModeEditSceneState:
 		return ce.viewEditSceneState(theme)
+	case ConfigModeSceneDevices:
+		return ce.viewSceneDevices(theme)
 	case ConfigModeAddSelector:
 		return ce.viewAddSelector(theme)
 	case ConfigModeIoPicker:
@@ -2388,6 +2399,16 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 				theme.HelpKey.Render("a")+" "+theme.HelpDesc.Render("add ctrl"),
 				theme.HelpKey.Render("d")+" "+theme.HelpDesc.Render("del ctrl"),
 			)
+		}
+		if ce.dirty {
+			parts = append(parts, theme.HelpKey.Render("ctrl+r")+" "+theme.HelpDesc.Render("save"))
+		}
+		return strings.Join(parts, "  ")
+	case ConfigModeSceneDevices:
+		parts := []string{
+			theme.HelpKey.Render("↑↓") + " " + theme.HelpDesc.Render("select"),
+			theme.HelpKey.Render("space") + " " + theme.HelpDesc.Render("add/remove"),
+			theme.HelpKey.Render("enter/esc") + " " + theme.HelpDesc.Render("done"),
 		}
 		if ce.dirty {
 			parts = append(parts, theme.HelpKey.Render("ctrl+r")+" "+theme.HelpDesc.Render("save"))

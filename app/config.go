@@ -86,13 +86,9 @@ type ButtonEditConfig struct {
 // grammar.
 type SceneEditConfig struct {
 	Name string
-	// Devices is the scene's device list. nil (absent or null in JSON) means a
-	// legacy scene whose steps may target any valid device; non-nil makes it
-	// a managed scene, see ValidateSceneConfig. nil and empty are different
-	// (an empty list is invalid, never legacy), so copies must preserve
-	// nil-ness (slices.Clone does) and the JSON tag keeps [] while omitting
-	// nil.
-	Devices []string `json:",omitzero"`
+	// Devices is the scene's device list: required, non-empty, and every
+	// step must target a listed device (see ValidateSceneConfig).
+	Devices []string
 	// ToggleTimeoutSeconds, when > 0, makes a Toggle return to state 0 once
 	// the scene has stayed in another state this long (0 = disabled,
 	// max MaxSceneToggleTimeoutSeconds).

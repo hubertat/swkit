@@ -46,19 +46,40 @@ func TestConfigEditorSceneFlow(t *testing.T) {
 		t.Fatalf("scene name = %q, want Movie", ce.config.Scenes[0].Name)
 	}
 
-	// Add a state, then drill into it.
+	// A new scene has no devices, so a step cannot be added yet: open the
+	// Devices row (field 1) and tick L1. The first pick creates the Studio's
+	// starting states, Off (L1 off) and On (L1 on).
+	ce.Update(runes("j"))
+	ce.Update(enter)
+	if ce.mode != ConfigModeSceneDevices {
+		t.Fatalf("expected SceneDevices mode, got %v", ce.mode)
+	}
+	ce.Update(tea.KeyMsg{Type: tea.KeySpace})
+	ce.Update(enter)
+	if ce.mode != ConfigModeEditScene {
+		t.Fatalf("expected EditScene mode after the checklist, got %v", ce.mode)
+	}
+	sc := ce.config.Scenes[0]
+	if len(sc.Devices) != 1 || sc.Devices[0] != "L1" || len(sc.States) != 2 ||
+		sc.States[0].Name != "Off" || sc.States[1].Name != "On" ||
+		len(sc.States[0].Actions) != 1 || sc.States[0].Actions[0] != "off:L1" ||
+		len(sc.States[1].Actions) != 1 || sc.States[1].Actions[0] != "on:L1" {
+		t.Fatalf("scene after picking L1 = %+v, want Devices [L1], Off [off:L1], On [on:L1]", sc)
+	}
+
+	// Add a third state, then drill into it.
 	ce.Update(runes("a"))
-	if len(ce.config.Scenes[0].States) != 1 {
-		t.Fatalf("expected 1 state, got %d", len(ce.config.Scenes[0].States))
+	if len(ce.config.Scenes[0].States) != 3 {
+		t.Fatalf("expected 3 states, got %d", len(ce.config.Scenes[0].States))
 	}
 	ce.Update(enter) // cursor is on the new state row
-	if ce.mode != ConfigModeEditSceneState {
-		t.Fatalf("expected EditSceneState mode, got %v", ce.mode)
+	if ce.mode != ConfigModeEditSceneState || ce.sceneStateIndex != 2 {
+		t.Fatalf("expected EditSceneState mode on state 2, got %v / %d", ce.mode, ce.sceneStateIndex)
 	}
 
 	// Add an action (defaults to on:L1).
 	ce.Update(runes("a"))
-	state := ce.config.Scenes[0].States[0]
+	state := ce.config.Scenes[0].States[2]
 	if len(state.Actions) != 1 || state.Actions[0] != "on:L1" {
 		t.Fatalf("expected [on:L1], got %v", state.Actions)
 	}
@@ -70,7 +91,7 @@ func TestConfigEditorSceneFlow(t *testing.T) {
 	}
 	ce.Update(right) // action field: on -> off
 	ce.Update(enter) // finish inline edit
-	if got := ce.config.Scenes[0].States[0].Actions[0]; got != "off:L1" {
+	if got := ce.config.Scenes[0].States[2].Actions[0]; got != "off:L1" {
 		t.Errorf("action after cycle = %q, want off:L1", got)
 	}
 
@@ -87,8 +108,9 @@ func TestConfigEditorSceneBrightnessLevel(t *testing.T) {
 		DimmableLights:    []app.DimmableLightEditConfig{{Name: "Dim"}},
 		OutputDeviceNames: []string{"Dim"},
 		Scenes: []app.SceneEditConfig{{
-			Name:   "S",
-			States: []app.SceneStateEditConfig{{Name: "on", Actions: []string{"brightness:50:Dim"}}},
+			Name:    "S",
+			Devices: []string{"Dim"},
+			States:  []app.SceneStateEditConfig{{Name: "on", Actions: []string{"brightness:50:Dim"}}},
 		}},
 	}
 	ce.rebuildItems()
@@ -96,7 +118,7 @@ func TestConfigEditorSceneBrightnessLevel(t *testing.T) {
 	// Position on the scene and drill into its state and action.
 	ce.cursor = len(ce.items) - 1
 	ce.mode = ConfigModeEditScene
-	ce.fieldCursor = 1 // the single state row
+	ce.fieldCursor = sceneStateFieldOffset // the single state row
 	ce.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	ce.fieldCursor = 1 // the single action row
 	ce.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -121,15 +143,16 @@ func TestConfigEditorSceneRelativeBrightnessVerb(t *testing.T) {
 		DimmableLights:    []app.DimmableLightEditConfig{{Name: "Dim"}},
 		OutputDeviceNames: []string{"Dim"},
 		Scenes: []app.SceneEditConfig{{
-			Name:   "S",
-			States: []app.SceneStateEditConfig{{Name: "on", Actions: []string{"brightness:50:Dim"}}},
+			Name:    "S",
+			Devices: []string{"Dim"},
+			States:  []app.SceneStateEditConfig{{Name: "on", Actions: []string{"brightness:50:Dim"}}},
 		}},
 	}
 	ce.rebuildItems()
 
 	ce.cursor = len(ce.items) - 1
 	ce.mode = ConfigModeEditScene
-	ce.fieldCursor = 1
+	ce.fieldCursor = sceneStateFieldOffset
 	ce.Update(tea.KeyMsg{Type: tea.KeyEnter}) // into state
 	ce.fieldCursor = 1
 	ce.Update(tea.KeyMsg{Type: tea.KeyEnter}) // into action edit
@@ -157,15 +180,16 @@ func TestConfigEditorSceneStepPlusMinusKeys(t *testing.T) {
 		DimmableLights:    []app.DimmableLightEditConfig{{Name: "Dim"}},
 		OutputDeviceNames: []string{"Dim"},
 		Scenes: []app.SceneEditConfig{{
-			Name:   "S",
-			States: []app.SceneStateEditConfig{{Name: "on", Actions: []string{"brightness_up:50:Dim"}}},
+			Name:    "S",
+			Devices: []string{"Dim"},
+			States:  []app.SceneStateEditConfig{{Name: "on", Actions: []string{"brightness_up:50:Dim"}}},
 		}},
 	}
 	ce.rebuildItems()
 
 	ce.cursor = len(ce.items) - 1
 	ce.mode = ConfigModeEditScene
-	ce.fieldCursor = 1
+	ce.fieldCursor = sceneStateFieldOffset
 	ce.Update(tea.KeyMsg{Type: tea.KeyEnter}) // into state
 	ce.fieldCursor = 1
 	ce.Update(tea.KeyMsg{Type: tea.KeyEnter}) // into action edit

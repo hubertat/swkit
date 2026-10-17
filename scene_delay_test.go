@@ -39,7 +39,8 @@ func (ft *fakeSceneTimers) fireAll() {
 func newDelayScene(t *testing.T, devs ...Controllable) (*Scene, *fakeSceneTimers) {
 	t.Helper()
 	sc, err := NewScene(SceneConfig{
-		Name: "Evening",
+		Name:    "Evening",
+		Devices: []string{"A", "B"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			{Name: "evening", Actions: []string{"on:A", "after:10m:off:A", "after:5s:on:B"}},
@@ -183,7 +184,8 @@ func (d *recordingDevice) state() (bool, []string) {
 func TestSceneOffWinsOverInFlightDelayedStep(t *testing.T) {
 	a := newRecordingDevice("A")
 	sc, err := NewScene(SceneConfig{
-		Name: "Night",
+		Name:    "Night",
+		Devices: []string{"A"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			{Name: "on", Actions: []string{"after:1m:on:A"}},
@@ -227,7 +229,8 @@ func TestSceneOffWinsOverInFlightDelayedStep(t *testing.T) {
 func TestSceneSameDelayStepsRunInOrder(t *testing.T) {
 	a := newRecordingDevice("A")
 	sc, err := NewScene(SceneConfig{
-		Name: "Evening",
+		Name:    "Evening",
+		Devices: []string{"A"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			{Name: "on", Actions: []string{"after:5s:brightness:60:A", "after:5s:on:A", "after:10s:off:A"}},

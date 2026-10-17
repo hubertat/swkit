@@ -196,8 +196,6 @@ func normalizeEditableConfig(cfg *app.EditableConfig) {
 	}
 	for i := range cfg.Scenes {
 		cfg.Scenes[i].Name = strings.TrimSpace(cfg.Scenes[i].Name)
-		// In place, so a nil list (legacy scene) stays nil and an empty
-		// one stays empty (and is rejected by validation).
 		for j := range cfg.Scenes[i].Devices {
 			cfg.Scenes[i].Devices[j] = strings.TrimSpace(cfg.Scenes[i].Devices[j])
 		}
@@ -552,7 +550,7 @@ func validateEditableConfig(cfg app.EditableConfig, state app.AppState) []string
 		sceneLabel := deviceLabel("scene", s.Name)
 
 		// Scene-level rules shared with the runtime (swkit.NewScene): the
-		// toggle timeout range and, for a managed scene, its device list.
+		// toggle timeout range and the required device list.
 		for _, err := range app.ValidateSceneConfig(s, func(name string) error { return sceneTargetError(i, name) }) {
 			errs = append(errs, fmt.Sprintf("%s: %v", sceneLabel, err))
 		}

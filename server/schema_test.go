@@ -129,7 +129,8 @@ func fullFixtureConfig() app.EditableConfig {
 	return app.EditableConfig{
 		Scenes: []app.SceneEditConfig{
 			{
-				Name: "Evening",
+				Name:    "Evening",
+				Devices: []string{"Hall", "Nonexistent2"},
 				States: []app.SceneStateEditConfig{
 					{
 						Name: "cozy",

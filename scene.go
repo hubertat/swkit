@@ -15,12 +15,10 @@ import (
 // "off" by convention. Toggle() advances to the next state and wraps around.
 type SceneConfig struct {
 	Name string
-	// Devices is the scene's device list. nil (absent or null in JSON) means a
-	// legacy scene: steps may target any valid device. A non-nil list makes
-	// it a managed scene, where every step must target a listed device and
-	// the list itself must be non-empty (see app.ValidateSceneConfig). The
-	// tag keeps an explicit [] (which validation rejects) and drops nil.
-	Devices []string `json:",omitzero"`
+	// Devices is the scene's device list, chosen once for the whole scene.
+	// It is required and non-empty, and every step in every state must
+	// target a listed device (see app.ValidateSceneConfig).
+	Devices []string
 	// ToggleTimeoutSeconds, when > 0, makes Toggle return to state 0 instead
 	// of advancing once the scene has been in a non-zero state at least this
 	// long without another activation. 0 disables it.
@@ -133,9 +131,9 @@ var _ Controllable = (*Scene)(nil)
 
 // NewScene builds a Scene from config, resolving each action's device name via
 // resolve. It returns an error if an action is malformed or references an
-// unknown device, if ToggleTimeoutSeconds is out of range, or if a managed
-// scene (non-nil Devices) breaks the device-list rules of
-// app.ValidateSceneConfig.
+// unknown device, if ToggleTimeoutSeconds is out of range, or if the scene
+// breaks the device-list rules of app.ValidateSceneConfig (Devices is
+// required).
 func NewScene(config SceneConfig, resolve func(name string) (Controllable, bool), logger *log.Logger) (*Scene, error) {
 	sc := &Scene{
 		name:          config.Name,
@@ -148,6 +146,12 @@ func NewScene(config SceneConfig, resolve func(name string) (Controllable, bool)
 		now: time.Now,
 	}
 	sc.applyCond = sync.NewCond(&sc.applyMu)
+
+	// Scene-level rules first, so a scene without a device list reports the
+	// actionable "Devices is required" error before any per-step problem.
+	if err := sceneConfigError(config, resolve); err != nil {
+		return nil, err
+	}
 
 	for _, stateConf := range config.States {
 		st := sceneState{name: stateConf.Name}
@@ -165,16 +169,12 @@ func NewScene(config SceneConfig, resolve func(name string) (Controllable, bool)
 		sc.states = append(sc.states, st)
 	}
 
-	if err := sceneConfigError(config, resolve); err != nil {
-		return nil, err
-	}
-
-	logger.Debug("scene created", "name", config.Name, "states", len(sc.states), "managed", config.Devices != nil)
+	logger.Debug("scene created", "name", config.Name, "states", len(sc.states), "devices", len(config.Devices))
 	return sc, nil
 }
 
 // sceneConfigError applies the shared scene-level rules (app.ValidateSceneConfig:
-// toggle timeout range and, for a managed scene, its device list) and joins
+// toggle timeout range and the required device list) and joins
 // any violations into one error. A device-list entry must resolve like a step
 // target, and may not name the scene itself.
 func sceneConfigError(config SceneConfig, resolve func(name string) (Controllable, bool)) error {
@@ -197,7 +197,7 @@ func sceneConfigError(config SceneConfig, resolve func(name string) (Controllabl
 	}
 	var errs error
 	for _, err := range app.ValidateSceneConfig(edit, checkTarget) {
-		errs = errors.Join(errs, fmt.Errorf("scene %s: %w", config.Name, err))
+		errs = errors.Join(errs, fmt.Errorf("scene %q: %w", config.Name, err))
 	}
 	return errs
 }

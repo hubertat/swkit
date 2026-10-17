@@ -27,7 +27,8 @@ func TestSceneToggleCyclesStates(t *testing.T) {
 	b := newTestLight("B", false)
 
 	sc, err := NewScene(SceneConfig{
-		Name: "Living",
+		Name:    "Living",
+		Devices: []string{"A", "B"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A", "off:B"}},
 			{Name: "a-on", Actions: []string{"on:A", "off:B"}},
@@ -67,7 +68,8 @@ func TestSceneSetValue(t *testing.T) {
 	a := newTestLight("A", false)
 
 	sc, err := NewScene(SceneConfig{
-		Name: "S",
+		Name:    "S",
+		Devices: []string{"A"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			{Name: "on", Actions: []string{"on:A"}},
@@ -98,7 +100,8 @@ func TestSceneBrightnessAction(t *testing.T) {
 	dl, aOut := newTestDimmableLight(t, 0, 100)
 
 	sc, err := NewScene(SceneConfig{
-		Name: "Dim",
+		Name:    "Dim",
+		Devices: []string{"Test Dim"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:Test Dim"}},
 			{Name: "dim", Actions: []string{"on:Test Dim", "brightness:75:Test Dim"}},
@@ -124,7 +127,8 @@ func TestSceneRelativeBrightnessAction(t *testing.T) {
 	dl.SetBrightness(40)
 
 	sc, err := NewScene(SceneConfig{
-		Name: "Dim",
+		Name:    "Dim",
+		Devices: []string{"Test Dim"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:Test Dim"}},
 			{Name: "up", Actions: []string{"brightness_up:15:Test Dim"}},
@@ -155,7 +159,8 @@ func TestSceneActivatePartialFailureAggregates(t *testing.T) {
 	b := newTestLight("B", false)
 
 	sc, err := NewScene(SceneConfig{
-		Name: "P",
+		Name:    "P",
+		Devices: []string{"A", "B"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			// brightness on a plain Light fails at apply; on:B must still run.
@@ -180,8 +185,9 @@ func TestSceneActivatePartialFailureAggregates(t *testing.T) {
 
 func TestSceneUnknownDeviceFailsConstruction(t *testing.T) {
 	_, err := NewScene(SceneConfig{
-		Name:   "Bad",
-		States: []SceneStateConfig{{Name: "s", Actions: []string{"on:Nope"}}},
+		Name:    "Bad",
+		Devices: []string{"Nope"},
+		States:  []SceneStateConfig{{Name: "s", Actions: []string{"on:Nope"}}},
 	}, resolverFrom(), log.New(nil))
 	if err == nil {
 		t.Fatal("expected error for unknown device reference")
@@ -191,7 +197,8 @@ func TestSceneUnknownDeviceFailsConstruction(t *testing.T) {
 func TestSceneControlsScene(t *testing.T) {
 	a := newTestLight("A", false)
 	inner, err := NewScene(SceneConfig{
-		Name: "Inner",
+		Name:    "Inner",
+		Devices: []string{"A"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			{Name: "on", Actions: []string{"on:A"}},
@@ -203,7 +210,8 @@ func TestSceneControlsScene(t *testing.T) {
 
 	// A scene resolves and drives another scene as a Controllable.
 	outer, err := NewScene(SceneConfig{
-		Name: "Outer",
+		Name:    "Outer",
+		Devices: []string{"Inner"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:Inner"}},
 			{Name: "on", Actions: []string{"on:Inner"}},
