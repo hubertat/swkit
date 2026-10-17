@@ -123,6 +123,7 @@ func TestSwKitConfigProviderScenePreservesDisableHomekit(t *testing.T) {
 		Scenes: []SceneConfig{
 			{
 				Name:           "Evening",
+				Devices:        []string{"Hall"},
 				DisableHomekit: true,
 				States: []SceneStateConfig{
 					{Name: "off"},
@@ -392,7 +393,8 @@ func TestSwKitConfigProviderRevisionCoversEveryEditableChange(t *testing.T) {
 				ControlDevices: []string{"single_press:toggle:Living Room"},
 			}},
 			Scenes: []SceneConfig{{
-				Name: "Evening",
+				Name:    "Evening",
+				Devices: []string{"Living Room"},
 				States: []SceneStateConfig{
 					{Name: "On", Actions: []string{"on:Living Room"}},
 				},

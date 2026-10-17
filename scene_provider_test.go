@@ -14,7 +14,8 @@ func TestConfigProviderSceneRoundTrip(t *testing.T) {
 		Name:   "t",
 		Lights: []LightConfig{{Name: "L1", DigitalOutName: "wago|d_out|0"}},
 		Scenes: []SceneConfig{{
-			Name: "Movie",
+			Name:    "Movie",
+			Devices: []string{"L1"},
 			States: []SceneStateConfig{
 				{Name: "off", Actions: []string{"off:L1"}},
 				{Name: "on", Actions: []string{"on:L1"}},
@@ -69,7 +70,8 @@ func TestStateProviderSceneStateAndIndex(t *testing.T) {
 	a := newTestLight("A", false)
 
 	scene, err := NewScene(SceneConfig{
-		Name: "Evening",
+		Name:    "Evening",
+		Devices: []string{"A"},
 		States: []SceneStateConfig{
 			{Name: "off", Actions: []string{"off:A"}},
 			{Name: "on", Actions: []string{"on:A"}},

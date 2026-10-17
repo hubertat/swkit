@@ -19,14 +19,13 @@
  * Scenes untouched in a session are sent back exactly as they were loaded, so
  * opening and saving never reformats someone's hand-written config.
  *
- * Managed and legacy scenes
- * -------------------------
- * A scene with a Devices list (even an empty one, which is an error) is
- * "managed": its steps may only drive those devices, the board shows only
- * them, and a device with no step in a state means "no change". A scene
- * without one (null/absent) is "legacy" and is edited as before, over every
- * available target. The two are never converted implicitly: only the
- * explicit "Use a scene device list" action adds Devices to a legacy scene.
+ * Scene devices
+ * -------------
+ * Every scene has a Devices list: its steps may only drive those devices,
+ * the board shows only them, and a device with no step in a state means "no
+ * change". A scene loaded without one is treated as having an empty list,
+ * which is reported as a problem ("add at least one device") until devices
+ * are added; it is still sent back verbatim while untouched.
  */
 (function () {
     'use strict';
@@ -60,6 +59,7 @@
         clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
         close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
         off: '<svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/></svg>',
+        check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     };
 
     const TYPE_LABEL = {
@@ -275,8 +275,9 @@
             id: uid(),
             name: sc.Name || '',
             disableHomekit: !!sc.DisableHomekit,
-            // null = legacy scene; an array (even empty) = managed scene.
-            devices: Array.isArray(sc.Devices) ? sc.Devices.slice() : null,
+            // A scene without a list gets an empty one, which localProblems
+            // reports; there is no device-less mode.
+            devices: Array.isArray(sc.Devices) ? sc.Devices.slice() : [],
             toggleTimeout: typeof sc.ToggleTimeoutSeconds === 'number' ? sc.ToggleTimeoutSeconds : 0,
             states: (sc.States || []).map(stateFromConfig),
             orig: sc,
@@ -287,32 +288,14 @@
         return s;
     }
 
-    // serializeScene writes Devices only for managed scenes (so a legacy
-    // scene stays legacy) and ToggleTimeoutSeconds only when it is set.
+    // serializeScene writes ToggleTimeoutSeconds only when it is set.
     function serializeScene(s) {
-        const out = { Name: s.name };
-        if (s.devices !== null) out.Devices = s.devices.slice();
+        const out = { Name: s.name, Devices: s.devices.slice() };
         if (s.toggleTimeout > 0) out.ToggleTimeoutSeconds = s.toggleTimeout;
         out.States = s.states.map(st => ({ Name: st.name, Actions: serializeState(st) }));
         if (s.disableHomekit) out.DisableHomekit = true;
         return out;
     }
-
-    function isManaged(s) { return s.devices !== null; }
-
-    // stepDevices lists the devices a scene's steps drive, in the order they
-    // first appear (state by state, in list order).
-    function stepDevices(s) {
-        const out = [];
-        s.states.forEach(st => st.moments.slice().sort((a, b) => a.order - b.order).forEach(function (m) {
-            if ((m.power || m.bri) && out.indexOf(m.device) < 0) out.push(m.device);
-        }));
-        return out;
-    }
-
-    // sceneDevices is what the scene works with: its list when managed,
-    // otherwise whatever its steps drive.
-    function sceneDevices(s) { return isManaged(s) ? s.devices : stepDevices(s); }
 
     function sceneDirty(s) { return !s.orig || JSON.stringify(serializeScene(s)) !== s.baseSig; }
 
@@ -387,6 +370,9 @@
         if (S.loading) return;
         S.loading = true;
         S.loadError = null;
+        // "/scenes?new=1" (the Schema tab's "create a scene" link) opens the
+        // New scene dialog once the config is loaded.
+        const openNew = !keep && new URLSearchParams(location.search).get('new') === '1';
         try {
             const resp = await fetch('/api/config/edit', { cache: 'no-store' });
             const data = await resp.json().catch(() => ({}));
@@ -422,6 +408,7 @@
         } finally {
             S.loading = false;
             renderAll();
+            if (openNew && S.loaded) openNewSceneDialog();
         }
     }
 
@@ -484,18 +471,15 @@
             if (!Number.isInteger(s.toggleTimeout) || s.toggleTimeout < 0 || s.toggleTimeout > MAX_TIMEOUT_S) {
                 out.push(label + ': the toggle timeout must be between 0 and 24 h, in whole seconds.');
             }
-            const managed = isManaged(s);
-            if (managed) {
-                if (!s.devices.length) out.push(label + ': add at least one device.');
-                const devSeen = new Set();
-                s.devices.forEach(function (d) {
-                    if (!String(d).trim()) { out.push(label + ': the device list has an empty name.'); return; }
-                    if (devSeen.has(d)) out.push(label + ': "' + d + '" is in the device list twice.');
-                    else if (!targetType(s, d)) out.push(label + ': "' + d + '" in the device list is not available (removed, renamed, this scene, or a scene defined later).');
-                    devSeen.add(d);
-                });
-                if (!s.states.length) out.push(label + ': a scene needs at least its first state ("Off").');
-            }
+            if (!s.devices.length) out.push(label + ': add at least one device.');
+            const devSeen = new Set();
+            s.devices.forEach(function (d) {
+                if (!String(d).trim()) { out.push(label + ': the device list has an empty name.'); return; }
+                if (devSeen.has(d)) out.push(label + ': "' + d + '" is in the device list twice.');
+                else if (!targetType(s, d)) out.push(label + ': "' + d + '" in the device list is not available (removed, renamed, this scene, or a scene defined later).');
+                devSeen.add(d);
+            });
+            if (!s.states.length) out.push(label + ': a scene needs at least its first state ("Off").');
             const stNames = new Set();
             s.states.forEach(function (st) {
                 if (!st.name.trim()) out.push(label + ': a state has no name.');
@@ -507,7 +491,7 @@
                     const t = targetType(s, m.device);
                     if (!t) out.push(label + ', state "' + st.name + '": "' + m.device + '" is not available (removed, renamed, or a scene defined later).');
                     else if (m.bri && t !== 'dimmable_light') out.push(label + ', state "' + st.name + '": "' + m.device + '" has no brightness control.');
-                    if (managed && s.devices.indexOf(m.device) < 0 && !outside.has(m.device)) {
+                    if (s.devices.indexOf(m.device) < 0 && !outside.has(m.device)) {
                         outside.add(m.device);
                         out.push(label + ', state "' + st.name + '": "' + m.device + '" has steps but is not in the scene’s device list.');
                     }
@@ -564,7 +548,7 @@
         return m;
     }
 
-    // addScene creates a managed scene: "Off" switches every picked device
+    // addScene creates a scene: "Off" switches every picked device
     // off and "On" switches each on. A new scene is appended, so any earlier
     // scene is a valid device for it.
     function addScene(name, devices) {
@@ -586,7 +570,7 @@
         S.scenes.forEach(x => taken.add(x.name));
         const copy = {
             id: uid(), name: uniqueName(s.name + ' copy', taken), disableHomekit: s.disableHomekit,
-            devices: s.devices === null ? null : s.devices.slice(), toggleTimeout: s.toggleTimeout,
+            devices: s.devices.slice(), toggleTimeout: s.toggleTimeout,
             orig: null, savedName: null, baseSig: '',
             states: s.states.map(st => ({
                 id: uid(), name: st.name,
@@ -608,7 +592,7 @@
             if (cd.DeviceName === name) refs.push('button "' + b.Name + '" (' + String(cd.EventType).replace(/_/g, ' ') + ')');
         }));
         S.scenes.forEach(function (s) {
-            if (s.devices && s.devices.indexOf(name) >= 0) refs.push('scene "' + s.name + '" (device list)');
+            if (s.devices.indexOf(name) >= 0) refs.push('scene "' + s.name + '" (device list)');
             s.states.forEach(st => {
                 if (st.moments.some(m => m.device === name)) refs.push('scene "' + s.name + '", state "' + st.name + '"');
             });
@@ -624,7 +608,7 @@
         if (!confirm(msg)) return;
         (S.config.Buttons || []).forEach(b => { b.ControlDevices = (b.ControlDevices || []).filter(cd => cd.DeviceName !== s.name); });
         S.scenes.forEach(function (x) {
-            if (x.devices) x.devices = x.devices.filter(d => d !== s.name);
+            x.devices = x.devices.filter(d => d !== s.name);
             x.states.forEach(st => { st.moments = st.moments.filter(m => m.device !== s.name); });
         });
         S.scenes = S.scenes.filter(x => x !== s);
@@ -640,7 +624,7 @@
         const old = s.name;
         (S.config.Buttons || []).forEach(b => (b.ControlDevices || []).forEach(cd => { if (cd.DeviceName === old) cd.DeviceName = name; }));
         S.scenes.forEach(function (x) {
-            if (x.devices) x.devices = x.devices.map(d => (d === old ? name : d));
+            x.devices = x.devices.map(d => (d === old ? name : d));
             x.states.forEach(st => st.moments.forEach(m => { if (m.device === old) m.device = name; }));
         });
         s.name = name;
@@ -648,11 +632,10 @@
         return null;
     }
 
-    // addState appends a state; in a managed scene it starts as "on" for
-    // every scene device.
+    // addState appends a state that starts as "on" for every scene device.
     function addState(s) {
         const taken = new Set(s.states.map(st => st.name));
-        const moments = isManaged(s) ? s.devices.map(d => powerMoment(d, 'on')) : [];
+        const moments = s.devices.map(d => powerMoment(d, 'on'));
         const st = { id: uid(), name: uniqueName('State ' + s.states.length, taken), moments: moments, raw: [] };
         s.states.push(st);
         S.sel.state = st.id;
@@ -693,25 +676,6 @@
         changed();
     }
 
-    // fillOffState makes state 0 switch off everything the other states turn on.
-    function fillOffState(s) {
-        const off = s.states[0];
-        const used = [];
-        s.states.slice(1).forEach(st => st.moments.forEach(m => { if (used.indexOf(m.device) < 0) used.push(m.device); }));
-        let added = 0;
-        used.forEach(function (dev) {
-            if (!targetType(s, dev)) return;
-            let m = off.moments.find(x => x.device === dev && x.delay === 0);
-            if (m && m.power === 'off') return;
-            if (!m) { m = newMoment(dev, 0); off.moments.push(m); }
-            m.power = 'off';
-            m.bri = null;
-            added++;
-        });
-        toast(added ? 'Added ' + added + ' device(s) to switch off.' : 'Everything this scene uses is already switched off here.');
-        changed();
-    }
-
     function includeDevice(st, t) {
         const m = newMoment(t.name, 0);
         m.power = 'on';
@@ -733,10 +697,10 @@
     }
 
     // removeDevice drops every step for device in this state (power,
-    // brightness and later ones). In a managed scene that is "No change".
+    // brightness and later ones): "No change".
     function removeDevice(sc, st, device) {
         const later = st.moments.filter(m => m.device === device && m.delay > 0 && (m.power || m.bri)).length;
-        if (isManaged(sc) && later &&
+        if (later &&
             !confirm('Make "' + device + '" change nothing in "' + st.name + '"?\n\nThis also removes its ' + later + ' later step(s).')) return;
         st.moments = st.moments.filter(m => m.device !== device);
         S.sel.device = null;
@@ -744,7 +708,7 @@
         changed();
     }
 
-    // addSceneDevices adds devices to a managed scene's list. Each one is
+    // addSceneDevices adds devices to a scene's list. Each one is
     // switched off in the first state ("Off"), appended after its existing
     // steps, and changes nothing in every other state.
     function addSceneDevices(s, names) {
@@ -766,25 +730,6 @@
         s.devices = s.devices.filter(x => x !== d);
         s.states.forEach(st => { st.moments = st.moments.filter(m => m.device !== d); });
         if (S.sel.device === d) { S.sel.device = null; S.sel.moment = null; }
-        changed();
-    }
-
-    // conversionPlan describes turning a legacy scene into a managed one:
-    // its devices are what its steps drive (first appearance first), and
-    // offSteps are the devices with no step in the first state, which the
-    // optional "also switch these off" choice appends there.
-    function conversionPlan(s, devices) {
-        const missing = devices.filter(d => !targetType(s, d));
-        const off = s.states[0];
-        const offSteps = off ? devices.filter(d => !off.moments.some(m => m.device === d && (m.power || m.bri))) : [];
-        return { devices: devices, missing: missing, offSteps: offSteps };
-    }
-
-    function convertToManaged(s, devices, addOff) {
-        const plan = conversionPlan(s, devices);
-        if (plan.missing.length || !devices.length) return;
-        s.devices = devices.slice();
-        if (addOff) plan.offSteps.forEach(d => s.states[0].moments.push(powerMoment(d, 'off')));
         changed();
     }
 
@@ -831,9 +776,7 @@
 
     function summaryNodes(scene, st) {
         if (!st.moments.some(m => m.power || m.bri) && !st.raw.length) {
-            return [h('span', { class: 'ss-muted' }, isManaged(scene)
-                ? 'No device changes in this state. Tap a device below to set what it does.'
-                : 'This state does nothing yet. Tap a device below to add it.')];
+            return [h('span', { class: 'ss-muted' }, 'No device changes in this state. Tap a device below to set what it does.')];
         }
         const groups = new Map();
         st.moments.slice().sort((a, b) => a.delay - b.delay || a.order - b.order).forEach(function (m) {
@@ -866,9 +809,55 @@
         return d && d.type === 'scene' ? (d.scene_state_index || 0) : null;
     }
 
+    // liveTarget finds a step target in the live data. Scene targets go by
+    // the working copy's name, so a scene renamed in this session is looked
+    // up under its saved name, and one not saved yet has no live state.
+    function liveTarget(name) {
+        const sc = S.scenes.find(s => s.name === name);
+        if (sc) return sc.savedName ? liveDevice(sc.savedName) : null;
+        return liveDevice(name);
+    }
+
+    // liveInfo says what a target is doing right now: now is on, off or
+    // unknown (no poll yet, not running, not healthy, or its state could not
+    // be read, in which case is_on means nothing and is never shown as
+    // "off"); level is a dimmable light's brightness while it is on.
+    function liveInfo(name) {
+        const d = liveTarget(name);
+        if (!d) return { now: 'unknown', text: S.live ? 'Unknown' : '…', level: null };
+        if (d.is_faulty) return { now: 'unknown', text: 'Fault', level: null };
+        if (d.is_healthy === false) return { now: 'unknown', text: 'Not responding', level: null };
+        // A healthy device whose state read failed reports is_on: false; that
+        // is not "Off".
+        if (d.state_error) return { now: 'unknown', text: 'Unknown', level: null };
+        if (d.type === 'scene') {
+            const idx = d.scene_state_index || 0;
+            const stName = (d.scene_state_names || [])[idx] || (idx ? 'State ' + idx : 'Off');
+            return { now: idx ? 'on' : 'off', text: stName, level: null };
+        }
+        const level = d.is_on && d.type === 'dimmable_light' && d.brightness ? d.brightness : null;
+        return { now: d.is_on ? 'on' : 'off', text: d.is_on ? (level !== null ? 'On · ' + level + '%' : 'On') : 'Off', level: level };
+    }
+
+    // paintPickTile writes a picker tile's live state in place.
+    function paintPickTile(el) {
+        const li = liveInfo(el.getAttribute('data-live-tile'));
+        el.setAttribute('data-now', li.now);
+        const txt = el.querySelector('.ss-ptile-now');
+        if (txt && txt.textContent !== li.text) txt.textContent = li.text;
+        const bar = el.querySelector('.ss-ptile-bar');
+        if (bar) {
+            bar.hidden = li.level === null;
+            if (li.level !== null) bar.style.setProperty('--lvl', li.level + '%');
+        }
+    }
+
+    // updateLive refreshes the live badges in the editor and in an open
+    // dialog (dialogs live outside S.root, see openDialog).
     function updateLive() {
-        if (!S.root) return;
-        S.root.querySelectorAll('[data-live-scene]').forEach(function (el) {
+        const scopes = [S.root, S.dialog].filter(Boolean);
+        const all = sel => scopes.reduce((acc, r) => acc.concat(Array.from(r.querySelectorAll(sel))), []);
+        all('[data-live-scene]').forEach(function (el) {
             const sc = S.scenes.find(s => s.id === el.getAttribute('data-live-scene'));
             if (!sc) return;
             const idx = activeStateIndex(sc);
@@ -876,16 +865,18 @@
             el.textContent = st ? st.name : '';
             el.hidden = !st;
         });
-        S.root.querySelectorAll('[data-live-state]').forEach(function (el) {
+        all('[data-live-state]').forEach(function (el) {
             const sc = curScene();
             const idx = sc ? activeStateIndex(sc) : null;
             el.hidden = !(sc && !sceneDirty(sc) && idx === parseInt(el.getAttribute('data-live-state'), 10));
         });
-        S.root.querySelectorAll('[data-live-dev]').forEach(function (el) {
-            const d = liveDevice(el.getAttribute('data-live-dev'));
-            el.setAttribute('data-now', !d ? 'unknown' : d.type === 'scene' ? ((d.scene_state_index || 0) ? 'on' : 'off') : d.is_on ? 'on' : 'off');
-            el.title = !d ? '' : d.type === 'scene' ? 'Now: ' + ((d.scene_state_names || [])[d.scene_state_index || 0] || '') : 'Now: ' + (d.is_on ? 'on' : 'off') + (d.brightness ? ' · ' + d.brightness + '%' : '');
+        all('[data-live-dev]').forEach(function (el) {
+            const li = liveInfo(el.getAttribute('data-live-dev'));
+            el.setAttribute('data-now', li.now);
+            el.title = 'Now: ' + li.text;
         });
+        all('[data-live-tile]').forEach(paintPickTile);
+        if (S.dialog && S.dialog.ssLive) S.dialog.ssLive();
     }
 
     // ---------- rendering ----------
@@ -928,7 +919,7 @@
     function renderRail() {
         const rail = h('nav', { class: 'ss-rail', 'aria-label': 'Scenes' });
         S.scenes.forEach(function (s) {
-            const devs = new Set(sceneDevices(s));
+            const devs = new Set(s.devices);
             rail.appendChild(h('button', {
                 class: 'ss-card' + (s.id === S.sel.scene ? ' sel' : ''),
                 'aria-current': s.id === S.sel.scene ? 'true' : null,
@@ -1037,17 +1028,10 @@
                 h('button', { class: 'ss-icon-btn danger', title: 'Delete state', 'aria-label': 'Delete state', onclick: () => deleteState(sc, st) }, icon('trash')),
                 runBtn)));
 
-        if (stIdx === 0 && isManaged(sc)) {
-            // Managed scenes generate their "Off" (every device off), so
-            // there is no fill-in helper; the state stays fully editable.
+        if (stIdx === 0) {
             main.appendChild(h('div', { class: 'ss-hint' },
                 icon('off', 'sm'),
                 h('span', null, 'The first state is the scene’s “Off”: buttons and the control page switch to it to turn the scene off. New devices are switched off here; change it like any other state.')));
-        } else if (stIdx === 0) {
-            main.appendChild(h('div', { class: 'ss-hint' },
-                icon('off', 'sm'),
-                h('span', null, 'The first state is the scene’s “Off”: buttons and the control page switch to it to turn the scene off.'),
-                h('button', { class: 'ss-btn small', onclick: () => fillOffState(sc) }, 'Switch off everything this scene uses')));
         } else if (sc.states.length < 2) {
             main.appendChild(h('div', { class: 'ss-hint warn' }, 'A scene needs at least two states (Off plus one more) to be switched on.'));
         }
@@ -1066,33 +1050,24 @@
     }
 
     // renderSceneOptions is the scene-level settings strip: the device list
-    // (managed) or the explicit conversion to one (legacy), and the toggle
-    // timeout.
+    // and the toggle timeout.
     function renderSceneOptions(sc) {
         const box = h('div', { class: 'ss-opts' });
-        if (isManaged(sc)) {
-            box.appendChild(h('div', { class: 'ss-opt' },
-                h('div', { class: 'ss-opt-head' },
-                    h('span', { class: 'ss-label' }, 'Devices'),
-                    h('span', { class: 'ss-muted' }, sc.devices.length ? sc.devices.length + (sc.devices.length === 1 ? ' device' : ' devices') : '')),
-                h('div', { class: 'ss-devchips' },
-                    sc.devices.map(function (d) {
-                        const t = targetType(sc, d);
-                        return h('span', { class: 'ss-devchip' + (t ? '' : ' warn'), title: t ? TYPE_LABEL[t] : 'Not available' },
-                            icon(t || 'light', 'xs'),
-                            h('span', { class: 'ss-devchip-name' }, d),
-                            h('button', { class: 'ss-devchip-x', 'aria-label': 'Remove ' + d + ' from this scene', title: 'Remove from scene', onclick: () => removeSceneDevice(sc, d) }, icon('close', 'xs')));
-                    }),
-                    h('button', { class: 'ss-btn small', onclick: () => openAddDevicesDialog(sc) }, icon('plus', 'sm'), 'Add devices')),
-                sc.devices.length ? null : h('div', { class: 'ss-field-err' }, 'Add at least one device.')));
-        } else {
-            const n = stepDevices(sc).length;
-            box.appendChild(h('div', { class: 'ss-opt' },
-                h('div', { class: 'ss-opt-head' }, h('span', { class: 'ss-label' }, 'Devices')),
-                h('div', { class: 'ss-opt-legacy' },
-                    h('span', { class: 'ss-muted' }, 'No device list: each state picks from every device' + (n ? ' (its steps use ' + n + ')' : '') + '.'),
-                    h('button', { class: 'ss-btn small', onclick: () => openConvertDialog(sc) }, 'Use a scene device list'))));
-        }
+        box.appendChild(h('div', { class: 'ss-opt' },
+            h('div', { class: 'ss-opt-head' },
+                h('span', { class: 'ss-label' }, 'Devices'),
+                h('span', { class: 'ss-muted' }, sc.devices.length ? sc.devices.length + (sc.devices.length === 1 ? ' device' : ' devices') : '')),
+            h('div', { class: 'ss-devchips' },
+                sc.devices.map(function (d) {
+                    const t = targetType(sc, d);
+                    return h('span', { class: 'ss-devchip' + (t ? '' : ' warn'), title: t ? TYPE_LABEL[t] : 'Not available' },
+                        icon(t || 'light', 'xs'),
+                        h('span', { class: 'ss-devchip-name' }, d),
+                        t ? h('span', { class: 'ss-now', 'data-live-dev': d }) : null,
+                        h('button', { class: 'ss-devchip-x', 'aria-label': 'Remove ' + d + ' from this scene', title: 'Remove from scene', onclick: () => removeSceneDevice(sc, d) }, icon('close', 'xs')));
+                }),
+                h('button', { class: 'ss-btn small', onclick: () => openAddDevicesDialog(sc) }, icon('plus', 'sm'), 'Add devices')),
+            sc.devices.length ? null : h('div', { class: 'ss-field-err' }, 'Add at least one device.')));
         box.appendChild(renderTimeout(sc));
         return box;
     }
@@ -1148,32 +1123,30 @@
                 : 'Each tap moves to the next state, however long ago the last change was.'));
     }
 
+    const GROUPS = [
+        { title: 'Lights', types: ['light', 'dimmable_light', 'color_light'] },
+        { title: 'Outlets', types: ['outlet'] },
+        { title: 'Scenes', types: ['scene'] },
+    ];
+
     function renderBoard(sc, st) {
-        const managed = isManaged(sc);
         const board = h('section', { class: 'ss-board', 'aria-label': 'Devices' });
         board.appendChild(h('div', { class: 'ss-sec-head' },
-            h('h3', null, managed ? 'In this state' : 'Devices'),
-            h('span', { class: 'ss-muted' }, managed ? 'Tap a device to set what it does' : 'Tap to add or edit')));
-        // A managed scene's board shows only its own devices; ones that are
-        // not available any more fall through to "Not available" below.
-        const targets = managed
-            ? sc.devices.map(d => ({ name: d, type: targetType(sc, d) })).filter(t => t.type)
-            : targetsFor(sc);
-        const groups = [
-            { title: 'Lights', types: ['light', 'dimmable_light', 'color_light'] },
-            { title: 'Outlets', types: ['outlet'] },
-            { title: 'Scenes', types: ['scene'] },
-        ];
+            h('h3', null, 'In this state'),
+            h('span', { class: 'ss-muted' }, 'Tap a device to set what it does')));
+        // The board shows only the scene's own devices; ones that are not
+        // available any more fall through to "Not available" below.
+        const targets = sc.devices.map(d => ({ name: d, type: targetType(sc, d) })).filter(t => t.type);
         // Devices a step refers to but that no longer exist still get a tile.
         const missing = [];
-        if (managed) sc.devices.forEach(d => { if (!targets.some(t => t.name === d) && missing.indexOf(d) < 0) missing.push(d); });
+        sc.devices.forEach(d => { if (!targets.some(t => t.name === d) && missing.indexOf(d) < 0) missing.push(d); });
         const outside = [];
         st.moments.forEach(function (m) {
             if (targets.some(t => t.name === m.device) || missing.indexOf(m.device) >= 0 || outside.indexOf(m.device) >= 0) return;
-            if (managed && targetType(sc, m.device)) outside.push(m.device); else missing.push(m.device);
+            if (targetType(sc, m.device)) outside.push(m.device); else missing.push(m.device);
         });
 
-        groups.forEach(function (g) {
+        GROUPS.forEach(function (g) {
             const list = targets.filter(t => g.types.indexOf(t.type) >= 0);
             if (!list.length) return;
             board.appendChild(h('div', { class: 'ss-group-title' }, g.title));
@@ -1187,9 +1160,7 @@
             board.appendChild(h('div', { class: 'ss-group-title warn' }, 'Not in the scene’s device list'));
             board.appendChild(h('div', { class: 'ss-tiles' }, outside.map(n => renderTile(sc, st, { name: n, type: 'missing' }))));
         }
-        if (managed) {
-            if (!sc.devices.length) board.appendChild(h('p', { class: 'ss-muted' }, 'This scene has no devices yet. Add some above.'));
-        } else if (!targets.length) board.appendChild(h('p', { class: 'ss-muted' }, 'No lights or outlets are configured yet. Add them on the Schema tab first.'));
+        if (!sc.devices.length) board.appendChild(h('p', { class: 'ss-muted' }, 'This scene has no devices yet. Add some above.'));
         return board;
     }
 
@@ -1198,7 +1169,7 @@
         const now = mine.filter(m => m.delay === 0);
         const later = mine.filter(m => m.delay > 0);
         const included = mine.length > 0;
-        let fx = isManaged(sc) ? 'No change' : 'Not in this state', kind = 'none', level = null;
+        let fx = 'No change', kind = 'none', level = null;
         if (now.length) {
             fx = now.map(m => momentLabel(m, t.type)).join(' · ');
             kind = momentKind(now[0]);
@@ -1431,8 +1402,8 @@
 
         if (!type) {
             insp.appendChild(h('p', { class: 'ss-hint warn' }, 'This device no longer exists, was renamed, or is a scene defined after this one. Saving will fail until you remove its steps' +
-                (isManaged(sc) && sc.devices.indexOf(dev) >= 0 ? ' and remove it from the scene’s device list.' : '.')));
-        } else if (isManaged(sc) && sc.devices.indexOf(dev) < 0) {
+                (sc.devices.indexOf(dev) >= 0 ? ' and remove it from the scene’s device list.' : '.')));
+        } else if (sc.devices.indexOf(dev) < 0) {
             insp.appendChild(h('p', { class: 'ss-hint warn' }, 'This device is not in the scene’s device list. Add it to the list, or choose “No change in this state”.'));
         }
 
@@ -1440,7 +1411,7 @@
 
         insp.appendChild(h('div', { class: 'ss-insp-foot' },
             type ? h('button', { class: 'ss-btn', onclick: () => addLaterMoment(st, dev) }, icon('clock', 'sm'), 'Add a later step') : null,
-            h('button', { class: 'ss-btn ghost danger', onclick: () => removeDevice(sc, st, dev) }, isManaged(sc) ? 'No change in this state' : 'Remove from this state')));
+            h('button', { class: 'ss-btn ghost danger', onclick: () => removeDevice(sc, st, dev) }, 'No change in this state')));
         return insp;
     }
 
@@ -1627,12 +1598,14 @@
 
     // openDialog shows a modal <dialog> outside the editor root, so a
     // renderAll underneath never destroys it. build(close) returns
-    // { body, foot } nodes.
-    function openDialog(title, build) {
+    // { body, foot } nodes and optionally live(), run after each poll.
+    function openDialog(title, build, opts) {
         closeDialog();
-        const dlg = h('dialog', { class: 'ss-dlg', 'aria-label': title });
+        const dlg = h('dialog', { class: 'ss-dlg' + (opts && opts.wide ? ' wide' : ''), 'aria-label': title });
         const close = function () { if (dlg.open) dlg.close(); };
         const parts = build(close);
+        // updateLive calls this after each poll while the dialog is open.
+        dlg.ssLive = parts.live || null;
         dlg.appendChild(h('div', { class: 'ss-dlg-head' },
             h('h3', null, title),
             h('button', { class: 'ss-icon-btn sm', 'aria-label': 'Close', onclick: close }, icon('close'))));
@@ -1651,44 +1624,119 @@
         if (S.dialog) { const d = S.dialog; S.dialog = null; if (d.open) d.close(); d.remove(); }
     }
 
-    // devicePicker is a checkbox list of targets, grouped like the board.
-    // picked() returns the chosen names in list order.
+    // devicePicker is a tile grid of targets, grouped like the board, in
+    // the board's visual language: each tile shows what the device is doing
+    // right now (kept current by updateLive while the dialog is open) and
+    // toggles its selection on click, Enter or Space. picked() returns the
+    // chosen names in list order; live() refreshes the quick actions after
+    // a poll. A filter appears once there are more than a handful of
+    // targets; selections hidden by it are kept.
     function devicePicker(targets, onChange) {
         const el = h('div', { class: 'ss-pick' });
-        const boxes = [];
-        if (targets.length > 10) {
-            const filter = h('input', { class: 'ss-input ss-pick-filter', type: 'search', placeholder: 'Filter devices', 'aria-label': 'Filter devices', autocomplete: 'off' });
-            filter.addEventListener('input', function () {
-                const q = filter.value.trim().toLowerCase();
-                boxes.forEach(b => { b.row.hidden = q && b.name.toLowerCase().indexOf(q) < 0; });
-                el.querySelectorAll('.ss-pick-group').forEach(g => { g.hidden = !g.querySelector('.ss-pick-row:not([hidden])'); });
+        const items = [];
+        const bar = h('div', { class: 'ss-pick-bar' });
+        let filter = null;
+        if (targets.length > 5) {
+            filter = h('input', { class: 'ss-input ss-pick-filter', type: 'search', placeholder: 'Filter by name or type', 'aria-label': 'Filter devices', autocomplete: 'off', spellcheck: 'false' });
+            filter.addEventListener('input', applyFilter);
+            filter.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') e.preventDefault();
+                // Escape clears the filter first instead of closing the dialog.
+                if (e.key === 'Escape' && filter.value) { e.preventDefault(); e.stopPropagation(); filter.value = ''; applyFilter(); }
             });
-            el.appendChild(filter);
+            bar.appendChild(filter);
         }
-        [
-            { title: 'Lights', types: ['light', 'dimmable_light', 'color_light'] },
-            { title: 'Outlets', types: ['outlet'] },
-            { title: 'Scenes', types: ['scene'] },
-        ].forEach(function (g) {
+        const onCount = h('span', { class: 'ss-pick-count' });
+        const onNow = h('button', { type: 'button', class: 'ss-btn small', onclick: selectOnNow }, icon('dimmable_light', 'sm'), 'Select the ones on now', onCount);
+        const clear = h('button', { type: 'button', class: 'ss-btn small ghost', onclick: clearAll }, 'Clear');
+        const status = h('span', { class: 'ss-pick-status', 'aria-live': 'polite' });
+        bar.appendChild(h('div', { class: 'ss-pick-actions' }, onNow, clear, status));
+        el.appendChild(bar);
+
+        GROUPS.forEach(function (g) {
             const list = targets.filter(t => g.types.indexOf(t.type) >= 0);
             if (!list.length) return;
-            const group = h('div', { class: 'ss-pick-group' }, h('div', { class: 'ss-group-title' }, g.title));
+            const grid = h('div', { class: 'ss-tiles ss-pick-tiles', role: 'group', 'aria-label': g.title });
+            const group = h('div', { class: 'ss-pick-group' }, h('div', { class: 'ss-group-title' }, g.title), grid);
             list.forEach(function (t) {
-                const cb = h('input', { type: 'checkbox', class: 'ss-pick-cb' });
-                cb.addEventListener('change', function () { onChange && onChange(); });
-                const row = h('label', { class: 'ss-pick-row' }, cb, icon(t.type),
-                    h('span', { class: 'ss-pick-name' }, t.name),
-                    h('span', { class: 'ss-pick-type' }, TYPE_LABEL[t.type] || ''));
-                boxes.push({ name: t.name, cb: cb, row: row });
-                group.appendChild(row);
+                const tile = h('button', {
+                    type: 'button', class: 'ss-ptile', role: 'checkbox', 'aria-checked': 'false',
+                    'data-live-tile': t.name, 'data-type': t.type,
+                },
+                    h('span', { class: 'ss-ptile-top' },
+                        h('span', { class: 'ss-ptile-ico' }, icon(t.type)),
+                        h('span', { class: 'ss-ptile-check', 'aria-hidden': 'true' }, icon('check', 'xs'))),
+                    h('span', { class: 'ss-ptile-name' }, t.name),
+                    h('span', { class: 'ss-ptile-type' }, TYPE_LABEL[t.type] || ''),
+                    h('span', { class: 'ss-ptile-now' }),
+                    t.type === 'dimmable_light' ? h('span', { class: 'ss-ptile-bar', hidden: true }) : null);
+                const item = { t: t, tile: tile, group: group, on: false };
+                tile.addEventListener('click', function () { setOn(item, !item.on); sync(); });
+                paintPickTile(tile);
+                items.push(item);
+                grid.appendChild(tile);
             });
             el.appendChild(group);
         });
-        return { el: el, picked: () => boxes.filter(b => b.cb.checked).map(b => b.name) };
-    }
+        const none = h('p', { class: 'ss-pick-none', hidden: true });
+        el.appendChild(none);
 
-    function stepList(names) {
-        return h('div', { class: 'ss-steplist' }, names.map(d => h('code', null, 'off:' + d)));
+        function setOn(item, on) {
+            item.on = on;
+            item.tile.setAttribute('aria-checked', on ? 'true' : 'false');
+        }
+
+        function matches(item, q) {
+            return !q || item.t.name.toLowerCase().indexOf(q) >= 0 || (TYPE_LABEL[item.t.type] || '').toLowerCase().indexOf(q) >= 0;
+        }
+
+        function applyFilter() {
+            const q = filter ? filter.value.trim().toLowerCase() : '';
+            let shown = 0;
+            items.forEach(function (it) { it.tile.hidden = !matches(it, q); if (!it.tile.hidden) shown++; });
+            el.querySelectorAll('.ss-pick-group').forEach(g => { g.hidden = !g.querySelector('.ss-ptile:not([hidden])'); });
+            none.hidden = shown > 0;
+            none.textContent = shown ? '' : 'No devices match “' + filter.value.trim() + '”.';
+            live();
+        }
+
+        // Quick actions use aria-disabled rather than disabled, so focus
+        // stays on them after they become unavailable.
+        function setAvail(btn, ok, why) {
+            btn.setAttribute('aria-disabled', ok ? 'false' : 'true');
+            btn.title = ok ? '' : why;
+        }
+
+        function live() {
+            const lit = items.filter(it => liveInfo(it.t.name).now === 'on');
+            onCount.textContent = lit.length ? String(lit.length) : '';
+            onCount.hidden = !lit.length;
+            setAvail(onNow, lit.some(it => !it.on), lit.length ? 'Everything on now is already selected' : 'Nothing here is on right now');
+            const n = items.filter(it => it.on).length;
+            setAvail(clear, n > 0, 'Nothing is selected');
+            const hidden = items.filter(it => it.on && it.tile.hidden).length;
+            status.textContent = hidden ? '+' + hidden + ' selected, hidden by the filter' : '';
+        }
+
+        function sync() {
+            live();
+            if (onChange) onChange();
+        }
+
+        function selectOnNow() {
+            if (onNow.getAttribute('aria-disabled') === 'true') return;
+            items.forEach(function (it) { if (liveInfo(it.t.name).now === 'on') setOn(it, true); });
+            sync();
+        }
+
+        function clearAll() {
+            if (clear.getAttribute('aria-disabled') === 'true') return;
+            items.forEach(it => setOn(it, false));
+            sync();
+        }
+
+        live();
+        return { el: el, picked: () => items.filter(it => it.on).map(it => it.t.name), live: live };
     }
 
     function openNewSceneDialog() {
@@ -1725,8 +1773,9 @@
                     targets.length ? picker.el : h('p', { class: 'ss-hint warn' }, 'No lights or outlets are configured yet. Add them on the Schema tab first.'),
                 ],
                 foot: [h('button', { class: 'ss-btn ghost', onclick: close }, 'Cancel'), create],
+                live: picker.live,
             };
-        });
+        }, { wide: true });
     }
 
     function openAddDevicesDialog(sc) {
@@ -1750,63 +1799,9 @@
                     ? [h('p', { class: 'ss-muted' }, 'Each device is switched off in “' + off + '” and changes nothing in the other states until you set it.'), picker.el]
                     : [h('p', { class: 'ss-muted' }, 'Every available device is already in this scene.')],
                 foot: [h('button', { class: 'ss-btn ghost', onclick: close }, targets.length ? 'Cancel' : 'Close'), targets.length ? add : null],
+                live: picker.live,
             };
-        });
-    }
-
-    // openConvertDialog previews turning a legacy scene into a managed one.
-    // Nothing changes unless it is confirmed; without the checkbox no step
-    // changes either.
-    function openConvertDialog(sc) {
-        const derived = stepDevices(sc);
-        const off = sc.states[0] ? sc.states[0].name : null;
-        openDialog('Use a scene device list', function (close) {
-            const ok = h('button', { class: 'ss-btn primary' }, 'Use this device list');
-            const offBox = h('div', { class: 'ss-dlg-sec' });
-            const addOff = h('input', { type: 'checkbox', class: 'ss-pick-cb' });
-            let picker = null;
-            const current = () => (picker ? picker.picked() : derived);
-            const refresh = function () {
-                const plan = conversionPlan(sc, current());
-                ok.disabled = !plan.devices.length || plan.missing.length > 0;
-                offBox.textContent = '';
-                if (!off || !plan.devices.length) return;
-                if (!plan.offSteps.length) {
-                    offBox.appendChild(h('p', { class: 'ss-muted' }, 'Every device already has a step in “' + off + '”, so no step needs adding.'));
-                    return;
-                }
-                offBox.appendChild(h('label', { class: 'ss-check' }, addOff, h('span', null, 'Also switch these off in “' + off + '”')));
-                offBox.appendChild(h('p', { class: 'ss-muted' }, 'Appended to the end of “' + off + '”:'));
-                offBox.appendChild(stepList(plan.offSteps));
-            };
-            const body = [h('p', null, 'With a device list, “' + sc.name + '” works only with these devices: the board shows just them, a device without a step in a state is left as it is, and new states start with every device on. Its steps stay exactly as they are.')];
-            if (derived.length) {
-                const plan = conversionPlan(sc, derived);
-                body.push(h('div', { class: 'ss-dlg-sec' },
-                    h('span', { class: 'ss-label' }, 'Devices (from its steps)'),
-                    h('div', { class: 'ss-devchips' }, derived.map(d => h('span', { class: 'ss-devchip' + (plan.missing.indexOf(d) >= 0 ? ' warn' : '') },
-                        icon(targetType(sc, d) || 'light', 'xs'), h('span', { class: 'ss-devchip-name' }, d))))));
-                if (plan.missing.length) {
-                    body.push(h('p', { class: 'ss-hint warn' }, 'Some steps drive devices that are not available here: ' +
-                        plan.missing.map(d => '“' + d + '”').join(', ') +
-                        '. Fix or remove those steps first; a device list may only name existing devices (and scenes defined earlier).'));
-                }
-            } else {
-                picker = devicePicker(targetsFor(sc), refresh);
-                body.push(h('div', { class: 'ss-dlg-sec' },
-                    h('span', { class: 'ss-label' }, 'Devices'),
-                    h('p', { class: 'ss-muted' }, 'This scene has no steps yet. Pick the devices it works with.')), picker.el);
-            }
-            body.push(offBox);
-            ok.addEventListener('click', function () {
-                const devs = current();
-                if (!devs.length) return;
-                close();
-                convertToManaged(sc, devs, addOff.checked);
-            });
-            refresh();
-            return { body: body, foot: [h('button', { class: 'ss-btn ghost', onclick: close }, 'Cancel'), ok] };
-        });
+        }, { wide: targets.length > 0 });
     }
 
     // ---------- page lifecycle (called by app.js) ----------

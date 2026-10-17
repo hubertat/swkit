@@ -1,6 +1,9 @@
 package app
 
-import "errors"
+import (
+	"errors"
+	"slices"
+)
 
 // ErrConfigRevisionMismatch is returned by SaveConfigIfRevision when the
 // caller's expectedRevision no longer matches the provider's current
@@ -41,6 +44,30 @@ type EditableConfig struct {
 	Scenes         []SceneEditConfig
 	// OutputDeviceNames provides available target device names for button control relations
 	OutputDeviceNames []string
+}
+
+// Clone returns a deep copy of c: no slice in the result aliases c, so the
+// copy can be normalized, validated or saved on another goroutine while the
+// original keeps being edited.
+func (c EditableConfig) Clone() EditableConfig {
+	out := c
+	out.Lights = slices.Clone(c.Lights)
+	out.DimmableLights = slices.Clone(c.DimmableLights)
+	out.Outlets = slices.Clone(c.Outlets)
+	out.Buttons = slices.Clone(c.Buttons)
+	for i := range out.Buttons {
+		out.Buttons[i].ControlDevices = slices.Clone(out.Buttons[i].ControlDevices)
+	}
+	out.Scenes = slices.Clone(c.Scenes)
+	for i := range out.Scenes {
+		out.Scenes[i].Devices = slices.Clone(out.Scenes[i].Devices)
+		out.Scenes[i].States = slices.Clone(out.Scenes[i].States)
+		for j := range out.Scenes[i].States {
+			out.Scenes[i].States[j].Actions = slices.Clone(out.Scenes[i].States[j].Actions)
+		}
+	}
+	out.OutputDeviceNames = slices.Clone(c.OutputDeviceNames)
+	return out
 }
 
 // LightEditConfig represents an editable Light configuration
@@ -86,13 +113,9 @@ type ButtonEditConfig struct {
 // grammar.
 type SceneEditConfig struct {
 	Name string
-	// Devices is the scene's device list. nil (absent or null in JSON) means a
-	// legacy scene whose steps may target any valid device; non-nil makes it
-	// a managed scene, see ValidateSceneConfig. nil and empty are different
-	// (an empty list is invalid, never legacy), so copies must preserve
-	// nil-ness (slices.Clone does) and the JSON tag keeps [] while omitting
-	// nil.
-	Devices []string `json:",omitzero"`
+	// Devices is the scene's device list: required, non-empty, and every
+	// step must target a listed device (see ValidateSceneConfig).
+	Devices []string
 	// ToggleTimeoutSeconds, when > 0, makes a Toggle return to state 0 once
 	// the scene has stayed in another state this long (0 = disabled,
 	// max MaxSceneToggleTimeoutSeconds).

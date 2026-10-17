@@ -250,8 +250,9 @@
             return (n.detail && n.detail.state_names) || [];
         }
         function sceneBoxHeight(states) {
-            // A 0-state (legacy inert) scene still reserves one row's worth
-            // of body, so it never collapses to header-only/zero height.
+            // A 0-state scene (invalid, but possible mid-edit) still reserves
+            // one row's worth of body, so it never collapses to
+            // header-only/zero height.
             const n = Math.max(states.length, 1);
             return GROUP_HEADER_H + GROUP_PAD * 2 + n * (IO_PILL_H + IO_PILL_GAP) - IO_PILL_GAP;
         }
@@ -923,7 +924,7 @@
         // follows.
         const activeIdx = (n.detail && n.detail.state_index) || 0;
         if (!item.states.length) {
-            // A legacy 0-state scene: still show the reserved row's worth of
+            // A 0-state scene: still show the reserved row's worth of
             // body (sceneBoxHeight in buildLayout), rather than an
             // unexplained blank box.
             const empty = svgEl('text', {
@@ -1888,15 +1889,12 @@
                 }));
             }),
             Scenes: (cfg.Scenes || []).map(function(s) {
-                const copy = withEditId(Object.assign({}, s, {
+                return withEditId(Object.assign({}, s, {
+                    Devices: (s.Devices || []).slice(),
                     States: (s.States || []).map(function(st) {
                         return Object.assign({}, st, { Actions: (st.Actions || []).slice() });
                     }),
                 }));
-                // A managed scene's device list is copied too (an absent/null
-                // list stays as it is: that is what marks a legacy scene).
-                if (Array.isArray(s.Devices)) copy.Devices = s.Devices.slice();
-                return copy;
             }),
         };
     }
@@ -1959,7 +1957,7 @@
     // uniqueStateName mirrors uniquePlaceholderName's idiom (probe, bump,
     // retry) but scoped to one scene's own States list instead of the
     // cross-kind device-name set - state names only need to be unique within
-    // their own scene (validateEditableConfig's seenStates check, mirrored
+    // their own scene (app.ValidateEditableConfig's seenStates check, mirrored
     // client-side by buildSceneStateNameField). Finding F4: deriving the
     // candidate purely from states.length (as this used to) breaks the
     // instant a state is removed from the middle/end of the list, e.g.
@@ -1979,8 +1977,8 @@
     }
 
     // propagateRename rewrites every reference to oldName in the working copy
-    // (button control-relation targets, scene action device names, managed
-    // scenes' device lists) to newName. Called once, at rename commit (blur), for controllable kinds.
+    // (button control-relation targets, scene action device names, scenes'
+    // device lists) to newName. Called once, at rename commit (blur), for controllable kinds.
     function propagateRename(oldName, newName) {
         (S.working.Buttons || []).forEach(function(b) {
             (b.ControlDevices || []).forEach(function(cd) {
@@ -1988,9 +1986,7 @@
             });
         });
         (S.working.Scenes || []).forEach(function(s) {
-            if (Array.isArray(s.Devices)) {
-                s.Devices = s.Devices.map(function(d) { return d === oldName ? newName : d; });
-            }
+            s.Devices = (s.Devices || []).map(function(d) { return d === oldName ? newName : d; });
             (s.States || []).forEach(function(st) {
                 st.Actions = (st.Actions || []).map(function(actionStr) {
                     const parsed = parseActionString(actionStr);
@@ -2072,6 +2068,16 @@
             { kind: 'button', icon: '\u{1F446}' },
             { kind: 'scene', icon: '\u{1F3AC}' },
         ].forEach(function(it) {
+            if (it.kind === 'scene') {
+                // A scene's device list is chosen when it is created, and
+                // only the Scenes tab (Scene Studio) does that, so this entry
+                // leads there instead of adding a scene here.
+                const link = mkEl('a', { class: 'schema-add-menu-item', href: '/scenes?new=1' },
+                    it.icon + ' ' + kindLabel(it.kind) + ' \u2014 create in the Scenes tab \u2192');
+                link.addEventListener('click', leaveForScenesTab);
+                menu.appendChild(link);
+                return;
+            }
             const btn = mkEl('button', { class: 'schema-add-menu-item' }, it.icon + ' ' + kindLabel(it.kind));
             btn.addEventListener('click', function() {
                 addDevice(it.kind);
@@ -2079,6 +2085,19 @@
             });
             menu.appendChild(btn);
         });
+    }
+
+    // leaveForScenesTab is the click handler of every link from here to the
+    // Scenes tab. That tab has its own working copy, so unsaved edits here
+    // would be lost by going there: confirm first. Once confirmed the edits
+    // are dropped, so the page's beforeunload guard does not ask again.
+    function leaveForScenesTab(e) {
+        if (!S.dirty) return;
+        if (!confirm('Leave the schema editor? Your unsaved changes here will be lost.')) {
+            e.preventDefault();
+            return;
+        }
+        S.dirty = false;
     }
 
     function addDevice(kind) {
@@ -2102,17 +2121,8 @@
                 entry = withEditId({ Name: name, EventInputName: '', DisableHomekit: false, ControlDevices: [] });
                 S.working.Buttons.push(entry);
                 break;
-            case 'scene':
-                // Seed off/on states rather than an empty list: a scene with
-                // zero states is completely inert at runtime (Toggle() no-ops
-                // with len(states)==0, SetValue(true) no-ops with fewer than
-                // 2 - see scene.go), and server-side validation never flags
-                // that as an error, so a freshly added scene would otherwise
-                // silently do nothing until the user happened to notice.
-                entry = withEditId({ Name: name, States: [{ Name: 'off', Actions: [] }, { Name: 'on', Actions: [] }] });
-                S.working.Scenes.push(entry);
-                break;
             default:
+                // Scenes are created in the Scenes tab (see buildAddMenu).
                 return;
         }
         entry._isNew = true;
@@ -2384,18 +2394,18 @@
     // scenes sequentially and resolves each action's target via
     // resolveControllable, which only ever sees scenes already appended - so
     // an action may target an earlier scene, never itself or a later one
-    // (mirrors the sceneIndex check in config_edit.go's validateEditableConfig).
+    // (mirrors the sceneIndex check in app.ValidateEditableConfig).
     // Non-scene targets (lights, dimmable lights, outlets, color lights) carry
     // no such ordering constraint. Button control relations have no ordering
     // constraint at all (buttons aren't built in dependency order relative to
     // their targets), so they keep the unfiltered targetNameOptions() list.
-    // A managed scene (Devices is an array) may only target its own device
-    // list (mirrors app.ValidateSceneConfig).
+    // A scene may only target its own device list (mirrors
+    // app.ValidateSceneConfig); the list is chosen in the Scenes tab.
     function sceneTargetNameOptions(scene) {
         const idx = S.working.Scenes.indexOf(scene);
-        const listed = Array.isArray(scene.Devices) ? new Set(scene.Devices) : null;
+        const listed = new Set(scene.Devices || []);
         return targetNameOptions().filter(function(name) {
-            if (listed && !listed.has(name)) return false;
+            if (!listed.has(name)) return false;
             const sceneIdx = S.working.Scenes.findIndex(function(s) { return s.Name === name; });
             return sceneIdx === -1 || sceneIdx < idx;
         });
@@ -2407,7 +2417,7 @@
     // (DimmableLight is the only runtime type that implements app.Dimmable;
     // ColorLight and Scene do not implement SetBrightness). Used for both
     // button control-relation rows and scene action rows, since the server
-    // enforces the same rule for both (see validateEditableConfig's two call
+    // enforces the same rule for both (see app.ValidateEditableConfig's two call
     // sites of dimmableTargetTypes).
     function verbOptionsForTarget(name) {
         const meta = (S.editData && S.editData.meta) || {};
@@ -2575,15 +2585,20 @@
 
     function buildSceneForm(panel, entry) {
         buildNameField(panel, entry, 'scene');
-        // The Scenes tab is the richer editor (timeline, delays, brightness,
-        // Run). It has its own working copy, so unsaved edits here would be
-        // lost by going there - confirm first.
+        // The Scenes tab is the richer editor (device list, timeline, delays,
+        // brightness, Run); see leaveForScenesTab for the unsaved-edits guard.
         const studio = mkEl('a', { class: 'io-filter-btn schema-studio-link', href: '/scenes?scene=' + encodeURIComponent(entry.Name || '') },
-            'Open in the Scenes tab (timeline, delays, brightness) \u2192');
-        studio.addEventListener('click', function(e) {
-            if (S.dirty && !confirm('Leave the schema editor? Your unsaved changes here will be lost.')) e.preventDefault();
-        });
+            'Open in the Scenes tab (devices, timeline, delays, brightness) \u2192');
+        studio.addEventListener('click', leaveForScenesTab);
         panel.appendChild(studio);
+
+        // The device list is read-only here: it is chosen and changed in the
+        // Scenes tab, which also keeps the scene's steps in step with it.
+        panel.appendChild(mkEl('div', { class: 'schema-panel-section' }, 'Devices'));
+        const devices = entry.Devices || [];
+        panel.appendChild(devices.length
+            ? mkEl('div', { class: 'edit-scene-devices' }, devices.join(', '))
+            : mkEl('div', { class: 'edit-field-error' }, 'No devices: a scene needs a device list. Choose its devices in the Scenes tab.'));
         panel.appendChild(mkEl('div', { class: 'schema-panel-section' }, 'States'));
         entry.States = entry.States || [];
         if (entry.States.length < 2) {
@@ -2615,7 +2630,7 @@
     // (no markDirty/redraw on an invalid edit, offending text stays visible)
     // but validates against the server's actual state-name rules (empty, or
     // duplicating another state's name within the same scene - see
-    // validateEditableConfig's seenStates check), instead of buildNameField's
+    // app.ValidateEditableConfig's seenStates check), instead of buildNameField's
     // device-name rules (empty, or containing ':').
     function buildSceneStateNameField(scene, st) {
         const wrap = mkEl('div', { class: 'edit-field' });
@@ -2695,15 +2710,13 @@
         const addActionBtn = mkEl('button', { class: 'io-filter-btn' }, '+ Add action');
         const defaultTargets = sceneTargetNameOptions(scene);
         if (!defaultTargets.length) {
-            // No legal target exists yet (no lights/dimmable lights/outlets/
-            // color lights configured, and no earlier scene to reference) -
-            // disable instead of staging an "on:" action with an empty
-            // device, which would just fail validation on save with a
-            // confusing "target device "" does not exist" error.
+            // None of the scene's listed devices is a legal target (or it
+            // lists none) - disable instead of staging an "on:" action with
+            // an empty device, which would just fail validation on save.
             addActionBtn.disabled = true;
-            addActionBtn.title = Array.isArray(scene.Devices)
+            addActionBtn.title = (scene.Devices || []).length
                 ? 'None of this scene\'s devices is a valid target - edit its device list in the Scenes tab'
-                : 'No valid target exists yet - add a light, outlet, dimmable light, or an earlier scene first';
+                : 'This scene has no devices - choose them in the Scenes tab';
         } else {
             addActionBtn.addEventListener('click', function() {
                 st.Actions.push(formatActionString({ verb: 'on', level: 0, device: defaultTargets[0] }));
@@ -2726,7 +2739,7 @@
     // buildSceneActionRow renders one scene-state action string as a
     // structured verb/level/target picker (mirroring buildControlRelationRow),
     // when the string parses via parseActionString. When it doesn't - a
-    // hand-edited or legacy action string the grammar can't represent - it
+    // hand-edited action string the grammar can't represent - it
     // falls back to a raw text input pre-filled with the original string plus
     // an inline error, and leaves that string completely untouched until the
     // user edits it: the picker must never silently drop or rewrite an

@@ -13,17 +13,22 @@ import (
 	drivers "github.com/hubertat/swkit/drivers"
 )
 
-// Devices nil (legacy) and [] (invalid managed) must stay distinct through
-// SceneConfig -> SceneEditConfig -> JSON (API) -> SceneEditConfig ->
-// SceneConfig -> config.json -> SceneConfig.
-func TestConfigProviderSceneDevicesNilVsEmptyRoundTrip(t *testing.T) {
+// Devices and ToggleTimeoutSeconds survive SceneConfig -> SceneEditConfig ->
+// JSON (API) -> SceneEditConfig -> SceneConfig -> config.json -> SceneConfig,
+// and no copy aliases another.
+func TestConfigProviderSceneDevicesRoundTrip(t *testing.T) {
 	sw := &SwKit{
-		Name:   "t",
-		Lights: []LightConfig{{Name: "L1", DigitalOutName: "wago|d_out|0"}},
+		Name: "t",
+		Lights: []LightConfig{
+			{Name: "L1", DigitalOutName: "wago|d_out|0"},
+			{Name: "L2", DigitalOutName: "wago|d_out|1"},
+		},
 		Scenes: []SceneConfig{
-			{Name: "Legacy", States: []SceneStateConfig{{Name: "Off", Actions: []string{"off:L1"}}}},
-			{Name: "Empty", Devices: []string{}, States: []SceneStateConfig{{Name: "Off"}}},
-			{Name: "Managed", Devices: []string{"L1"}, ToggleTimeoutSeconds: 1800, States: []SceneStateConfig{{Name: "Off", Actions: []string{"off:L1"}}}},
+			{Name: "Evening", Devices: []string{"L1", "L2"}, ToggleTimeoutSeconds: 1800, States: []SceneStateConfig{
+				{Name: "Off", Actions: []string{"off:L1", "off:L2"}},
+				{Name: "On", Actions: []string{"on:L1"}},
+			}},
+			{Name: "Night", Devices: []string{"L2"}, States: []SceneStateConfig{{Name: "Off", Actions: []string{"off:L2"}}}},
 		},
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -31,17 +36,17 @@ func TestConfigProviderSceneDevicesNilVsEmptyRoundTrip(t *testing.T) {
 
 	check := func(label string, devices [][]string, timeouts []int) {
 		t.Helper()
-		if devices[0] != nil {
-			t.Errorf("%s: Legacy Devices = %#v, want nil", label, devices[0])
+		if len(devices) != 2 {
+			t.Fatalf("%s: %d scenes, want 2", label, len(devices))
 		}
-		if devices[1] == nil || len(devices[1]) != 0 {
-			t.Errorf("%s: Empty Devices = %#v, want non-nil []", label, devices[1])
+		if got := strings.Join(devices[0], ","); got != "L1,L2" {
+			t.Errorf("%s: Evening Devices = %q, want L1,L2", label, got)
 		}
-		if len(devices[2]) != 1 || devices[2][0] != "L1" {
-			t.Errorf("%s: Managed Devices = %#v, want [L1]", label, devices[2])
+		if got := strings.Join(devices[1], ","); got != "L2" {
+			t.Errorf("%s: Night Devices = %q, want L2", label, got)
 		}
-		if timeouts[0] != 0 || timeouts[2] != 1800 {
-			t.Errorf("%s: timeouts = %v, want [0 _ 1800]", label, timeouts)
+		if timeouts[0] != 1800 || timeouts[1] != 0 {
+			t.Errorf("%s: timeouts = %v, want [1800 0]", label, timeouts)
 		}
 	}
 	editDevices := func(cfg app.EditableConfig) ([][]string, []int) {
@@ -72,9 +77,6 @@ func TestConfigProviderSceneDevicesNilVsEmptyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(data), `"Devices"`) != 2 {
-		t.Errorf("API JSON should carry Devices for Empty and Managed only: %s", data)
-	}
 	var decoded app.EditableConfig
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
@@ -83,8 +85,8 @@ func TestConfigProviderSceneDevicesNilVsEmptyRoundTrip(t *testing.T) {
 	check("API JSON round trip", d, to)
 
 	// The provider's copy must not alias the SwKit config.
-	cfg.Scenes[2].Devices[0] = "mutated"
-	if sw.Scenes[2].Devices[0] != "L1" {
+	cfg.Scenes[0].Devices[0] = "mutated"
+	if sw.Scenes[0].Devices[0] != "L1" {
 		t.Error("GetEditableConfig aliased SceneConfig.Devices")
 	}
 
@@ -93,6 +95,12 @@ func TestConfigProviderSceneDevicesNilVsEmptyRoundTrip(t *testing.T) {
 	}
 	d, to = swDevices(sw.Scenes)
 	check("SaveConfig", d, to)
+
+	// SaveConfig must not alias the caller's config either.
+	decoded.Scenes[1].Devices[0] = "mutated"
+	if sw.Scenes[1].Devices[0] != "L2" {
+		t.Error("SaveConfig aliased SceneEditConfig.Devices")
+	}
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -104,16 +112,13 @@ func TestConfigProviderSceneDevicesNilVsEmptyRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &file); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := file.Scenes[0]["Devices"]; ok {
-		t.Errorf("legacy scene written with Devices: %s", raw)
+	if got := string(file.Scenes[1]["Devices"]); !strings.Contains(got, `"L2"`) {
+		t.Errorf("Devices written as %q, want [\"L2\"]", got)
 	}
-	if _, ok := file.Scenes[0]["ToggleTimeoutSeconds"]; ok {
+	if _, ok := file.Scenes[1]["ToggleTimeoutSeconds"]; ok {
 		t.Errorf("zero ToggleTimeoutSeconds written: %s", raw)
 	}
-	if got := string(file.Scenes[1]["Devices"]); got != "[]" {
-		t.Errorf("empty Devices written as %q, want []", got)
-	}
-	if got := string(file.Scenes[2]["ToggleTimeoutSeconds"]); got != "1800" {
+	if got := string(file.Scenes[0]["ToggleTimeoutSeconds"]); got != "1800" {
 		t.Errorf("ToggleTimeoutSeconds written as %q, want 1800", got)
 	}
 

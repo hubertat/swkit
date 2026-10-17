@@ -217,6 +217,7 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 			Name:            d.Name,
 			Type:            string(d.Type),
 			IsOn:            d.IsOn,
+			StateError:      d.StateError,
 			IsHealthy:       d.IsHealthy,
 			IsFaulty:        d.IsFaulty,
 			HomeKitEnabled:  d.HomeKitEnabled,
@@ -404,9 +405,12 @@ type apiDriver struct {
 }
 
 type apiDevice struct {
-	Name             string               `json:"name"`
-	Type             string               `json:"type"`
-	IsOn             bool                 `json:"is_on"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	IsOn bool   `json:"is_on"`
+	// StateError is non-empty when the device's state could not be read;
+	// IsOn is then meaningless (false by default), not "off".
+	StateError       string               `json:"state_error,omitempty"`
 	IsHealthy        bool                 `json:"is_healthy"`
 	IsFaulty         bool                 `json:"is_faulty"`
 	HomeKitEnabled   bool                 `json:"homekit_enabled"`

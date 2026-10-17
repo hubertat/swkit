@@ -243,6 +243,9 @@ func NewModelFromOptions(opts Options) Model {
 	if man, ok := provider.(app.IoNamesManager); ok {
 		m.ioNamesMan = man
 	}
+	// The config editor validates a save against fresh application state,
+	// as the web config-edit API does (see ConfigEditor.Save).
+	m.configEditor.SetStateSource(provider.GetState)
 	m.stateCh = provider.Subscribe(ctx, 500*time.Millisecond)
 
 	// Disconnects, panics, and server shutdown all kill the Bubble Tea
@@ -373,6 +376,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, clearExportMsg()
 
 	case ConfigSaveMsg:
+		var validationErr *ConfigValidationError
+		m.configEditor.saveProblems = nil
 		switch {
 		case msg.Error == nil:
 			m.configEditor.statusMsg = "Saved, reloading..."
@@ -394,6 +399,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// whenever the user gets back to it, whether that's now or later.
 			m.configEditor.statusMsg = "Config changed elsewhere since you loaded it - your edits are kept, but not saved. Press Ctrl+R/Ctrl+S again to be asked whether to discard them and load the latest version."
 			m.configEditor.saveConflict = true
+		case errors.As(msg.Error, &validationErr):
+			// Nothing was written and no reload was triggered (see
+			// ConfigEditor.Save). Keep dirty so the edits survive, and list
+			// the problems persistently under the status line (viewStatus):
+			// this one-line summary fades like any save message, the list
+			// stays until the next save attempt or a reload.
+			m.configEditor.statusMsg = fmt.Sprintf("Save refused: config has %d problem(s) - nothing written, no reload", len(validationErr.Problems))
+			m.configEditor.saveProblems = validationErr.Problems
+			m.configEditor.saveConflict = false
 		default:
 			m.configEditor.statusMsg = "Save error: " + msg.Error.Error()
 			m.configEditor.saveConflict = false

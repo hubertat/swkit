@@ -254,3 +254,41 @@ func TestApiSummaryScenesCount(t *testing.T) {
 		t.Errorf(`raw JSON: summary["dimmable_lights_count"] = %v (present=%v), want 1`, v, ok)
 	}
 }
+
+// TestApiStateCarriesStateError: a healthy device whose state read failed
+// reports is_on false, so /api/state must carry state_error for clients
+// (the Scene Studio picker) to show it as unknown rather than off. A device
+// read fine must not get the key at all.
+func TestApiStateCarriesStateError(t *testing.T) {
+	fake := &fakeStateProvider{state: app.AppState{
+		Devices: []app.DeviceState{
+			{Name: "Hall", Type: app.DeviceTypeLight, IsHealthy: true, StateError: "wago driver: state is stale"},
+			{Name: "Porch", Type: app.DeviceTypeLight, IsHealthy: true},
+		},
+	}}
+	ws, err := NewWebServerWithConfig(fake, 0, log.New(nil), WebServerOptions{})
+	if err != nil {
+		t.Fatalf("NewWebServerWithConfig: %v", err)
+	}
+	w := httptest.NewRecorder()
+	ws.handleApiState(w, httptest.NewRequest("GET", "/api/state", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+	var raw struct {
+		Devices []map[string]any `json:"devices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	byName := map[string]map[string]any{}
+	for _, d := range raw.Devices {
+		byName[d["name"].(string)] = d
+	}
+	if got, _ := byName["Hall"]["state_error"].(string); got != "wago driver: state is stale" {
+		t.Errorf("Hall state_error = %q, want the read error", got)
+	}
+	if _, ok := byName["Porch"]["state_error"]; ok {
+		t.Error("Porch: state_error present for a device read fine")
+	}
+}

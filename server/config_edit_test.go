@@ -694,7 +694,8 @@ func TestConfigEdit_ValidationSceneActionParseFailure(t *testing.T) {
 	ws := newValidationTestServer(t)
 	cfg := app.EditableConfig{
 		Scenes: []app.SceneEditConfig{{
-			Name: "Evening",
+			Name:    "Evening",
+			Devices: []string{"Mood"},
 			States: []app.SceneStateEditConfig{
 				{Name: "cozy", Actions: []string{"not a valid action"}},
 			},
@@ -707,7 +708,8 @@ func TestConfigEdit_ValidationSceneActionDanglingTarget(t *testing.T) {
 	ws := newValidationTestServer(t)
 	cfg := app.EditableConfig{
 		Scenes: []app.SceneEditConfig{{
-			Name: "Evening",
+			Name:    "Evening",
+			Devices: []string{"Nonexistent"},
 			States: []app.SceneStateEditConfig{
 				{Name: "cozy", Actions: []string{"toggle:Nonexistent"}},
 			},
@@ -721,7 +723,8 @@ func TestConfigEdit_ValidationSceneActionLevelOutOfRange(t *testing.T) {
 	cfg := app.EditableConfig{
 		DimmableLights: []app.DimmableLightEditConfig{{Name: "Hall", DigitalOutName: "gpio|d_out|5", AnalogOutName: "gpio|a_out|1"}},
 		Scenes: []app.SceneEditConfig{{
-			Name: "Evening",
+			Name:    "Evening",
+			Devices: []string{"Hall"},
 			States: []app.SceneStateEditConfig{
 				{Name: "cozy", Actions: []string{"brightness:150:Hall"}},
 			},
@@ -803,7 +806,7 @@ func TestConfigEdit_ValidationNameWithColonRejectedEveryList(t *testing.T) {
 		DimmableLights: []app.DimmableLightEditConfig{{Name: "D:1", DigitalOutName: "gpio|d_out|6", AnalogOutName: "gpio|a_out|1"}},
 		Outlets:        []app.OutletEditConfig{{Name: "O:1", DigitalOutName: "gpio|d_out|7"}},
 		Buttons:        []app.ButtonEditConfig{{Name: "B:1", EventInputName: "shelly|push_event|dev123:0"}},
-		Scenes:         []app.SceneEditConfig{{Name: "S:1"}},
+		Scenes:         []app.SceneEditConfig{{Name: "S:1", Devices: []string{"Mood"}, States: []app.SceneStateEditConfig{{Name: "Off"}}}},
 	}
 	errs := postAndExpectErrors(t, ws, cfg, "must not contain ':'")
 	count := 0
@@ -823,7 +826,8 @@ func TestConfigEdit_ValidationSceneActionSelfReference(t *testing.T) {
 	ws := newValidationTestServer(t)
 	cfg := app.EditableConfig{
 		Scenes: []app.SceneEditConfig{{
-			Name: "Evening",
+			Name:    "Evening",
+			Devices: []string{"Evening"},
 			States: []app.SceneStateEditConfig{
 				{Name: "cozy", Actions: []string{"toggle:Evening"}},
 			},
@@ -837,12 +841,13 @@ func TestConfigEdit_ValidationSceneActionForwardReference(t *testing.T) {
 	cfg := app.EditableConfig{
 		Scenes: []app.SceneEditConfig{
 			{
-				Name: "Evening",
+				Name:    "Evening",
+				Devices: []string{"Night"},
 				States: []app.SceneStateEditConfig{
 					{Name: "cozy", Actions: []string{"toggle:Night"}},
 				},
 			},
-			{Name: "Night", States: []app.SceneStateEditConfig{{Name: "on", Actions: nil}}},
+			{Name: "Night", Devices: []string{"Mood"}, States: []app.SceneStateEditConfig{{Name: "on", Actions: nil}}},
 		},
 	}
 	postAndExpectErrors(t, ws, cfg, "may only target earlier scenes")
@@ -852,9 +857,10 @@ func TestConfigEdit_ValidationSceneActionAllowsEarlierScene(t *testing.T) {
 	ws := newValidationTestServer(t)
 	cfg := app.EditableConfig{
 		Scenes: []app.SceneEditConfig{
-			{Name: "Night", States: []app.SceneStateEditConfig{{Name: "on", Actions: nil}}},
+			{Name: "Night", Devices: []string{"Mood"}, States: []app.SceneStateEditConfig{{Name: "on", Actions: nil}}},
 			{
-				Name: "Evening",
+				Name:    "Evening",
+				Devices: []string{"Night"},
 				States: []app.SceneStateEditConfig{
 					{Name: "cozy", Actions: []string{"toggle:Night"}},
 				},
@@ -874,8 +880,9 @@ func TestConfigEdit_ValidationSceneStateEmptyName(t *testing.T) {
 	ws := newValidationTestServer(t)
 	cfg := app.EditableConfig{
 		Scenes: []app.SceneEditConfig{{
-			Name:   "Evening",
-			States: []app.SceneStateEditConfig{{Name: "  ", Actions: nil}},
+			Name:    "Evening",
+			Devices: []string{"Mood"},
+			States:  []app.SceneStateEditConfig{{Name: "  ", Actions: nil}},
 		}},
 	}
 	postAndExpectErrors(t, ws, cfg, "state name must not be empty")
@@ -885,7 +892,8 @@ func TestConfigEdit_ValidationSceneStateDuplicateName(t *testing.T) {
 	ws := newValidationTestServer(t)
 	cfg := app.EditableConfig{
 		Scenes: []app.SceneEditConfig{{
-			Name: "Evening",
+			Name:    "Evening",
+			Devices: []string{"Mood"},
 			States: []app.SceneStateEditConfig{
 				{Name: "cozy", Actions: nil},
 				{Name: "cozy", Actions: nil},
@@ -917,7 +925,8 @@ func TestConfigEdit_ValidationSceneActionBrightnessOnOutlet(t *testing.T) {
 	cfg := app.EditableConfig{
 		Outlets: []app.OutletEditConfig{{Name: "Fan", DigitalOutName: "gpio|d_out|5"}},
 		Scenes: []app.SceneEditConfig{{
-			Name: "Evening",
+			Name:    "Evening",
+			Devices: []string{"Fan"},
 			States: []app.SceneStateEditConfig{
 				{Name: "cozy", Actions: []string{"brightness:50:Fan"}},
 			},
@@ -930,9 +939,10 @@ func TestConfigEdit_ValidationSceneActionBrightnessOnScene(t *testing.T) {
 	ws := newValidationTestServer(t)
 	cfg := app.EditableConfig{
 		Scenes: []app.SceneEditConfig{
-			{Name: "Night", States: []app.SceneStateEditConfig{{Name: "on", Actions: nil}}},
+			{Name: "Night", Devices: []string{"Mood"}, States: []app.SceneStateEditConfig{{Name: "on", Actions: nil}}},
 			{
-				Name: "Evening",
+				Name:    "Evening",
+				Devices: []string{"Night"},
 				States: []app.SceneStateEditConfig{
 					{Name: "cozy", Actions: []string{"brightness:50:Night"}},
 				},
@@ -1095,7 +1105,8 @@ func TestConfigEdit_PostSuccessRoundTripsControlRelationsAndSceneActionsByteIden
 			},
 		}},
 		Scenes: []app.SceneEditConfig{{
-			Name: "Evening",
+			Name:    "Evening",
+			Devices: []string{"Hall", "Fan", "Living Room"},
 			States: []app.SceneStateEditConfig{
 				{Name: "cozy", Actions: []string{"brightness:40:Hall", "on:Fan", "toggle:Living Room"}},
 			},
@@ -1175,7 +1186,8 @@ func TestConfigEdit_ValidationSceneDelayedStepsAccepted(t *testing.T) {
 	cfg := app.EditableConfig{
 		DimmableLights: []app.DimmableLightEditConfig{{Name: "Hall", DigitalOutName: "gpio|d_out|5", AnalogOutName: "gpio|a_out|1"}},
 		Scenes: []app.SceneEditConfig{{
-			Name: "Evening",
+			Name:    "Evening",
+			Devices: []string{"Hall"},
 			States: []app.SceneStateEditConfig{
 				{Name: "off", Actions: []string{"off:Hall"}},
 				{Name: "cozy", Actions: []string{"brightness:60:Hall", "after:30s:brightness:30:Hall", "after:2h:off:Hall"}},
@@ -1194,7 +1206,8 @@ func TestConfigEdit_ValidationSceneDelayTooLong(t *testing.T) {
 	cfg := app.EditableConfig{
 		Lights: []app.LightEditConfig{{Name: "Porch", DigitalOutName: "gpio|d_out|5"}},
 		Scenes: []app.SceneEditConfig{{
-			Name: "Away",
+			Name:    "Away",
+			Devices: []string{"Porch"},
 			States: []app.SceneStateEditConfig{
 				{Name: "on", Actions: []string{"after:48h:off:Porch"}},
 			},

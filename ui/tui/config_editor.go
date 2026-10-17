@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -27,6 +28,7 @@ const (
 	ConfigModeEditButton
 	ConfigModeEditScene        // edit a scene: name + list of states
 	ConfigModeEditSceneState   // edit one state of a scene: name + list of actions
+	ConfigModeSceneDevices     // checklist of the current scene's devices
 	ConfigModeAddSelector      // inline device type picker when pressing 'a'
 	ConfigModeIoPicker         // inline IO point browser for IO field assignment
 	ConfigModeCtrlWizardDevice // wizard step 1: pick target output device
@@ -94,6 +96,31 @@ type ConfigSaveMsg struct {
 	Error error
 }
 
+// ConfigValidationError is the ConfigSaveMsg error when Save refused to
+// persist a config that fails app.ValidateEditableConfig: nothing was
+// written and no application reload was triggered.
+type ConfigValidationError struct {
+	Problems []string
+}
+
+func (e *ConfigValidationError) Error() string {
+	return fmt.Sprintf("config has %d problem(s): %s", len(e.Problems), strings.Join(e.Problems, "; "))
+}
+
+// errNoStateSource is returned by Save when the editor has no way to read the
+// application state that validation needs (configured drivers, color
+// lights). Saving unvalidated is exactly what Save must never do, so this
+// fails closed.
+var errNoStateSource = errors.New("cannot validate config: no application state available")
+
+// maxShownSaveProblems and maxSaveProblemWidth bound the validation-problem
+// list under the status line, so a config with many problems (or very long
+// messages) cannot push the editor itself off screen.
+const (
+	maxShownSaveProblems = 5
+	maxSaveProblemWidth  = 110
+)
+
 // ConfigEditor is the config editing TUI component
 type ConfigEditor struct {
 	provider app.ConfigProvider
@@ -131,6 +158,12 @@ type ConfigEditor struct {
 	sceneStateIndex    int  // which state of the current scene is being edited
 	sceneActionEditing bool // inline action editor active
 	sceneActionField   int  // 0=action, 1=device, 2=level
+	sceneDeviceCursor  int  // cursor in the scene device checklist
+	// sceneDevicesNewScene is set when the checklist was opened on a brand
+	// new scene (no states, no devices): each device chosen then is added
+	// off in state 0 and on in state 1 ("Off"/"On", created on the first
+	// pick), mirroring the web Scene Studio's new-scene default.
+	sceneDevicesNewScene bool
 
 	// Type selector state (ConfigModeAddSelector)
 	addTypeCursor int
@@ -157,6 +190,16 @@ type ConfigEditor struct {
 
 	// Status
 	statusMsg string
+	// saveProblems lists why the last Save was refused (see
+	// ConfigValidationError). Unlike statusMsg it does not fade: it stays
+	// under the status line while the user fixes the config, until the next
+	// save attempt reports back or the editor reloads.
+	saveProblems []string
+
+	// stateSource returns the application state Save validates against
+	// (configured drivers and color lights live outside EditableConfig).
+	// Set by the Model via SetStateSource; nil makes Save refuse.
+	stateSource func() app.AppState
 
 	theme Theme
 }
@@ -187,6 +230,13 @@ func NewConfigEditor(provider app.ConfigProvider, theme Theme) ConfigEditor {
 	}
 
 	return ce
+}
+
+// SetStateSource sets where Save reads the application state it validates
+// the config against. It is called off the Update goroutine (inside the save
+// command), the same way the web config-edit handler reads fresh state.
+func (ce *ConfigEditor) SetStateSource(fn func() app.AppState) {
+	ce.stateSource = fn
 }
 
 // SetIoPoints updates the IO points available for the IO picker
@@ -285,6 +335,7 @@ func (ce *ConfigEditor) Reload() {
 	ce.revision = ce.provider.Revision()
 	ce.config = ce.provider.GetEditableConfig()
 	ce.saveConflict = false
+	ce.saveProblems = nil
 	ce.rebuildItems()
 }
 
@@ -332,14 +383,35 @@ func (ce *ConfigEditor) HasSaveConflict() bool {
 // Save persists the current config, failing with app.ErrConfigRevisionMismatch
 // (via SaveConfigIfRevision) if the provider's config changed since this
 // editor loaded it - see the revision field.
+//
+// The config is first normalized and validated exactly as the web
+// config-edit API does (app.NormalizeEditableConfig,
+// app.ValidateEditableConfig). A config that fails validation is never
+// handed to the provider: saving it would trigger an application reload,
+// and reload tears the running controller down before Setup rejects the
+// config, leaving nothing running. Such a save fails with a
+// *ConfigValidationError instead, and the editor stays dirty.
 func (ce *ConfigEditor) Save() tea.Cmd {
 	if ce.provider == nil {
 		return nil
 	}
-	config := ce.config
+	// Normalize the editor's own copy (on the Update goroutine) so what is
+	// shown matches what gets validated and saved, then hand the command a
+	// private deep copy: it runs on another goroutine while editing goes on.
+	app.NormalizeEditableConfig(&ce.config)
+	ce.rebuildItems()
+	config := ce.config.Clone()
 	revision := ce.revision
+	provider := ce.provider
+	stateSource := ce.stateSource
 	return func() tea.Msg {
-		err := ce.provider.SaveConfigIfRevision(config, revision)
+		if stateSource == nil {
+			return ConfigSaveMsg{Error: errNoStateSource}
+		}
+		if problems := app.ValidateEditableConfig(config, stateSource()); len(problems) > 0 {
+			return ConfigSaveMsg{Error: &ConfigValidationError{Problems: problems}}
+		}
+		err := provider.SaveConfigIfRevision(config, revision)
 		return ConfigSaveMsg{Error: err}
 	}
 }
@@ -423,6 +495,8 @@ func (ce *ConfigEditor) Update(msg tea.Msg) tea.Cmd {
 		return ce.updateEditScene(msg)
 	case ConfigModeEditSceneState:
 		return ce.updateEditSceneState(msg)
+	case ConfigModeSceneDevices:
+		return ce.updateSceneDevices(msg)
 	case ConfigModeAddSelector:
 		keyMsg, ok := msg.(tea.KeyMsg)
 		if !ok {
@@ -1586,6 +1660,8 @@ func (ce *ConfigEditor) View(theme Theme, height int) string {
 		return ce.viewEditScene(theme)
 	case ConfigModeEditSceneState:
 		return ce.viewEditSceneState(theme)
+	case ConfigModeSceneDevices:
+		return ce.viewSceneDevices(theme, height)
 	case ConfigModeAddSelector:
 		return ce.viewAddSelector(theme)
 	case ConfigModeIoPicker:
@@ -2345,10 +2421,30 @@ func (ce *ConfigEditor) viewStatus(theme Theme) string {
 	if ce.statusMsg != "" {
 		parts = append(parts, theme.Success.Render(ce.statusMsg))
 	}
+	var out string
 	if len(parts) > 0 {
-		return "\n" + strings.Join(parts, "  ")
+		out = "\n" + strings.Join(parts, "  ")
 	}
-	return ""
+	if len(ce.saveProblems) > 0 {
+		out += "\n" + theme.Error.Render(fmt.Sprintf("Not saved - fix %d problem(s), then save again:", len(ce.saveProblems)))
+		for i, p := range ce.saveProblems {
+			if i == maxShownSaveProblems {
+				out += "\n" + theme.Muted.Render(fmt.Sprintf("  … and %d more", len(ce.saveProblems)-maxShownSaveProblems))
+				break
+			}
+			out += "\n" + theme.Error.Render("  • "+truncateRunes(p, maxSaveProblemWidth))
+		}
+	}
+	return out
+}
+
+// truncateRunes shortens s to at most n runes, marking a cut with "…".
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // ConfigHelpKeys returns context-appropriate help text
@@ -2388,6 +2484,16 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 				theme.HelpKey.Render("a")+" "+theme.HelpDesc.Render("add ctrl"),
 				theme.HelpKey.Render("d")+" "+theme.HelpDesc.Render("del ctrl"),
 			)
+		}
+		if ce.dirty {
+			parts = append(parts, theme.HelpKey.Render("ctrl+r")+" "+theme.HelpDesc.Render("save"))
+		}
+		return strings.Join(parts, "  ")
+	case ConfigModeSceneDevices:
+		parts := []string{
+			theme.HelpKey.Render("↑↓") + " " + theme.HelpDesc.Render("select"),
+			theme.HelpKey.Render("space") + " " + theme.HelpDesc.Render("add/remove"),
+			theme.HelpKey.Render("enter/esc") + " " + theme.HelpDesc.Render("done"),
 		}
 		if ce.dirty {
 			parts = append(parts, theme.HelpKey.Render("ctrl+r")+" "+theme.HelpDesc.Render("save"))
