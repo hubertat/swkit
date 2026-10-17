@@ -72,6 +72,20 @@ func (f *fakeRevisionConfigProvider) SaveConfigIfRevision(config app.EditableCon
 	return f.SaveConfig(config)
 }
 
+// mockDriverState is the application state the fixture configs validate
+// against: they only use the "mock" driver.
+func mockDriverState() app.AppState {
+	return app.AppState{Drivers: []app.DriverState{{Name: "mock"}}}
+}
+
+// newSavingConfigEditor builds a ConfigEditor over provider whose saves
+// validate against mockDriverState, as the Model wires it (SetStateSource).
+func newSavingConfigEditor(provider app.ConfigProvider) ConfigEditor {
+	ce := NewConfigEditor(provider, DefaultTheme())
+	ce.SetStateSource(mockDriverState)
+	return ce
+}
+
 func newFixtureConfig(lightName string) app.EditableConfig {
 	return app.EditableConfig{
 		Lights: []app.LightEditConfig{
@@ -99,7 +113,7 @@ func runSave(t *testing.T, ce *ConfigEditor) error {
 // revision through to SaveConfigIfRevision.
 func TestConfigEditorSaveUnchangedRevisionSucceeds(t *testing.T) {
 	provider := &fakeRevisionConfigProvider{cfg: newFixtureConfig("Kitchen")}
-	ce := NewConfigEditor(provider, DefaultTheme())
+	ce := newSavingConfigEditor(provider)
 
 	ce.config.Lights[0].DigitalOutName = "mock|d_out|2"
 	ce.dirty = true
@@ -120,7 +134,7 @@ func TestConfigEditorSaveUnchangedRevisionSucceeds(t *testing.T) {
 // leaving the editor dirty.
 func TestConfigEditorSaveStaleRevisionFailsWithoutOverwriting(t *testing.T) {
 	provider := &fakeRevisionConfigProvider{cfg: newFixtureConfig("Kitchen")}
-	ce := NewConfigEditor(provider, DefaultTheme())
+	ce := newSavingConfigEditor(provider)
 
 	// Simulate an out-of-band change (e.g. a web-UI save) landing after
 	// this editor loaded its snapshot but before it saves.
@@ -154,7 +168,7 @@ func TestConfigEditorSaveStaleRevisionFailsWithoutOverwriting(t *testing.T) {
 // succeeds.
 func TestConfigEditorReloadRefreshesConfigAndRevisionThenSaveSucceeds(t *testing.T) {
 	provider := &fakeRevisionConfigProvider{cfg: newFixtureConfig("Kitchen")}
-	ce := NewConfigEditor(provider, DefaultTheme())
+	ce := newSavingConfigEditor(provider)
 
 	// Out-of-band change lands, invalidating ce's original revision.
 	provider.cfg = newFixtureConfig("Kitchen (renamed elsewhere)")

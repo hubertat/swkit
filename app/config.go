@@ -1,6 +1,9 @@
 package app
 
-import "errors"
+import (
+	"errors"
+	"slices"
+)
 
 // ErrConfigRevisionMismatch is returned by SaveConfigIfRevision when the
 // caller's expectedRevision no longer matches the provider's current
@@ -41,6 +44,30 @@ type EditableConfig struct {
 	Scenes         []SceneEditConfig
 	// OutputDeviceNames provides available target device names for button control relations
 	OutputDeviceNames []string
+}
+
+// Clone returns a deep copy of c: no slice in the result aliases c, so the
+// copy can be normalized, validated or saved on another goroutine while the
+// original keeps being edited.
+func (c EditableConfig) Clone() EditableConfig {
+	out := c
+	out.Lights = slices.Clone(c.Lights)
+	out.DimmableLights = slices.Clone(c.DimmableLights)
+	out.Outlets = slices.Clone(c.Outlets)
+	out.Buttons = slices.Clone(c.Buttons)
+	for i := range out.Buttons {
+		out.Buttons[i].ControlDevices = slices.Clone(out.Buttons[i].ControlDevices)
+	}
+	out.Scenes = slices.Clone(c.Scenes)
+	for i := range out.Scenes {
+		out.Scenes[i].Devices = slices.Clone(out.Scenes[i].Devices)
+		out.Scenes[i].States = slices.Clone(out.Scenes[i].States)
+		for j := range out.Scenes[i].States {
+			out.Scenes[i].States[j].Actions = slices.Clone(out.Scenes[i].States[j].Actions)
+		}
+	}
+	out.OutputDeviceNames = slices.Clone(c.OutputDeviceNames)
+	return out
 }
 
 // LightEditConfig represents an editable Light configuration

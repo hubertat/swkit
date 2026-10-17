@@ -144,7 +144,7 @@ func TestConfigEditorSceneDeviceCandidates(t *testing.T) {
 	}
 
 	openSceneDevices(t, &ce, 1)
-	view := ce.viewSceneDevices(DefaultTheme())
+	view := ce.viewSceneDevices(DefaultTheme(), -1)
 	if !strings.Contains(view, "[x] ") || !strings.Contains(view, "[ ] ") || strings.Contains(view, "Late") {
 		t.Errorf("checklist view:\n%s", view)
 	}

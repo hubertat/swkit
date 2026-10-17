@@ -1957,7 +1957,7 @@
     // uniqueStateName mirrors uniquePlaceholderName's idiom (probe, bump,
     // retry) but scoped to one scene's own States list instead of the
     // cross-kind device-name set - state names only need to be unique within
-    // their own scene (validateEditableConfig's seenStates check, mirrored
+    // their own scene (app.ValidateEditableConfig's seenStates check, mirrored
     // client-side by buildSceneStateNameField). Finding F4: deriving the
     // candidate purely from states.length (as this used to) breaks the
     // instant a state is removed from the middle/end of the list, e.g.
@@ -2394,7 +2394,7 @@
     // scenes sequentially and resolves each action's target via
     // resolveControllable, which only ever sees scenes already appended - so
     // an action may target an earlier scene, never itself or a later one
-    // (mirrors the sceneIndex check in config_edit.go's validateEditableConfig).
+    // (mirrors the sceneIndex check in app.ValidateEditableConfig).
     // Non-scene targets (lights, dimmable lights, outlets, color lights) carry
     // no such ordering constraint. Button control relations have no ordering
     // constraint at all (buttons aren't built in dependency order relative to
@@ -2417,7 +2417,7 @@
     // (DimmableLight is the only runtime type that implements app.Dimmable;
     // ColorLight and Scene do not implement SetBrightness). Used for both
     // button control-relation rows and scene action rows, since the server
-    // enforces the same rule for both (see validateEditableConfig's two call
+    // enforces the same rule for both (see app.ValidateEditableConfig's two call
     // sites of dimmableTargetTypes).
     function verbOptionsForTarget(name) {
         const meta = (S.editData && S.editData.meta) || {};
@@ -2630,7 +2630,7 @@
     // (no markDirty/redraw on an invalid edit, offending text stays visible)
     // but validates against the server's actual state-name rules (empty, or
     // duplicating another state's name within the same scene - see
-    // validateEditableConfig's seenStates check), instead of buildNameField's
+    // app.ValidateEditableConfig's seenStates check), instead of buildNameField's
     // device-name rules (empty, or containing ':').
     function buildSceneStateNameField(scene, st) {
         const wrap = mkEl('div', { class: 'edit-field' });

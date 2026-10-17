@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/hubertat/swkit/app"
 )
 
@@ -518,17 +519,21 @@ func (ce *ConfigEditor) renderSceneSettings(theme Theme, scene *app.SceneEditCon
 	}
 }
 
-// viewSceneDevices renders the scene device checklist.
-func (ce *ConfigEditor) viewSceneDevices(theme Theme) string {
+// viewSceneDevices renders the scene device checklist. The candidate rows
+// are windowed (windowLines, as the config list does) to fit height, so the
+// cursor row stays visible however many devices there are; a negative
+// height means unknown and shows every row.
+func (ce *ConfigEditor) viewSceneDevices(theme Theme, height int) string {
 	scene, ok := ce.currentSceneItem()
 	if !ok {
 		return theme.Muted.Render("No item selected")
 	}
 	candidates := ce.sceneDeviceCandidates(ce.currentSceneIndex())
 
-	lines := []string{theme.BoxTitle.Render(IconScene + " Scene Devices — " + theme.Primary.Render(scene.Name)), ""}
+	header := []string{theme.BoxTitle.Render(IconScene + " Scene Devices — " + theme.Primary.Render(scene.Name)), ""}
+	var rows []string
 	if len(candidates) == 0 {
-		lines = append(lines, theme.Muted.Render("  No devices available. Add a light or outlet first."))
+		rows = append(rows, theme.Muted.Render("  No devices available. Add a light or outlet first."))
 	}
 	for i, c := range candidates {
 		prefix := "  "
@@ -541,13 +546,31 @@ func (ce *ConfigEditor) viewSceneDevices(theme Theme) string {
 		if slices.Contains(scene.Devices, c.name) {
 			box = "[x]"
 		}
-		lines = append(lines, style.Render(prefix+box+" "+theme.Primary.Render(padRight(c.name, 22))+" "+theme.Muted.Render(c.kind)))
+		rows = append(rows, style.Render(prefix+box+" "+theme.Primary.Render(padRight(c.name, 22))+" "+theme.Muted.Render(c.kind)))
 	}
-	lines = append(lines, "", theme.Muted.Render("  Adding a device switches it off in state 0."),
-		theme.Muted.Render("  Removing one deletes its steps from every state."))
+	footer := []string{"", theme.Muted.Render("  Adding a device switches it off in state 0."),
+		theme.Muted.Render("  Removing one deletes its steps from every state.")}
+	status := ce.viewStatus(theme)
 
-	result := theme.Box.Width(55).Render(strings.Join(lines, "\n"))
-	result += ce.viewStatus(theme)
+	render := func(visible int) string {
+		lines := slices.Concat(header, []string{windowLines(theme, rows, ce.sceneDeviceCursor, visible)}, footer)
+		return theme.Box.Width(55).Render(strings.Join(lines, "\n")) + status
+	}
+	if height < 0 {
+		return render(-1)
+	}
+
+	// Reserve the box border, the fixed header/footer and the status
+	// line(s); then shrink further if long names wrap inside the box.
+	visible := height - 2 - len(header) - len(footer) - (lipgloss.Height(status) - 1)
+	if visible < 1 {
+		visible = 1
+	}
+	result := render(visible)
+	for visible > 1 && lipgloss.Height(result) > height {
+		visible--
+		result = render(visible)
+	}
 	return result
 }
 

@@ -36,6 +36,7 @@ This document describes the current TUI implementation, its scope, abstraction l
 - Button control mappings editable inline (event/action/device cycling).
 - `ctrl+r` saves via `ConfigProvider` (works over SSH; `ctrl+s` is also supported locally but may be intercepted by SSH terminals as XON/XOFF). When clean, the same key refreshes the editor snapshot and requests an application config reload.
 - Saves are revision-checked; a stale save is refused and prompts before discarding local edits (see Data Flow below).
+- Saves are validated first with the same rules as the web config editor (`app.NormalizeEditableConfig` + `app.ValidateEditableConfig` against fresh `GetState()`); an invalid config is not written and no reload is triggered, the editor stays dirty, and the problems are listed under the status line (first 5, then "… and N more") until the next save attempt or reload.
 
 ### HomeKit
 - Read-only view: enabled status, PIN, address, accessory count.
