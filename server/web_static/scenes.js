@@ -819,14 +819,17 @@
     }
 
     // liveInfo says what a target is doing right now: now is on, off or
-    // unknown (no poll yet, not running, or not healthy, in which case is_on
-    // means nothing and is never shown as "off"); level is a dimmable
-    // light's brightness while it is on.
+    // unknown (no poll yet, not running, not healthy, or its state could not
+    // be read, in which case is_on means nothing and is never shown as
+    // "off"); level is a dimmable light's brightness while it is on.
     function liveInfo(name) {
         const d = liveTarget(name);
         if (!d) return { now: 'unknown', text: S.live ? 'Unknown' : '…', level: null };
         if (d.is_faulty) return { now: 'unknown', text: 'Fault', level: null };
         if (d.is_healthy === false) return { now: 'unknown', text: 'Not responding', level: null };
+        // A healthy device whose state read failed reports is_on: false; that
+        // is not "Off".
+        if (d.state_error) return { now: 'unknown', text: 'Unknown', level: null };
         if (d.type === 'scene') {
             const idx = d.scene_state_index || 0;
             const stName = (d.scene_state_names || [])[idx] || (idx ? 'State ' + idx : 'Off');
