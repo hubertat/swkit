@@ -273,7 +273,7 @@ function intentFor(dev, slot, kind) {
     let it = slots[slot];
     if (it && it.kind !== kind && !it.inFlight) { clearIntent(dev.index, slot, it); it = null; }
     if (!it) {
-        it = { slot, kind, name: dev.name, target: null, phase: 'sending', ackAt: 0, inFlight: false, debouncing: false, queue: [] };
+        it = { slot, kind, name: dev.name, target: null, phase: 'sending', ackAt: 0, inFlight: false, debouncing: false, queue: [], resolveAny: false };
         slots[slot] = it;
     }
     it.kind = kind;
@@ -296,9 +296,9 @@ function pump(index, it) {
     it.phase = 'sending';
     updateDevice(index);
     request(job.path, { method: 'POST', body: job.body })
-        .then(() => {
+        .then(resp => {
             it.inFlight = false;
-            if (job.onAck) job.onAck();
+            if (job.onAck) job.onAck(resp);
             pump(index, it);
         })
         .catch(e => {
@@ -352,6 +352,12 @@ function confirms(it, dev, pollStartedAt) {
         case 'bri':
             return Math.abs((dev.brightness || 0) - it.target) <= 1;
         case 'scene':
+            // The server answered the last toggle authoritatively (it.resolveAny),
+            // so a poll that started after that answer settles the intent whatever
+            // it reports: a different value means another controller moved the
+            // scene since, not that this tap failed.
+            // An ack followed by failing polls can already have gone amber.
+            if (it.resolveAny && pollStartedAt >= it.ackAt && (it.phase === 'waiting' || it.phase === 'unconfirmed')) return true;
             return (dev.scene_index || 0) === it.target;
     }
     return false;
@@ -367,11 +373,23 @@ function setPower(dev, target, opts = {}) {
 
     if (dev.type === 'scene') {
         const prev = getIntent(index, 'power');
-        const from = live(prev) ? prev.target : (dev.scene_index || 0);
+        const count = dev.scene_count || 2;
+        const wasLive = live(prev) && prev.kind === 'scene';
         it = intentFor(dev, 'power', 'scene');
-        it.target = (from + 1) % (dev.scene_count || 2);
+        // The server picks the next state (a toggle timeout may send it back to
+        // state 0), so the first tap follows its prediction, scene_next; taps
+        // on top of a live intent step on from the previous target. Each ack
+        // reports the real state and corrects this.
+        if (wasLive) it.target = (prev.target + 1) % count;
+        else if (typeof dev.scene_next === 'number') it.target = dev.scene_next % count;
+        else it.target = ((dev.scene_index || 0) + 1) % count;
+        it.resolveAny = false;
         // Every tap is one step forward, so scene toggles queue up.
-        it.queue.push({ path: base + 'toggle', verb: 'switch ' + dev.name });
+        it.queue.push({
+            path: base + 'toggle',
+            verb: 'switch ' + dev.name,
+            onAck: resp => sceneAcked(index, it, resp),
+        });
     } else {
         // Explicit "set" is idempotent, so a repeated tap or a stale cache
         // can't flip the device twice. Toggle only when the state is unknown.
@@ -398,6 +416,20 @@ function setPower(dev, target, opts = {}) {
     haptic();
     updateDevice(index);
     pump(index, it);
+}
+
+// sceneAcked reconciles a scene intent with the state the server actually
+// selected: that index, advanced once per toggle still queued behind it.
+function sceneAcked(index, it, resp) {
+    if (getIntent(index, it.slot) !== it) return;
+    const dev = devices.get(index);
+    const count = (dev && dev.scene_count) || 2;
+    if (resp && typeof resp.scene_index === 'number') {
+        it.target = (resp.scene_index + it.queue.length) % count;
+        it.resolveAny = true;
+    } else {
+        it.resolveAny = false; // older server: only an exact match confirms
+    }
 }
 
 function tapDevice(dev) {
@@ -833,7 +865,7 @@ function renderSheet(fresh) {
     // Rebuild the controls only when what they show changes, never on the
     // once-a-second tick: replacing a button mid-tap would swallow the tap.
     const body = document.getElementById('sheet-body');
-    const sig = [dev.index, dev.name, s.on, s.onKnown, s.sync, s.bri, dev.scene_index, dev.scene_state, dev.last_event_type,
+    const sig = [dev.index, dev.name, s.on, s.onKnown, s.sync, s.bri, dev.scene_index, dev.scene_next, dev.scene_state, dev.last_event_type,
         s.kind === 'input' ? Math.floor(eventAge(dev) / 5000) : 0].join('|');
     const activeRange = body.querySelector('.range[data-active]');
     if (activeRange && !fresh) {
@@ -885,13 +917,21 @@ function renderSheet(fresh) {
             h('div', { class: 'sheet-label' }, timedOn ? 'Turn on for' : 'Turn off for'),
             h('div', { class: 'chips' }, timers)));
     } else if (s.kind === 'scene') {
+        const count = dev.scene_count || 2;
+        const following = ((dev.scene_index || 0) + 1) % count;
+        const reset = typeof dev.scene_next === 'number' && dev.scene_next !== following;
+        // Only the active state's name is in the API, so a normal step is shown
+        // by position; a timeout reset always goes to the first state.
+        const nextTap = reset ? 'Off (first state), idle timeout'
+            : (typeof dev.scene_next === 'number' ? 'State ' + (dev.scene_next + 1) + ' of ' + count : null);
         const next = h('button', { class: 'pick', type: 'button', style: 'width:100%' }, 'Next state');
         next.addEventListener('click', () => setPower(dev, null));
         parts.push(h('div', null,
             h('div', { class: 'sheet-label' }, 'Scene'),
             h('dl', { class: 'kv', style: 'margin-bottom:10px' },
                 h('dt', null, 'Active'), h('dd', null, dev.scene_state || '—'),
-                h('dt', null, 'Position'), h('dd', null, ((dev.scene_index || 0) + 1) + ' of ' + (dev.scene_count || '?'))),
+                h('dt', null, 'Position'), h('dd', null, ((dev.scene_index || 0) + 1) + ' of ' + (dev.scene_count || '?')),
+                nextTap ? [h('dt', null, 'Next tap'), h('dd', null, nextTap)] : null),
             next));
     } else {
         parts.push(h('dl', { class: 'kv' },

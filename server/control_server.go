@@ -211,6 +211,10 @@ type controlDeviceResponse struct {
 	SceneState string `json:"scene_state,omitempty"`
 	SceneIndex int    `json:"scene_index,omitempty"`
 	SceneCount int    `json:"scene_count,omitempty"`
+	// SceneNext is the state a toggle would select now (scenes only; a
+	// pointer so a real 0, e.g. after a toggle timeout, is still sent). A
+	// prediction: the toggle response's scene_index is authoritative.
+	SceneNext *int `json:"scene_next,omitempty"`
 	// LastEventAgeMs is how long ago the button's last event happened, so the
 	// client can show a relative time without trusting its own clock.
 	LastEventAgeMs int64 `json:"last_event_age_ms,omitempty"`
@@ -253,6 +257,10 @@ func (cs *ControlServer) handleDeviceList(w http.ResponseWriter, r *http.Request
 		if d.Type == app.DeviceTypeScene {
 			resp.SceneIndex = d.SceneStateIndex
 			resp.SceneCount = len(d.SceneStateNames)
+			if len(d.SceneStateNames) > 0 { // a scene with no states has no next state
+				next := d.SceneNextIndex
+				resp.SceneNext = &next
+			}
 			if d.SceneStateIndex >= 0 && d.SceneStateIndex < len(d.SceneStateNames) {
 				resp.SceneState = d.SceneStateNames[d.SceneStateIndex]
 			}
@@ -270,6 +278,9 @@ type controlActionResponse struct {
 	DeviceName string `json:"device_name"`
 	Action     string `json:"action"`
 	IsOn       bool   `json:"is_on"`
+	// SceneIndex is present only for a scene toggle: the state the server
+	// actually selected (authoritative, unlike the list's scene_next).
+	SceneIndex *int `json:"scene_index,omitempty"`
 }
 
 // handleDeviceAction routes POST requests to toggle or set
@@ -352,5 +363,6 @@ func (cs *ControlServer) handleDeviceAction(w http.ResponseWriter, r *http.Reque
 		DeviceName: result.DeviceName,
 		Action:     result.Action,
 		IsOn:       result.NewState,
+		SceneIndex: result.SceneIndex,
 	})
 }

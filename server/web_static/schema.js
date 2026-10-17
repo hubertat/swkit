@@ -1888,11 +1888,15 @@
                 }));
             }),
             Scenes: (cfg.Scenes || []).map(function(s) {
-                return withEditId(Object.assign({}, s, {
+                const copy = withEditId(Object.assign({}, s, {
                     States: (s.States || []).map(function(st) {
                         return Object.assign({}, st, { Actions: (st.Actions || []).slice() });
                     }),
                 }));
+                // A managed scene's device list is copied too (an absent/null
+                // list stays as it is: that is what marks a legacy scene).
+                if (Array.isArray(s.Devices)) copy.Devices = s.Devices.slice();
+                return copy;
             }),
         };
     }
@@ -1975,8 +1979,8 @@
     }
 
     // propagateRename rewrites every reference to oldName in the working copy
-    // (button control-relation targets, scene action device names) to
-    // newName. Called once, at rename commit (blur), for controllable kinds.
+    // (button control-relation targets, scene action device names, managed
+    // scenes' device lists) to newName. Called once, at rename commit (blur), for controllable kinds.
     function propagateRename(oldName, newName) {
         (S.working.Buttons || []).forEach(function(b) {
             (b.ControlDevices || []).forEach(function(cd) {
@@ -1984,6 +1988,9 @@
             });
         });
         (S.working.Scenes || []).forEach(function(s) {
+            if (Array.isArray(s.Devices)) {
+                s.Devices = s.Devices.map(function(d) { return d === oldName ? newName : d; });
+            }
             (s.States || []).forEach(function(st) {
                 st.Actions = (st.Actions || []).map(function(actionStr) {
                     const parsed = parseActionString(actionStr);
@@ -2382,9 +2389,13 @@
     // no such ordering constraint. Button control relations have no ordering
     // constraint at all (buttons aren't built in dependency order relative to
     // their targets), so they keep the unfiltered targetNameOptions() list.
+    // A managed scene (Devices is an array) may only target its own device
+    // list (mirrors app.ValidateSceneConfig).
     function sceneTargetNameOptions(scene) {
         const idx = S.working.Scenes.indexOf(scene);
+        const listed = Array.isArray(scene.Devices) ? new Set(scene.Devices) : null;
         return targetNameOptions().filter(function(name) {
+            if (listed && !listed.has(name)) return false;
             const sceneIdx = S.working.Scenes.findIndex(function(s) { return s.Name === name; });
             return sceneIdx === -1 || sceneIdx < idx;
         });
@@ -2690,7 +2701,9 @@
             // device, which would just fail validation on save with a
             // confusing "target device "" does not exist" error.
             addActionBtn.disabled = true;
-            addActionBtn.title = 'No valid target exists yet - add a light, outlet, dimmable light, or an earlier scene first';
+            addActionBtn.title = Array.isArray(scene.Devices)
+                ? 'None of this scene\'s devices is a valid target - edit its device list in the Scenes tab'
+                : 'No valid target exists yet - add a light, outlet, dimmable light, or an earlier scene first';
         } else {
             addActionBtn.addEventListener('click', function() {
                 st.Actions.push(formatActionString({ verb: 'on', level: 0, device: defaultTargets[0] }));

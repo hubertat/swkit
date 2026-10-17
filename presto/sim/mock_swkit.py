@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOCK = threading.Lock()
 REPORT_DELAY = (0.6, 1.6)
+TOGGLE_TIMEOUT = 20   # seconds idle before a scene's next toggle returns to state 0
 
 DEVICES = [
     {"name": "Kitchen", "type": "light"},
@@ -45,12 +46,21 @@ def init():
         d.setdefault("is_healthy", True)
         d.setdefault("brightness", 0)
         d["index"] = i
-        d["scene_index"] = 0
+        d["scene_index"] = 0       # selected state (published at toggle time)
+        d["changed_at"] = time.time()
         d["last_event_time"] = None
 
 
 def later(fn):
     threading.Timer(random.uniform(*REPORT_DELAY), fn).start()
+
+
+def next_state(d):
+    """What a toggle would select now: state 0 after TOGGLE_TIMEOUT idle seconds."""
+    n = len(d["scene_states"])
+    if d["scene_index"] != 0 and time.time() - d["changed_at"] >= TOGGLE_TIMEOUT:
+        return 0
+    return (d["scene_index"] + 1) % n
 
 
 def snapshot():
@@ -71,6 +81,7 @@ def snapshot():
             r["scene_index"] = d["scene_index"]
             r["scene_count"] = len(d["scene_states"])
             r["scene_state"] = d["scene_states"][d["scene_index"]]
+            r["scene_next"] = next_state(d)
         if t == "button" and d["last_event_time"]:
             r["last_event_type"] = d["last_event_type"]
             r["last_event_age_ms"] = max(1, int((now - d["last_event_time"]) * 1000))
@@ -127,8 +138,11 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             if action == "toggle":
                 if d["type"] == "scene":
-                    nxt = (d["scene_index"] + 1) % len(d["scene_states"])
-                    later(lambda: d.update(scene_index=nxt, is_on=nxt != 0))
+                    # Selected (and published) now; the lights follow after the delay.
+                    nxt = next_state(d)
+                    d.update(scene_index=nxt, changed_at=time.time())
+                    later(lambda: d.update(is_on=nxt != 0))
+                    return self.reply(200, {"device_name": d["name"], "action": action, "is_on": nxt != 0, "scene_index": nxt})
                 else:
                     v = not d["is_on"]
                     later(lambda: d.update(is_on=v))

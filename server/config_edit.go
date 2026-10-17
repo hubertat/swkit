@@ -196,6 +196,11 @@ func normalizeEditableConfig(cfg *app.EditableConfig) {
 	}
 	for i := range cfg.Scenes {
 		cfg.Scenes[i].Name = strings.TrimSpace(cfg.Scenes[i].Name)
+		// In place, so a nil list (legacy scene) stays nil and an empty
+		// one stays empty (and is rejected by validation).
+		for j := range cfg.Scenes[i].Devices {
+			cfg.Scenes[i].Devices[j] = strings.TrimSpace(cfg.Scenes[i].Devices[j])
+		}
 		for j := range cfg.Scenes[i].States {
 			cfg.Scenes[i].States[j].Name = strings.TrimSpace(cfg.Scenes[i].States[j].Name)
 			for k := range cfg.Scenes[i].States[j].Actions {
@@ -523,9 +528,34 @@ func validateEditableConfig(cfg app.EditableConfig, state app.AppState) []string
 		}
 	}
 
+	// sceneTargetError reports why name is not a valid target for a step (or
+	// device-list entry) of the scene at position i, or nil. SwKit.Setup
+	// builds scenes sequentially: a scene may only target a scene defined
+	// earlier in the list (see sceneIndex above and swkit.go
+	// resolveControllable). A forward reference or self-reference builds
+	// fine here but fails at reload.
+	sceneTargetError := func(i int, name string) error {
+		if !validTargets[name] {
+			return fmt.Errorf("target device %q does not exist", name)
+		}
+		if targetIdx, isScene := sceneIndex[name]; isScene && targetIdx >= i {
+			if targetIdx == i {
+				return fmt.Errorf("scene %q cannot target itself", name)
+			}
+			return fmt.Errorf("target scene %q is defined later than this scene; a scene may only target earlier scenes", name)
+		}
+		return nil
+	}
+
 	// ---- Scene actions ----
 	for i, s := range cfg.Scenes {
 		sceneLabel := deviceLabel("scene", s.Name)
+
+		// Scene-level rules shared with the runtime (swkit.NewScene): the
+		// toggle timeout range and, for a managed scene, its device list.
+		for _, err := range app.ValidateSceneConfig(s, func(name string) error { return sceneTargetError(i, name) }) {
+			errs = append(errs, fmt.Sprintf("%s: %v", sceneLabel, err))
+		}
 
 		seenStates := make(map[string]bool, len(s.States))
 		for _, st := range s.States {
@@ -548,20 +578,10 @@ func validateEditableConfig(cfg app.EditableConfig, state app.AppState) []string
 				if app.IsBrightnessVerb(act.Verb) && (act.Level < 0 || act.Level > 100) {
 					errs = append(errs, fmt.Sprintf("%s: level %d out of range (0-100) for brightness action", actLabel, act.Level))
 				}
-				if !validTargets[act.Device] {
-					errs = append(errs, fmt.Sprintf("%s: target device %q does not exist", actLabel, act.Device))
-					continue
-				}
-				// SwKit.Setup builds scenes sequentially: a scene action may
-				// only target a scene defined earlier in the list (see
-				// sceneIndex above and swkit.go resolveControllable). A
-				// forward reference or self-reference builds fine here but
-				// fails at reload.
-				if targetIdx, isScene := sceneIndex[act.Device]; isScene && targetIdx >= i {
-					if targetIdx == i {
-						errs = append(errs, fmt.Sprintf("%s: scene %q cannot target itself", actLabel, act.Device))
-					} else {
-						errs = append(errs, fmt.Sprintf("%s: target scene %q is defined later than this scene; a scene may only target earlier scenes", actLabel, act.Device))
+				if err := sceneTargetError(i, act.Device); err != nil {
+					errs = append(errs, fmt.Sprintf("%s: %v", actLabel, err))
+					if !validTargets[act.Device] {
+						continue
 					}
 				}
 				if app.IsBrightnessVerb(act.Verb) && !dimmableTargetTypes[targetType[act.Device]] {

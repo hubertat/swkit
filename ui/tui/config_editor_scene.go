@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,10 +24,21 @@ func (ce *ConfigEditor) currentSceneItem() (*app.SceneEditConfig, bool) {
 	return &ce.config.Scenes[item.index], true
 }
 
-// firstTargetDevice returns a sensible default action target.
-func (ce *ConfigEditor) firstTargetDevice() string {
-	if len(ce.config.OutputDeviceNames) > 0 {
-		return ce.config.OutputDeviceNames[0]
+// sceneTargetOptions returns the devices a step of scene may target: the
+// scene's own device list for a managed scene (Devices != nil), otherwise
+// every output device name (legacy scene).
+func (ce *ConfigEditor) sceneTargetOptions(scene *app.SceneEditConfig) []string {
+	if scene != nil && scene.Devices != nil {
+		return scene.Devices
+	}
+	return ce.config.OutputDeviceNames
+}
+
+// firstSceneTarget returns the default target for a new step of scene: its
+// first listed device for a managed scene, else the first output device.
+func (ce *ConfigEditor) firstSceneTarget(scene *app.SceneEditConfig) string {
+	if opts := ce.sceneTargetOptions(scene); len(opts) > 0 {
+		return opts[0]
 	}
 	return ""
 }
@@ -146,7 +158,7 @@ func (ce *ConfigEditor) updateEditSceneState(msg tea.Msg) tea.Cmd {
 		return ce.handleSceneStateNameEditing(keyMsg, state)
 	}
 	if ce.sceneActionEditing {
-		return ce.updateSceneActionEdit(keyMsg, state)
+		return ce.updateSceneActionEdit(keyMsg, scene, state)
 	}
 
 	totalFields := 1 + len(state.Actions) // Name + one row per action
@@ -171,7 +183,7 @@ func (ce *ConfigEditor) updateEditSceneState(msg tea.Msg) tea.Cmd {
 		ce.sceneActionField = 0
 		ce.sceneActionEditing = true
 	case "a":
-		state.Actions = append(state.Actions, app.Action{Verb: "on", Device: ce.firstTargetDevice()}.String())
+		state.Actions = append(state.Actions, app.Action{Verb: "on", Device: ce.firstSceneTarget(scene)}.String())
 		ce.dirty = true
 		ce.fieldCursor = len(state.Actions) // last action row
 	case "d", "delete":
@@ -214,7 +226,7 @@ func (ce *ConfigEditor) handleSceneStateNameEditing(msg tea.KeyMsg, state *app.S
 }
 
 // updateSceneActionEdit handles the inline action editor (action/device/level).
-func (ce *ConfigEditor) updateSceneActionEdit(msg tea.KeyMsg, state *app.SceneStateEditConfig) tea.Cmd {
+func (ce *ConfigEditor) updateSceneActionEdit(msg tea.KeyMsg, scene *app.SceneEditConfig, state *app.SceneStateEditConfig) tea.Cmd {
 	actIdx := ce.fieldCursor - 1
 	if actIdx < 0 || actIdx >= len(state.Actions) {
 		ce.sceneActionEditing = false
@@ -231,10 +243,10 @@ func (ce *ConfigEditor) updateSceneActionEdit(msg tea.KeyMsg, state *app.SceneSt
 			ce.sceneActionField++
 		}
 	case "left", "h":
-		ce.cycleSceneActionField(state, actIdx, -1)
+		ce.cycleSceneActionField(scene, state, actIdx, -1)
 		ce.dirty = true
 	case "right", "l":
-		ce.cycleSceneActionField(state, actIdx, 1)
+		ce.cycleSceneActionField(scene, state, actIdx, 1)
 		ce.dirty = true
 	case "+", "=":
 		ce.adjustSceneActionLevel(state, actIdx, 1)
@@ -262,22 +274,23 @@ func (ce *ConfigEditor) adjustSceneActionLevel(state *app.SceneStateEditConfig, 
 }
 
 // cycleSceneActionField mutates the action string at actIdx by cycling the
-// currently focused sub-field.
-func (ce *ConfigEditor) cycleSceneActionField(state *app.SceneStateEditConfig, actIdx, direction int) {
+// currently focused sub-field. In a managed scene the device cycles through
+// the scene's own device list only.
+func (ce *ConfigEditor) cycleSceneActionField(scene *app.SceneEditConfig, state *app.SceneStateEditConfig, actIdx, direction int) {
 	// Parsed as a scene step so a delay set elsewhere (web Scene Studio or
 	// config.json) survives editing the verb, device or level here.
 	act, err := app.ParseSceneStep(state.Actions[actIdx])
 	if err != nil {
 		// Unparseable (e.g. legacy/hand-edited) — reset to a sane default.
-		act = app.SceneStep{Action: app.Action{Verb: "on", Device: ce.firstTargetDevice()}}
+		act = app.SceneStep{Action: app.Action{Verb: "on", Device: ce.firstSceneTarget(scene)}}
 	}
 
 	switch ce.sceneActionField {
 	case 0: // action verb
 		act.Verb = cycleOption(app.AllActionVerbs(), act.Verb, direction)
 	case 1: // device
-		if len(ce.config.OutputDeviceNames) > 0 {
-			act.Device = cycleOption(ce.config.OutputDeviceNames, act.Device, direction)
+		if opts := ce.sceneTargetOptions(scene); len(opts) > 0 {
+			act.Device = cycleOption(opts, act.Device, direction)
 		}
 	case 2: // brightness level/step (only meaningful for brightness-family verbs)
 		if app.IsBrightnessVerb(act.Verb) {
@@ -299,6 +312,7 @@ func (ce *ConfigEditor) viewEditScene(theme Theme) string {
 	title := theme.BoxTitle.Render(IconScene + " Edit Scene")
 	fields := []string{title, ""}
 	fields = append(fields, ce.renderTextField(theme, "Name", scene.Name, 0))
+	fields = append(fields, renderSceneSettings(theme, scene)...)
 
 	fields = append(fields, "")
 	fields = append(fields, theme.BoxTitle.Render("States (index 0 = off)"))
@@ -313,6 +327,29 @@ func (ce *ConfigEditor) viewEditScene(theme Theme) string {
 	result := theme.Box.Width(55).Render(content)
 	result += ce.viewStatus(theme)
 	return result
+}
+
+// renderSceneSettings shows the scene's device list and toggle timeout,
+// read-only: both are edited in the web Scene Studio (the TUI only keeps
+// them intact).
+func renderSceneSettings(theme Theme, scene *app.SceneEditConfig) []string {
+	var devices string
+	switch {
+	case scene.Devices == nil:
+		devices = theme.Muted.Render("legacy (any device)")
+	case len(scene.Devices) == 0:
+		devices = theme.Muted.Render("[empty - invalid]")
+	default:
+		devices = theme.Primary.Render(strings.Join(scene.Devices, ", "))
+	}
+	timeout := theme.Muted.Render("off")
+	if scene.ToggleTimeoutSeconds > 0 {
+		timeout = theme.Primary.Render(app.FormatStepDelay(time.Duration(scene.ToggleTimeoutSeconds) * time.Second))
+	}
+	return []string{
+		"  " + theme.Secondary.Render("Devices: ") + devices,
+		"  " + theme.Secondary.Render("Back to off after: ") + timeout,
+	}
 }
 
 func (ce *ConfigEditor) renderSceneStateRow(theme Theme, st app.SceneStateEditConfig, fieldIdx int) string {
@@ -341,7 +378,7 @@ func (ce *ConfigEditor) viewEditSceneState(theme Theme) string {
 
 	fields = append(fields, "")
 	fields = append(fields, theme.BoxTitle.Render("Actions"))
-	if len(ce.config.OutputDeviceNames) == 0 {
+	if len(ce.sceneTargetOptions(scene)) == 0 {
 		fields = append(fields, theme.Muted.Render("  No target devices available."))
 	} else if len(state.Actions) == 0 {
 		fields = append(fields, theme.Muted.Render("  No actions. Press 'a' to add one."))

@@ -30,6 +30,7 @@ class FakeClient:
         self.fail = None
         self.in_flight = 0
         self.max_in_flight = 0
+        self.reply = None       # fn(path, n) -> dict, n = number of posts so far
 
     async def post(self, path, body=None, timeout=8.0):
         self.in_flight += 1
@@ -41,7 +42,7 @@ class FakeClient:
             if self.fail:
                 raise self.fail
             self.sent.append((path, body))
-            return {}
+            return self.reply(path, len(self.sent)) if self.reply else {}
         finally:
             self.in_flight -= 1
 
@@ -201,6 +202,137 @@ async def test_scene_steps_queue():
     await settle()
     await settle()
     assert len(c.sent) == 2 and all(p.endswith("/toggle") for p, _ in c.sent), c.sent
+
+
+def scene(**kw):
+    d = dev(type="scene", scene_index=0, scene_count=3, scene_state="Off", scene_next=1)
+    d.update(kw)
+    return d
+
+
+async def test_scene_timeout_boundary_ack_wins():
+    # The poll predicted state 2, but the toggle timeout expired: the server
+    # answers 0, and the intent follows that, confirmed by a poll at 0.
+    m, c, toasts = setup(scene(scene_index=1, scene_state="Dim", scene_next=0))
+    m.apply_snapshot([scene(scene_index=1, scene_state="Dim", scene_next=2)], clock[0])
+    c.reply = lambda p, n: {"scene_index": 0}
+    m.tap(m.devices[0])
+    assert m.get_intent(0, "power").target == 2   # first tap follows scene_next
+    await settle()
+    it = m.get_intent(0, "power")
+    assert it.target == 0 and it.phase == "waiting", (it.target, it.phase)
+    advance(300)
+    m.apply_snapshot([scene(scene_index=0, scene_next=1)], clock[0])
+    assert m.get_intent(0, "power") is None
+    assert m.view(m.devices[0]).sync == "ok" and not toasts, toasts
+
+
+async def test_scene_slow_request_unchanged():
+    m, c, toasts = setup(scene())
+    c.gate = asyncio.Event()
+    c.reply = lambda p, n: {"scene_index": 1}
+    m.tap(m.devices[0])
+    await settle()
+    advance(100)
+    # No ack yet: a poll, even one reporting something else, resolves nothing.
+    m.apply_snapshot([scene(scene_index=2, scene_next=0)], clock[0])
+    it = m.get_intent(0, "power")
+    assert it is not None and it.phase == "sending" and not it.resolve_any
+    c.gate.set()
+    await settle()
+    assert m.get_intent(0, "power").phase == "waiting"
+    # A poll that started before the ack is ignored.
+    m.apply_snapshot([scene(scene_index=2, scene_next=0)], clock[0] - 500)
+    assert m.get_intent(0, "power") is not None
+
+
+async def test_scene_other_controller_resolves_without_unconfirmed():
+    m, c, toasts = setup(scene())
+    c.reply = lambda p, n: {"scene_index": 1}
+    m.tap(m.devices[0])
+    await settle()
+    advance(200)
+    m.apply_snapshot([scene(scene_index=2, scene_state="Bright", scene_next=0)], clock[0])
+    assert m.get_intent(0, "power") is None
+    v = m.view(m.devices[0])
+    assert v.sync == "ok" and v.sub == "Bright", (v.sync, v.sub)
+    advance(M.CONFIRM_MS * 3)
+    m.tick()
+    assert not toasts, toasts
+
+
+async def test_scene_without_scene_index_ack_keeps_exact_match():
+    # Older server: no scene_index in the reply, a mismatch ends up unconfirmed.
+    m, c, toasts = setup(scene())
+    m.tap(m.devices[0])
+    await settle()
+    advance(200)
+    m.apply_snapshot([scene(scene_index=2, scene_next=0)], clock[0])
+    assert m.get_intent(0, "power").phase == "waiting"
+    advance(M.CONFIRM_MS + 1)
+    m.tick()
+    assert m.view(m.devices[0]).sync == "unconfirmed" and toasts[-1][0] == "warn", toasts
+
+
+async def test_scene_rapid_taps_reconcile_per_ack():
+    m, c, _ = setup(scene(scene_count=4, scene_index=1, scene_state="A", scene_next=2))
+    c.gate = asyncio.Event()
+    # The server resets to 0 on the first toggle, then steps on.
+    c.reply = lambda p, n: {"scene_index": n - 1}
+    for _ in range(3):
+        m.tap(m.devices[0])
+    await settle()
+    it = m.get_intent(0, "power")
+    assert it.target == 0, it.target          # 2, 3, 0 predicted
+    assert len(it.queue) == 2
+    c.gate.set()
+    for _ in range(4):
+        await settle()
+    it = m.get_intent(0, "power")
+    assert len(c.sent) == 3 and it.phase == "waiting" and it.resolve_any
+    assert it.target == 2, it.target          # last ack said 2, nothing queued
+    # A mid-chain ack corrects the prediction too: reply 0 for the first of 3.
+    m2, c2, _ = setup(scene(scene_count=4, scene_index=1, scene_next=2))
+    c2.gate = asyncio.Event()
+    c2.reply = lambda p, n: {"scene_index": 0 if n == 1 else n - 1}
+    for _ in range(3):
+        m2.tap(m2.devices[0])
+    c2.gate.set()
+    await settle()
+    await settle()
+    it2 = m2.get_intent(0, "power")
+    assert it2.target == 2 and not it2.queue, (it2.target, it2.queue)
+    advance(100)
+    m2.apply_snapshot([scene(scene_count=4, scene_index=2, scene_next=3)], clock[0])
+    assert m2.get_intent(0, "power") is None
+
+
+async def test_scene_missing_scene_next_falls_back():
+    d = scene(scene_index=1, scene_state="Dim")
+    del d["scene_next"]
+    m, c, _ = setup(d)
+    m.tap(m.devices[0])
+    assert m.get_intent(0, "power").target == 2
+    m, c, _ = setup(scene(scene_index=2, scene_next=2))   # scene_next wins
+    m.tap(m.devices[0])
+    assert m.get_intent(0, "power").target == 2
+    m, c, _ = setup(scene(scene_index=2, scene_state="Bright"))
+    m.tap(m.devices[0])
+    assert m.get_intent(0, "power").target == 1
+
+
+async def test_non_scene_unaffected_by_scene_fields():
+    m, c, _ = setup(dev(scene_next=2))
+    c.reply = lambda p, n: {"scene_index": 5}
+    m.tap(m.devices[0])
+    await settle()
+    it = m.get_intent(0, "power")
+    assert it.kind == "power" and it.target is True and not it.resolve_any
+    advance(100)
+    m.apply_snapshot([dev()], clock[0])          # reports off: still waiting
+    assert m.get_intent(0, "power") is not None
+    m.apply_snapshot([dev(is_on=True)], clock[0])
+    assert m.get_intent(0, "power") is None
 
 
 async def test_failure_reverts_and_reports():

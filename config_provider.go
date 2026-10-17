@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -136,7 +137,14 @@ func (p *SwKitConfigProvider) editableConfigLocked() app.EditableConfig {
 	}
 
 	for _, s := range p.sw.Scenes {
-		sc := app.SceneEditConfig{Name: s.Name, DisableHomekit: s.DisableHomekit}
+		sc := app.SceneEditConfig{
+			Name: s.Name,
+			// slices.Clone keeps nil (legacy scene) distinct from an
+			// empty list (invalid managed scene).
+			Devices:              slices.Clone(s.Devices),
+			ToggleTimeoutSeconds: s.ToggleTimeoutSeconds,
+			DisableHomekit:       s.DisableHomekit,
+		}
 		for _, st := range s.States {
 			sc.States = append(sc.States, app.SceneStateEditConfig{
 				Name:    st.Name,
@@ -252,7 +260,12 @@ func (p *SwKitConfigProvider) saveConfigLocked(config app.EditableConfig) error 
 
 	p.sw.Scenes = make([]SceneConfig, len(config.Scenes))
 	for i, s := range config.Scenes {
-		sc := SceneConfig{Name: s.Name, DisableHomekit: s.DisableHomekit}
+		sc := SceneConfig{
+			Name:                 s.Name,
+			Devices:              slices.Clone(s.Devices), // nil stays nil, [] stays []
+			ToggleTimeoutSeconds: s.ToggleTimeoutSeconds,
+			DisableHomekit:       s.DisableHomekit,
+		}
 		for _, st := range s.States {
 			sc.States = append(sc.States, SceneStateConfig{
 				Name:    st.Name,
