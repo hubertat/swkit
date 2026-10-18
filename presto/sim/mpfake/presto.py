@@ -75,10 +75,12 @@ class Presto:
         self.frames = 0
         self.partials = 0
         self.largest = (0, 0)
+        self.backlight = 1.0
 
     def set_backlight(self, b):
         if not 0.0 <= b <= 1.0:
             raise ValueError("brightness out of range")
+        self.backlight = b
 
     def auto_ambient_leds(self, e):
         pass

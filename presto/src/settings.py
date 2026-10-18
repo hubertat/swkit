@@ -27,6 +27,7 @@ DEFAULTS = {
     "backlight": 0.8,       # 0.1 .. 1.0
     "dim_after_s": 120,     # 0 = never dim
     "dim_level": 0.08,
+    "off_after_s": 0,       # backlight off, polling paused; 0 = never
     "home_after_s": 300,    # go back to the first page after this idle time; 0 = never
     "ambient": "status",    # "off" | "status" | "glow"
     "click": False,         # buzzer tick on tap

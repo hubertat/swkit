@@ -28,7 +28,7 @@ It has the same scope and the same honesty rules as the web control UI
 
 | Web control UI | Presto panel |
 |---|---|
-| Sections: Lights, Outlets, Scenes, Buttons | One section per tab; swipe left/right to change section. Six tiles per screen; longer sections are paged with ▲ 1/2 ▼ or a swipe up/down. |
+| Sections: Lights, Outlets, Scenes, Buttons | One section per tab; swipe left/right to change section. Six tiles per screen; longer sections get a rail of big ▲ / ▼ arrows on the right (the tiles narrow to make room) and also page with a swipe up/down. |
 | Tap to toggle; idempotent `set`, `toggle` only when the state is unknown | Same |
 | Requested state shown hatched until a poll *started after* the acknowledgement confirms it; amber "Unconfirmed" after 6 s | Same; the state machine is a direct port (`src/model.py`) |
 | Power and brightness as independent, serialized request slots | Same |
@@ -47,6 +47,13 @@ Panel-only features:
 - **Wall-panel behaviour.** The screen dims when idle; the first touch only
   wakes it and doesn't switch anything. After 5 minutes idle it returns to
   the first page. It reconnects to Wi-Fi by itself.
+- **Screen off** (optional, *Settings → Screen off when idle*: 5 min, 15 min
+  or 1 h). After the delay the backlight goes fully off, the back LEDs go
+  dark, polling stops and Wi-Fi switches to power-save mode (still
+  connected). A touch wakes it, again without switching anything; the
+  header reads "Updating…" until the first poll answers, normally a fraction
+  of a second. If the screen-off delay is shorter than the dim delay, the
+  screen goes straight from bright to off.
 - **Back LEDs.** *Status* gives a blue flash on a button press and a slow
   red pulse while the controller is unreachable. *Glow* mirrors the screen
   colours.
@@ -54,7 +61,9 @@ Panel-only features:
   *On first* (lit lights first, then config order) or *A–Z*. With *On
   first*, tiles never move under your finger: the order is refreshed when
   you change section or screen, or after 5 s without touches.
-- **Optional tap sound** from the piezo buzzer.
+- **Optional tap sound** from the piezo buzzer: a short, fixed-length
+  1.2 kHz tick, timed by a hardware timer (`CLICK_HZ` / `CLICK_MS` in
+  `src/app.py`).
 - **On-screen guidance** for every failure: missing `secrets.py`, wrong
   Wi-Fi password, no controller found, controller unreachable.
 
@@ -200,8 +209,9 @@ Note that this erases all files.
   sync status in words.
 - **Swipe** sideways or use the tabs to change section. Tab badges count
   what's on. Tapping the active tab goes back to its first screen.
-- **▲ 1/2 ▼** next to All off pages through sections with more than six
-  tiles; a swipe up/down does the same.
+- **The ▲ / ▼ rail** on the right pages through sections with more than
+  six tiles; a swipe up/down does the same. A blue arrow has a screen to go
+  to; a faint one is at the end.
 - **Pull the detail sheet down**, tap above it, or tap ✕ to close it.
 - **Tap the status pill** (top right), or Retry in the red header, to
   refresh now.
@@ -218,7 +228,8 @@ Note that this erases all files.
 | White outline flash | Just confirmed |
 
 On the Presto, *Settings* holds the controller, *Light order*, screen
-brightness, *Dim when idle*, back LEDs (Off / Status / Glow) and tap sound.
+brightness, *Dim when idle*, *Screen off when idle*, back LEDs (Off /
+Status / Glow) and tap sound.
 It also shows Wi-Fi, IP, the panel's name and the last frame time. The
 panel announces itself as `swkit-panel.local`. With *Status*, the back LEDs
 stay dark until something needs attention.
@@ -240,7 +251,10 @@ So the panel never writes flash at runtime:
    `/swkit_settings.json` in flash.
 3. While a change is pending, the panel restarts itself once it has been
    left alone for 10 minutes (screen dimmed, nobody using it), which
-   commits it. *Settings → Restart now* does it at once.
+   commits it. It comes back up dimmed or off, as it was (a note in
+   `/ramfs` carries that over), so a dark room stays dark apart from a
+   brief flash while the firmware starts the display. *Settings → Restart
+   now* does it at once.
 
 Changes made in the last 10 minutes before a power cut are lost.
 
@@ -291,7 +305,8 @@ MICROPYPATH=.frozen:src micropython sim/test_settings.py
 
 # whole app, headless, on the MicroPython unix port: taps through every
 # screen, checks that a tap repaints only small regions, paging, light
-# order, recovery from an injected UI fault and the boot-time settings commit
+# order, recovery from an injected UI fault, the boot-time settings commit
+# and screen off (no polls, touch only wakes, restart keeps it off)
 python3 sim/mock_swkit.py --port 18081 &
 sh sim/mp_check.sh
 ```

@@ -381,6 +381,29 @@ async def test_reload_drops_mismatched_intents():
     await settle()
 
 
+async def test_resume_reads_updating_not_stale():
+    m, c, _ = setup(dev())
+    advance(60000)                      # screen was off: no polls for a minute
+    assert m.freshness()[0] == "stale"
+    m.resume()
+    assert m.freshness() == ("connecting", "Updating…") and m.poll_now
+    assert m.status(m.devices[0], m.view(m.devices[0]))[0] != "stale"
+    assert await m.poll()               # FakeClient answers with an empty list
+    assert m.freshness()[0] == "live", m.freshness()
+
+
+async def test_resume_then_failed_poll_is_stale():
+    m, c, _ = setup(dev())
+    advance(60000)
+    m.resume()
+
+    async def down(path, timeout=5.0):
+        raise OSError("unreachable")
+    c.get = down
+    assert not await m.poll()
+    assert m.freshness()[0] == "stale", m.freshness()
+
+
 def run():
     tests = [(k, v) for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

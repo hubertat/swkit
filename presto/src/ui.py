@@ -8,7 +8,7 @@
 # rendered into a PSRAM framebuffer), so the UI is built to draw as little
 # as possible without lowering quality:
 # - no free scrolling: a section shows up to six tiles per screen and longer
-#   sections are paged (swipe up/down or the arrows), one redraw per flip;
+#   sections are paged (swipe up/down or the arrow rail), one redraw per flip;
 # - the model reports which devices changed, so a tap or a poll repaints
 #   only those tiles, plus the summary bar and tab badges if their counts
 #   changed;
@@ -17,8 +17,10 @@
 # - per-second refreshes ("2 min ago") repaint only text that changed.
 #
 # Layout (480x480): header (name, freshness; red when the controller is
-# unreachable), a bar with the section summary, All off and the screen pager,
-# a 2x3 tile grid, and the tab bar. A long-press opens the detail sheet.
+# unreachable), a bar with the section summary and All off, a 2x3 tile grid
+# (narrower, with a rail of big up/down arrows on its right, when the section
+# has more than one screen), and the tab bar. A long-press opens the detail
+# sheet.
 
 from compat import ticks_ms, ticks_diff, ticks_add
 from gfx import Gfx
@@ -38,6 +40,15 @@ COLS, ROWS = 2, 3
 PER_SCREEN = COLS * ROWS
 TILE_W = (W - 2 * MARGIN - GAP) // COLS
 TILE_H = 90
+GRID_H = ROWS * TILE_H + (ROWS - 1) * GAP
+# Page rail: shown only on sections with more than one screen; the tiles
+# (and settings rows) give up its width.
+RAIL_W = 64
+RAIL_X = W - MARGIN - RAIL_W
+RAIL_TOP = HEADER_H + 52 + 2
+RAIL_BTN_H = 112
+PAGED_RIGHT = RAIL_X - GAP          # right edge of the content beside the rail
+PAGED_TILE_W = (PAGED_RIGHT - MARGIN - GAP) // COLS
 LONG_PRESS_MS = 450
 DRAG_PX = 14
 SWIPE_PX = 60
@@ -80,6 +91,7 @@ F_LONG = 1      # supports long-press
 F_SLIDER = 2    # captures horizontal drags
 
 DIM_CHOICES = ((0, "Never"), (30, "30 s"), (120, "2 min"), (600, "10 min"))
+OFF_CHOICES = ((0, "Never"), (300, "5 min"), (900, "15 min"), (3600, "1 h"))
 AMBIENT_CHOICES = (("off", "Off"), ("status", "Status"), ("glow", "Glow"))
 SORT_CHOICES = (("config", "Config"), ("on_first", "On first"), ("name", "A–Z"))
 RESORT_IDLE_MS = 5000   # "On first" re-sorts only after this long without touches
@@ -135,10 +147,11 @@ def _inside(r, x, y):
     return r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]
 
 
-def tile_rect(slot):
-    """Screen rect of tile slot 0..5 in the grid."""
+def tile_rect(slot, tw=TILE_W):
+    """Screen rect of tile slot 0..5 in the grid; tw is the tile width
+    (PAGED_TILE_W beside the page rail)."""
     col, row = slot % COLS, slot // COLS
-    return (MARGIN + col * (TILE_W + GAP), GRID[1] + 2 + row * (TILE_H + GAP), TILE_W, TILE_H)
+    return (MARGIN + col * (tw + GAP), GRID[1] + 2 + row * (TILE_H + GAP), tw, TILE_H)
 
 
 class Toast:
@@ -174,7 +187,8 @@ class UI:
         self.next_tick = 0
         self.pressed = None           # hot entry under the finger
         self.t = None                 # active touch gesture
-        self.dimmed = False
+        self.dimmed = False           # screen dimmed or off: the first touch only wakes it
+        self.asleep = False           # screen off: nothing is drawn until woken
         self.last_touch = ticks_ms()
         self.render_ms = 0
 
@@ -305,13 +319,16 @@ class UI:
             import uasyncio as asyncio
         while True:
             self.step()
-            await asyncio.sleep(0.01 if self.t else 0.02)
+            # Screen off: only watch for the waking touch, a bit less often.
+            await asyncio.sleep(0.01 if self.t else 0.06 if self.asleep else 0.02)
 
     def step(self):
         now = ticks_ms()
         # Touch first: the finger's feedback is drawn before anything else.
         self.touch.poll()
         self.handle_touch(now)
+        if self.asleep:
+            return              # repaints wait for repaint_now() on wake
         m = self.model()
         if m is not None:
             m.tick()
@@ -324,6 +341,16 @@ class UI:
             self.dirty = None
             for region in regions:
                 self.render(region)
+
+    def repaint_now(self):
+        """Full repaint straight away (waking: before the backlight returns)."""
+        self.dirty = None
+        self.deferred = None
+        m = self.model()
+        if m is not None:
+            m.take_dirty()
+            self.drawn_version = m.version
+        self.render((0, 0, W, H))
 
     def model_changed(self, indices):
         if self.mode != "main":
@@ -689,8 +716,32 @@ class UI:
             self.button(x + i * (cw + 8), y, cw, h, label, "setting", (key, val),
                         "selected" if val == current else "normal", size=18)
 
+    def rail(self, screen, count):
+        """Page rail beside the grid: big up / down arrows and "2/3". An
+        arrow with somewhere to go is a blue button; at either end it stays
+        in place as a faint, inert chevron."""
+        g = self.g
+        x = RAIL_X
+        bottom = RAIL_TOP + GRID_H
+        for delta, y, icon in ((-1, RAIL_TOP, "expand_less"), (1, bottom - RAIL_BTN_H, "expand_more")):
+            r = (x, y, RAIL_W, RAIL_BTN_H)
+            live = 0 <= screen + delta < count
+            if live:
+                self.add_hot(r, "flip", delta)
+            if not g.visible(*r):
+                continue
+            if live:
+                g.rrect(x, y, RAIL_W, RAIL_BTN_H, 18, _shade(SURFACE_2, 1.25) if self.is_pressed("flip", delta) else SURFACE_2)
+                g.icon(icon, x + RAIL_W // 2, y + RAIL_BTN_H // 2, 56, BLUE)
+            else:
+                g.icon(icon, x + RAIL_W // 2, y + RAIL_BTN_H // 2, 56, SURFACE_2)
+        mid = (RAIL_TOP + RAIL_BTN_H + bottom - RAIL_BTN_H) // 2
+        if g.visible(x, mid - 30, RAIL_W, 60):
+            g.text_mid("%d/%d" % (screen + 1, count), x + RAIL_W // 2, mid, 20, TEXT, 1)
+
     def pager(self, right, cy, screen, count):
-        """Up / "2/3" / down, right-aligned at x=right. Returns its left edge."""
+        """Up / "2/3" / down, right-aligned at x=right (controller picker).
+        Returns its left edge."""
         if count <= 1:
             return right
         g = self.g
@@ -840,7 +891,11 @@ class UI:
         count = self.screen_count(key, devs)
         screen = self.screen_of(key, count)
         cy = BAR[1] + BAR[3] // 2
-        left = self.pager(W - MARGIN, cy, screen, count)
+        left = W - MARGIN
+        tw = TILE_W
+        if count > 1:
+            self.rail(screen, count)
+            tw = PAGED_TILE_W
         if sect and sect["all_off"] and m.on_count(devs):
             armed = self.armed and self.armed[0] == key
             bw = 150 if armed else 108
@@ -851,7 +906,7 @@ class UI:
         self.summary = self.summary_text()
         g.text_mid(self.summary, MARGIN + 4, cy, 19, DIM, 0, left - MARGIN - 16)
         for slot, d in enumerate(devs[screen * PER_SCREEN:(screen + 1) * PER_SCREEN]):
-            self.draw_tile(d, tile_rect(slot), stale)
+            self.draw_tile(d, tile_rect(slot, tw), stale)
 
     def draw_tile(self, d, r, stale):
         g = self.g
@@ -882,7 +937,7 @@ class UI:
         if pressed:
             bg = _shade(bg, 1.18) if not lit else _shade(bg, 0.86)
         inset = 3 if pressed else 0
-        rx, ry, rw, rh = x + inset, y + inset, TILE_W - 2 * inset, TILE_H - 2 * inset
+        rx, ry, rw, rh = x + inset, y + inset, r[2] - 2 * inset, r[3] - 2 * inset
         g.rrect(rx, ry, rw, rh, 18, bg)
         if v.busy:
             g.hatch(rx, ry, rw, rh, 18, _shade(bg, 0.86) if lit else SURFACE_2)
@@ -895,11 +950,14 @@ class UI:
 
         bri_bar = d.get("has_brightness")
         mid = ry + rh // 2 - (4 if bri_bar else 0)
-        g.circle(rx + 36, mid, 23, _shade(bg, 0.84) if lit else _shade(bg, 1.35))
-        g.icon("help" if (v.unknown and not v.on_known) else TYPE_ICON.get(t, "info"), rx + 36, mid, 32, icon_col)
+        # Beside the page rail the icon shrinks a little to leave the name room.
+        narrow = r[2] < TILE_W
+        ic, ir, isz, tx = (31, 20, 28, 58) if narrow else (36, 23, 32, 68)
+        g.circle(rx + ic, mid, ir, _shade(bg, 0.84) if lit else _shade(bg, 1.35))
+        g.icon("help" if (v.unknown and not v.on_known) else TYPE_ICON.get(t, "info"), rx + ic, mid, isz, icon_col)
 
-        tx = rx + 68
-        tw = rw - 68 - 10
+        tw = rw - tx - 10
+        tx += rx
         right = ""
         if t == "scene" and (d.get("scene_count") or 0) > 2:
             right = "%d/%d" % (((v.pw.target if v.pw and v.pw.kind == "scene" and v.pw.live() else d.get("scene_index")) or 0) + 1,
@@ -1035,7 +1093,8 @@ class UI:
 
     def settings_screens(self):
         """Settings blocks grouped into screens that fit the grid area."""
-        blocks = [("controller", 104), ("sort", 84), ("backlight", 92), ("dim", 84), ("ambient", 84), ("click", 84)]
+        blocks = [("controller", 104), ("sort", 84), ("backlight", 92), ("dim", 84), ("off", 84), ("ambient", 84),
+                  ("click", 84)]
         if self.app.settings.dirty():
             blocks.append(("pending", 96))
         blocks.append(("panel", 24 + 6 * 44))
@@ -1056,8 +1115,12 @@ class UI:
         screens = self.settings_screens()
         screen = self.screen_of("settings", len(screens))
         cy = BAR[1] + BAR[3] // 2
-        left = self.pager(W - MARGIN, cy, screen, len(screens))
-        g.text_mid("Settings", MARGIN + 4, cy, 19, DIM, 0, left - MARGIN - 16)
+        g.text_mid("Settings", MARGIN + 4, cy, 19, DIM, 0, W - 2 * MARGIN - 16)
+        right = W - MARGIN
+        if len(screens) > 1:
+            self.rail(screen, len(screens))
+            right = PAGED_RIGHT
+        cw = right - MARGIN             # content width
         y = GRID[1] + 4
 
         def label(text, y):
@@ -1067,20 +1130,20 @@ class UI:
             if name == "controller":
                 label("Controller", y)
                 c = y + 24
-                g.rrect(MARGIN, c, W - 2 * MARGIN, 72, 16, SURFACE)
+                g.rrect(MARGIN, c, cw, 72, 16, SURFACE)
                 g.icon("dns", MARGIN + 34, c + 36, 38, BLUE)
-                g.text(app.title(), MARGIN + 66, c + 31, 21, TEXT, 0, W - 220)
-                g.text(app.client.label() if app.client else "—", MARGIN + 66, c + 56, 16, DIM, 0, W - 220)
+                g.text(app.title(), MARGIN + 66, c + 31, 21, TEXT, 0, cw - 196)
+                g.text(app.client.label() if app.client else "—", MARGIN + 66, c + 56, 16, DIM, 0, cw - 196)
                 if (app.server or {}).get("fixed"):
-                    g.text("set in secrets.py", W - MARGIN - 16, c + 42, 15, FAINT, 2)
+                    g.text("set in secrets.py", right - 16, c + 42, 15, FAINT, 2)
                 else:
-                    self.button(W - MARGIN - 112, c + 12, 100, 48, "Change", "find", None, size=18)
+                    self.button(right - 112, c + 12, 100, 48, "Change", "find", None, size=18)
             elif name == "sort":
                 label("Light order", y)
-                self.chips(MARGIN, y + 24, W - 2 * MARGIN, 48, SORT_CHOICES, "light_sort")
+                self.chips(MARGIN, y + 24, cw, 48, SORT_CHOICES, "light_sort")
             elif name == "backlight":
                 label("Screen brightness", y)
-                sr = (MARGIN, y + 24, W - 2 * MARGIN, 56)
+                sr = (MARGIN, y + 24, cw, 56)
                 self.add_hot(sr, "backlight", None, F_SLIDER)
                 if g.visible(*sr):
                     g.rrect(sr[0], sr[1], sr[2], sr[3], 16, SURFACE)
@@ -1092,29 +1155,32 @@ class UI:
                     g.circle(k, sr[1] + 28, 15, TEXT)
             elif name == "dim":
                 label("Dim when idle", y)
-                self.chips(MARGIN, y + 24, W - 2 * MARGIN, 48, DIM_CHOICES, "dim_after_s")
+                self.chips(MARGIN, y + 24, cw, 48, DIM_CHOICES, "dim_after_s")
+            elif name == "off":
+                label("Screen off when idle", y)
+                self.chips(MARGIN, y + 24, cw, 48, OFF_CHOICES, "off_after_s")
             elif name == "ambient":
                 label("Back LEDs", y)
-                self.chips(MARGIN, y + 24, W - 2 * MARGIN, 48, AMBIENT_CHOICES, "ambient")
+                self.chips(MARGIN, y + 24, cw, 48, AMBIENT_CHOICES, "ambient")
             elif name == "click":
                 label("Tap sound", y)
-                self.chips(MARGIN, y + 24, W - 2 * MARGIN, 48, ((False, "Off"), (True, "On")), "click")
+                self.chips(MARGIN, y + 24, cw, 48, ((False, "Off"), (True, "On")), "click")
             elif name == "pending":
                 label("Not yet stored", y)
                 c = y + 24
-                g.rrect(MARGIN, c, W - 2 * MARGIN, 64, 16, SURFACE)
-                g.text("Active now; stored permanently at the", MARGIN + 16, c + 27, 15, DIM, 0, W - 190)
-                g.text("next restart (automatic when idle).", MARGIN + 16, c + 48, 15, DIM, 0, W - 190)
-                self.button(W - MARGIN - 140, c + 10, 128, 44, "Restart now", "restart", None, size=16)
+                g.rrect(MARGIN, c, cw, 64, 16, SURFACE)
+                g.text("Active now; stored at the next", MARGIN + 16, c + 27, 15, DIM, 0, cw - 166)
+                g.text("restart (automatic when idle).", MARGIN + 16, c + 48, 15, DIM, 0, cw - 166)
+                self.button(right - 140, c + 10, 128, 44, "Restart now", "restart", None, size=16)
             elif name == "panel":
                 label("Panel", y)
                 rows = self.panel_rows()
                 self.drawn["panel"] = rows
                 ry = y + 24
                 for k, val in rows:
-                    g.rect(MARGIN, ry, W - 2 * MARGIN, 43, SURFACE)
+                    g.rect(MARGIN, ry, cw, 43, SURFACE)
                     g.text_mid(k, MARGIN + 16, ry + 21, 17, DIM)
-                    g.text_mid(val, W - MARGIN - 16, ry + 21, 17, TEXT, 2, W - 180)
+                    g.text_mid(val, right - 16, ry + 21, 17, TEXT, 2, cw - 156)
                     ry += 44
             y += h
 
