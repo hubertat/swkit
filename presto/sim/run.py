@@ -78,9 +78,10 @@ class Driver:
         print("saved", path, "last render %dms" % self.app.ui.render_ms)
 
 
-# Tile slot centres on a 2x3 screen, pager arrows, tabs (see ui.py layout).
+# Tile slot centres on a 2x3 screen (inside both the full-width and the
+# narrower tiles beside the page rail), rail arrows, tabs (see ui.py layout).
 SLOT = [(125, 159), (355, 159), (125, 257), (355, 257), (125, 355), (355, 355)]
-PAGE_UP, PAGE_DOWN = (336, 86), (442, 86)
+PAGE_UP, PAGE_DOWN = (436, 170), (436, 344)     # page rail beside the grid
 TAB = [(48, 442), (144, 442), (240, 442), (336, 442), (432, 442)]
 SHEET_CLOSE = (438, 58)
 
@@ -129,6 +130,9 @@ async def tour(d):
     await d.tap(*PAGE_DOWN)
     await d.wait(0.4)
     await d.shot("settings-3")
+    await d.tap(*PAGE_DOWN)
+    await d.wait(0.4)
+    await d.shot("settings-4")
     await d.tap(*TAB[0])
     await d.wait(0.6)
     await d.shot("lights-on-first")
