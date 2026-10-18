@@ -33,39 +33,112 @@ async def drag(t, x0, y0, x1, y1):
     await asyncio.sleep(0.4)
 
 
+SLOT = [(125, 159), (355, 159), (125, 257), (355, 257), (125, 355), (355, 355)]
+PAGE_UP, PAGE_DOWN = (336, 86), (442, 86)
+TABS = [(48, 442), (144, 442), (240, 442), (336, 442), (432, 442)]
+SHEET_CLOSE = (438, 58)
+
+
 async def tour(app):
     t = app.presto.touch
+    ui = app.ui
     await asyncio.sleep(2.5)
-    assert app.ui.mode == "main", "not connected: %s" % app.ui.mode
+    assert ui.mode == "main", "not connected: %s" % ui.mode
     m = app.model
     print("devices:", len(m.devices))
-    await tap(t, 120, 180)                 # toggle
+    # A tap repaints the tile, not the whole screen.
+    app.presto.partials = 0
+    app.presto.largest = (0, 0)
+    await tap(t, *SLOT[0])
     await asyncio.sleep(2.5)
-    await drag(t, 240, 360, 240, 140)      # scroll
-    await asyncio.sleep(0.8)
-    await tap(t, 120, 240, hold=0.7)       # long press -> sheet
-    assert app.ui.sheet is not None, "sheet did not open"
-    await tap(t, 300, 200)                 # brightness/whatever is there
-    await drag(t, 240, 380, 240, 160)      # scroll sheet
-    await tap(t, 440, 66)                  # close
-    await drag(t, 400, 250, 100, 250)      # swipe page
-    for x in (48, 144, 240, 336, 432):
-        await tap(t, x, 440)               # every tab
-        await tap(t, 120, 180)
-        await tap(t, 440, 66)
-    await tap(t, 300, 430 - 76)            # settings controls
-    await drag(t, 240, 380, 240, 120)
-    for y in (150, 220, 300, 380):
-        await tap(t, 120, y)
-    await tap(t, 200, 90)                  # Change -> picker
-    await asyncio.sleep(3.5)
-    print("mode after Change:", app.ui.mode)
-    await tap(t, 120, 440)                 # cancel
+    print("tap + confirm repaints:", app.presto.partials, "largest region:", app.presto.largest)
+    assert app.presto.largest[0] * app.presto.largest[1] < 480 * 200, "tap repainted too much: %s" % (app.presto.largest,)
+    await drag(t, 240, 330, 240, 150)      # swipe up: next screen
+    assert ui.screens.get("lights") == 1, "swipe up did not flip: %s" % ui.screens
+    await tap(t, *PAGE_UP)
+    assert ui.screens.get("lights") == 0, "up arrow did not flip back"
+    await tap(t, *SLOT[1], hold=0.7)       # long press -> sheet
+    assert ui.sheet is not None, "sheet did not open"
+    await tap(t, 240, 260)
+    await drag(t, 240, 200, 240, 420)      # pull down closes the sheet
+    assert ui.sheet is None, "pull-down did not close the sheet"
+    await drag(t, 400, 250, 100, 250)      # swipe to the next section
+    assert ui.section == 1, "swipe left did not change section"
+    for x, y in TABS:
+        await tap(t, x, y)                 # every tab
+        await tap(t, *SLOT[0])
+        await tap(t, *SHEET_CLOSE)
+    # Settings: every screen, every chip row on the first two.
+    await tap(t, *TABS[4])
+    for _ in range(3):
+        for y in (150, 268, 316, 350):
+            await tap(t, 120, y)
+        await tap(t, *PAGE_DOWN)
+    # Light order: On first puts lit lights first; the order holds while touching.
+    office = [d for d in m.devices.values() if d["name"] == "Office desk"][0]
+    m.set_power(office, True)                  # the last light in config order
+    await asyncio.sleep(2.5)
+    app.change_setting("light_sort", "on_first")
+    ui.resort()
+    lights = [s for s in ui.sections() if s[0] == "lights"][0][4]
+    flags = [m.view(d).on for d in lights]
+    names = [d["name"] for d in lights]
+    print("on-first order:", names)
+    assert flags == sorted(flags, reverse=True), "lights not on-first: %s" % flags
+    assert names.index("Office desk") < names.index("Bedroom lamp"), "Office desk not moved up"
+    # Frozen while the user interacts: turning a light off doesn't reorder
+    # until the panel has been left alone for RESORT_IDLE_MS.
+    ui.section = 0                             # re-sorting applies to the visible section
+    ui.step()
+    m.set_power(office, False)
+    await asyncio.sleep(2.0)
+    ui.last_touch = __import__("time").ticks_ms()
+    ui.next_tick = 0
+    ui.step()
+    still = [d["name"] for d in [s for s in ui.sections() if s[0] == "lights"][0][4]]
+    assert still == names, "order changed while in use"
+    ui.last_touch -= 6000
+    ui.next_tick = 0
+    ui.step()
+    later = [d["name"] for d in [s for s in ui.sections() if s[0] == "lights"][0][4]]
+    assert later[-1] == "Office desk", "idle re-sort didn't happen: %s" % later
+    print("idle re-sort ok:", later)
+    app.change_setting("light_sort", "name")
+    ui.resort()
+    names = [d["name"].lower() for d in [s for s in ui.sections() if s[0] == "lights"][0][4]]
+    assert names == sorted(names), "A-Z order wrong: %s" % names
+    # Settings never touch flash at runtime: they wait in the RAM copy.
+    assert app.settings.dirty(), "expected pending settings"
+    # A crash inside the UI loop must not freeze the screen any more.
+    orig = ui.draw_header
+    boom = [0]
+
+    def faulty(*a):
+        if not boom[0]:
+            boom[0] = 1
+            raise ValueError("injected UI fault")
+        return orig(*a)
+    ui.draw_header = faulty
+    ui.invalidate()
+    await asyncio.sleep(1.0)
+    before = app.presto.partials
+    await tap(t, *TABS[0])
     await asyncio.sleep(0.5)
+    assert boom[0] and app.presto.partials > before, "UI loop did not recover"
+    print("UI loop recovered after an injected fault")
     print("frames", app.presto.frames, "partials", app.presto.partials)
+    # What the next boot does before Presto(): commit the RAM copy to flash.
+    import settings
+    nxt = settings.Settings(ram_dir=settings.RAM_DIR)
+    assert nxt["light_sort"] == "name" and nxt.dirty()
+    assert nxt.commit() and not nxt.dirty()
+    assert settings.Settings()["light_sort"] == "name", "flash copy not updated"
+    print("boot commit ok")
 
 
 def main():
+    import settings
+    settings.RAM_DIR = "ramfs"     # a directory standing in for /ramfs
     import app as appmod
     a = appmod.App()
     loop = asyncio.get_event_loop()

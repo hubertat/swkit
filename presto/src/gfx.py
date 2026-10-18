@@ -42,6 +42,8 @@ ICON = {
     "info": "",
     "home": "",
     "light_mode": "",
+    "expand_less": "\ue5ce",
+    "expand_more": "\ue5cf",
 }
 
 # Cap height of the font as a fraction of its size; used to centre text.

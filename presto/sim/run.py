@@ -78,51 +78,63 @@ class Driver:
         print("saved", path, "last render %dms" % self.app.ui.render_ms)
 
 
+# Tile slot centres on a 2x3 screen, pager arrows, tabs (see ui.py layout).
+SLOT = [(125, 159), (355, 159), (125, 257), (355, 257), (125, 355), (355, 355)]
+PAGE_UP, PAGE_DOWN = (336, 86), (442, 86)
+TAB = [(48, 442), (144, 442), (240, 442), (336, 442), (432, 442)]
+SHEET_CLOSE = (438, 58)
+
+
 async def tour(d):
+    import time
     await d.wait(3.0)
     await d.shot("lights")
-    await d.tap(120, 180)             # Kitchen: off -> on
+    await d.tap(*SLOT[0])                 # Kitchen: off -> on
     await d.wait(0.05)
     await d.shot("lights-pending")
     await d.wait(2.5)
     await d.shot("lights-confirmed")
-    await d.drag(240, 360, 240, 140)  # scroll down
-    await d.wait(0.6)
-    await d.shot("lights-scrolled")
-    await d.long_press(120, 240)      # Kids room ceiling (dimmable) detail
+    await d.drag(240, 330, 240, 150)      # swipe up: next screen
+    await d.wait(0.4)
+    await d.shot("lights-screen2")
+    await d.long_press(*SLOT[0])          # Kids room ceiling (dimmable) detail
     await d.wait(0.4)
     await d.shot("sheet-dimmable")
-    await d.drag(240, 380, 240, 160)  # scroll the sheet
-    await d.wait(0.5)
-    await d.shot("sheet-dimmable-scrolled")
-    await d.tap(440, 66)              # close
+    await d.tap(*SHEET_CLOSE)
+    await d.wait(0.3)
+    await d.tap(*PAGE_UP)                 # arrow: back to screen 1
+    await d.wait(0.3)
+    await d.drag(400, 250, 100, 250)      # swipe left: outlets
     await d.wait(0.4)
-    await d.drag(400, 250, 100, 250)  # swipe to outlets
-    await d.wait(0.6)
     await d.shot("outlets")
-    await d.tap(240, 440)             # tab: scenes (2nd of 5 is outlets; layout depends on count)
-    await d.wait(0.6)
-    await d.shot("tab-tap")
-    mock_swkit.DEVICES[14].update(last_event_type="double_press", last_event_time=__import__("time").time())
-    mock_swkit.DEVICES[13].update(last_event_type="single_press", last_event_time=__import__("time").time() - 140)
-    await d.tap(336, 440)
+    mock_swkit.DEVICES[14].update(last_event_type="double_press", last_event_time=time.time())
+    mock_swkit.DEVICES[13].update(last_event_type="single_press", last_event_time=time.time() - 140)
+    await d.tap(*TAB[3])
     await d.wait(2.4)
     await d.shot("buttons")
-    await d.tap(120, 180)             # open a button's detail
-    await d.wait(0.5)
+    await d.tap(*SLOT[0])                 # a button's detail
+    await d.wait(0.4)
     await d.shot("sheet-button")
-    await d.tap(440, 66)
+    await d.tap(*SHEET_CLOSE)
     await d.wait(0.3)
-    await d.tap(432, 440)             # settings
-    await d.wait(0.6)
+    await d.tap(*TAB[4])                  # settings
+    await d.wait(0.4)
     await d.shot("settings")
-    await d.drag(240, 380, 240, 120)
-    await d.wait(0.8)
-    await d.shot("settings-scrolled")
+    await d.tap(239, 268)                 # Light order: On first
+    await d.wait(0.4)
+    await d.shot("settings-sort")
+    await d.tap(*PAGE_DOWN)
+    await d.wait(0.4)
+    await d.shot("settings-2")
+    await d.tap(*PAGE_DOWN)
+    await d.wait(0.4)
+    await d.shot("settings-3")
+    await d.tap(*TAB[0])
+    await d.wait(0.6)
+    await d.shot("lights-on-first")
     # Unreachable controller
     d.mock.shutdown()
     d.mock.server_close()
-    await d.tap(48, 440)
     await d.wait(8.5)
     await d.shot("stale")
 
@@ -165,6 +177,8 @@ def main():
             ]
         mdns.browse = fake_browse
 
+    import settings
+    settings.RAM_DIR = os.path.join(work, "ramfs")
     import app as appmod
     app = appmod.App()
     d = Driver(app, args.out)

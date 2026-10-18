@@ -13,13 +13,14 @@ except ImportError:
     network = None
 
 from compat import ticks_ms, ticks_diff, gc_collect
-from settings import Settings
+from settings import Settings, mount_ramfs
 from api import Client
 import mdns
 import model as M
 
 HOSTNAME = "swkit-panel"
 RECONNECT_AFTER_MS = 30000     # unreachable this long -> look for the controller again
+COMMIT_IDLE_S = 600            # untouched this long with unsaved settings -> restart to commit them
 
 
 def _parse_url(url):
@@ -33,9 +34,14 @@ def _parse_url(url):
 
 
 class App:
-    VERSION = "1.0.0"
+    VERSION = "1.1.0"
 
     def __init__(self):
+        # Settings first: flash may only be written before Presto() starts
+        # core1 (see settings.py), so pending changes are committed here.
+        self.settings = Settings(ram_dir=mount_ramfs())
+        # Without a RAM copy a restart would lose changes instead of saving them.
+        self.can_commit = self.settings.commit() and not self.settings.memory_only
         # The hostname must be set before Presto() brings Wi-Fi up; the
         # panel then answers to swkit-panel.local.
         if network is not None:
@@ -49,7 +55,6 @@ class App:
             self.buzzer = Buzzer(43)
         except Exception:  # noqa: BLE001 - optional nicety
             self.buzzer = None
-        self.settings = Settings()
         self.client = None
         self.server = None          # dict describing the chosen controller
         self.info_name = None
@@ -93,6 +98,14 @@ class App:
         if s["ambient"] == "off":
             self._leds(0, 0, 0)
 
+    def change_setting(self, key, value, save=True):
+        """Applies a setting now. Saving only reaches the PSRAM RAM disk;
+        flash is written at the next boot (see settings.py)."""
+        self.settings.set(key, value, save=False)
+        if save:
+            self.settings.save()
+        self.apply_settings()
+
     def click(self):
         if not self.settings["click"] or self.buzzer is None:
             return
@@ -135,12 +148,59 @@ class App:
         if not self.ui.g.font_ok:
             self.font_missing()
             return
-        asyncio.create_task(self.ui.loop())
-        asyncio.create_task(self.idle_loop())
-        asyncio.create_task(self.led_loop())
+        asyncio.get_event_loop().set_exception_handler(self._task_error)
+        self.spawn("ui", self.ui.loop)
+        self.spawn("idle", self.idle_loop)
+        self.spawn("leds", self.led_loop)
         await self.connect_wifi()
-        asyncio.create_task(self.wifi_watch())
+        self.spawn("wifi", self.wifi_watch)
         await self.choose_server()
+
+    def spawn(self, name, loop_fn):
+        """Runs a long-lived loop and restarts it if it raises.
+
+        An exception in an asyncio task ends only that task; for the UI loop
+        that froze the screen while everything else kept running. Repeated
+        failures restart the panel instead."""
+        async def supervised():
+            failures = []
+            while True:
+                try:
+                    await loop_fn()
+                    return
+                except Exception as e:  # noqa: BLE001 - logged and retried
+                    _log_exception(name, e)
+                    now = ticks_ms()
+                    failures = [t for t in failures if ticks_diff(now, t) < 60000] + [now]
+                    if len(failures) >= 5:
+                        crashed(self, e)
+                    try:
+                        self.notify("Internal error in %s: %s" % (name, e), "error")
+                        self.ui.invalidate()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    await asyncio.sleep(0.5)
+        return asyncio.create_task(supervised())
+
+    def _task_error(self, loop, ctx):
+        # One-shot tasks (command sends, scans): log, tell the user, carry on.
+        e = ctx.get("exception")
+        _log_exception("task", e)
+        try:
+            self.notify("Internal error: %s" % e, "error")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def restart(self, title):
+        """Clean restart, e.g. to commit settings to flash at boot."""
+        print("restart:", title)
+        try:
+            self.ui.set_boot("sync", title, "Restarting the panel...")
+            self.ui.render((0, 0, 480, 480))
+        except Exception:  # noqa: BLE001
+            pass
+        import machine
+        machine.reset()
 
     async def connect_wifi(self):
         ui = self.ui
@@ -250,7 +310,7 @@ class App:
         if first:
             self.model = M.Model(client, self.notify)
             self.model.on_press = self.on_press
-            asyncio.create_task(self.poll_loop())
+            self.spawn("poll", self.poll_loop)
         else:
             self.model.client = client
             self.model.devices = {}
@@ -267,7 +327,7 @@ class App:
     def start_picker(self, found=None):
         ui = self.ui
         ui.mode = "picker"
-        ui.scroll["picker"] = 0
+        ui.screens["picker"] = 0
         ui.picker = {"items": self._mark(found or []), "scanning": found is None, "note": ""}
         ui.invalidate()
         if found is None:
@@ -367,8 +427,9 @@ class App:
                 self.ui.dimmed = False
             if s["home_after_s"] and idle >= s["home_after_s"] and self.ui.mode == "main":
                 self.ui.go_home()
-            if idle == 600:
-                self.settings.save()   # persists the last page
+            if (idle >= COMMIT_IDLE_S and self.can_commit and self.settings.dirty() and self.ui.t is None
+                    and not (self.model and self.model.has_active_intent())):
+                self.restart("Saving settings")
             if self.ui.t is None:
                 # Small, regular collections instead of a long one when the
                 # 8 MB PSRAM heap eventually fills (polls allocate JSON).
@@ -411,14 +472,19 @@ def main():
         crashed(app, e)
 
 
-def crashed(app, e):
-    """Shows what went wrong, then restarts: the panel is unattended."""
+def _log_exception(where, e):
     import sys
+    print("error in %s:" % where)
     try:
         sys.print_exception(e)
     except AttributeError:
         import traceback
-        traceback.print_exc()
+        traceback.print_exception(type(e), e, e.__traceback__)
+
+
+def crashed(app, e):
+    """Shows what went wrong, then restarts: the panel is unattended."""
+    _log_exception("app", e)
     try:
         ui = app.ui
         ui.set_boot("error", "Something went wrong", "%s: %s. Restarting in 20 seconds." % (type(e).__name__, e))
