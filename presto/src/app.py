@@ -17,7 +17,7 @@ try:
 except ImportError:
     Timer = None
 
-from compat import ticks_ms, ticks_diff, gc_collect
+from compat import ticks_ms, ticks_diff, ticks_add, gc_collect
 from settings import Settings, mount_ramfs
 from api import Client
 import mdns
@@ -26,7 +26,8 @@ import model as M
 HOSTNAME = "swkit-panel"
 RECONNECT_AFTER_MS = 30000     # unreachable this long -> look for the controller again
 COMMIT_IDLE_S = 600            # untouched this long with unsaved settings -> restart to commit them
-IDLE_FILE = "swkit_idle"       # in the RAM disk: "dim" or "off" carries the idle state over a restart
+IDLE_FILE = "swkit_idle"       # in the RAM disk: "<awake|dim|off> <idle ms>" carries idleness over a restart
+IDLE_CARRY_MAX_MS = 86400000   # an idle time restored from the note is capped at a day
 # Tap sound: a short tone, timed by a hardware timer so the length doesn't
 # depend on how long the redraw after the tap takes. Lower than the piezo's
 # loudest (shrill) range around 2.5-4 kHz.
@@ -53,7 +54,7 @@ class App:
         ram_dir = mount_ramfs()
         self.settings = Settings(ram_dir=ram_dir)
         self.idle_path = (ram_dir.rstrip("/") + "/" + IDLE_FILE) if ram_dir else None
-        resume = _take(self.idle_path)
+        resume, idle_ms = _parse_idle(_take(self.idle_path))
         # Without a RAM copy a restart would lose changes instead of saving them.
         self.can_commit = self.settings.commit() and not self.settings.memory_only
         # The hostname must be set before Presto() brings Wi-Fi up; the
@@ -96,6 +97,9 @@ class App:
         self.ui = ui.UI(self)
         self.ui.dimmed = self.dimmed
         self.ui.asleep = self.asleep
+        # Keep counting from the last touch before the restart, so the
+        # screen-off and go-home delays aren't restarted by it.
+        self.ui.last_touch = ticks_add(self.ui.last_touch, -idle_ms)
         self.apply_settings()
 
     # ---------- helpers used by the UI ----------
@@ -298,12 +302,15 @@ class App:
         machine.reset()
 
     def save_idle_state(self):
-        """Tells the next boot (RAM disk, read once) to start dimmed or off."""
+        """Tells the next boot (RAM disk, read once) whether to start dimmed
+        or off, and how long the panel has been idle."""
         if not self.idle_path:
             return
+        state = "off" if self.asleep else "dim" if self.dimmed else "awake"
+        idle_ms = max(0, ticks_diff(ticks_ms(), self.ui.last_touch))
         try:
             with open(self.idle_path, "w") as f:
-                f.write("off" if self.asleep else "dim" if self.dimmed else "")
+                f.write("%s %d" % (state, idle_ms))
         except OSError as e:
             print("idle state:", e)
 
@@ -596,6 +603,17 @@ def _take(path):
     except OSError:
         pass
     return value or None
+
+
+def _parse_idle(note):
+    """"<awake|dim|off> <idle ms>" -> (state or None, idle ms)."""
+    parts = (note or "").split()
+    state = parts[0] if parts and parts[0] in ("dim", "off") else None
+    try:
+        idle_ms = int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        idle_ms = 0
+    return state, max(0, min(IDLE_CARRY_MAX_MS, idle_ms))
 
 
 def main():

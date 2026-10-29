@@ -171,11 +171,25 @@ async def screen_off(app, t):
     assert not m.has_active_intent() and m.view(first).on == was_on, "the waking touch switched something"
     assert m.last_ok_at != ok_at and m.freshness()[0] == "live", "no poll after wake: %s" % (m.freshness(),)
     # A settings-commit restart while off comes back off.
+    import time
+    import app as appmod
     app.sleep()
     app.save_idle_state()
-    import app as appmod
     again = appmod.App()
     assert again.asleep and again.presto.backlight == 0, "restart did not keep the screen off"
+    # ...and one while dimmed keeps counting towards screen off: idle 10 min
+    # with a 15 min delay restarts dimmed, and turns off 5 min later, not 15.
+    app.wake()
+    app.change_setting("off_after_s", 900)
+    app.dimmed = True
+    app.ui.last_touch = time.ticks_add(time.ticks_ms(), -600000)
+    app.save_idle_state()
+    again = appmod.App()
+    idle = time.ticks_diff(time.ticks_ms(), again.ui.last_touch)
+    assert again.dimmed and not again.asleep, "restart did not keep the screen dimmed"
+    assert 600000 <= idle < 605000, "idle time not carried over the restart: %d ms" % idle
+    print("idle carried over restart:", idle // 1000, "s")
+    app.dimmed = False
     app.wake()
     app.change_setting("off_after_s", 0)
     print("screen off ok")
