@@ -34,7 +34,7 @@ async def drag(t, x0, y0, x1, y1):
 
 
 SLOT = [(125, 159), (355, 159), (125, 257), (355, 257), (125, 355), (355, 355)]
-PAGE_UP, PAGE_DOWN = (336, 86), (442, 86)
+PAGE_UP, PAGE_DOWN = (436, 170), (436, 344)     # page rail beside the grid
 TABS = [(48, 442), (144, 442), (240, 442), (336, 442), (432, 442)]
 SHEET_CLOSE = (438, 58)
 
@@ -70,7 +70,7 @@ async def tour(app):
         await tap(t, *SHEET_CLOSE)
     # Settings: every screen, every chip row on the first two.
     await tap(t, *TABS[4])
-    for _ in range(3):
+    for _ in range(4):
         for y in (150, 268, 316, 350):
             await tap(t, 120, y)
         await tap(t, *PAGE_DOWN)
@@ -134,6 +134,65 @@ async def tour(app):
     assert nxt.commit() and not nxt.dirty()
     assert settings.Settings()["light_sort"] == "name", "flash copy not updated"
     print("boot commit ok")
+    await screen_off(app, t)
+
+
+async def screen_off(app, t):
+    """Screen off: backlight 0, no polls, Wi-Fi power save; a touch only
+    wakes it, and the old state reads "Updating…" until a poll answers."""
+    import network
+    ui, m = app.ui, app.model
+    ui.section = 0
+    ui.screens = {}
+    ui.invalidate()
+    await asyncio.sleep(0.3)
+    app.change_setting("off_after_s", 300)
+    ui.last_touch = __import__("time").ticks_add(ui.last_touch, -301000)
+    await asyncio.sleep(1.5)
+    assert app.asleep and app.presto.backlight == 0, "screen did not turn off"
+    assert network.WLAN.pm == network.WLAN.PM_POWERSAVE, "Wi-Fi not in power save"
+    ok_at = m.last_ok_at
+    drawn = app.presto.partials
+    await asyncio.sleep(2.6)
+    assert m.last_ok_at == ok_at, "polled while the screen was off"
+    m.changed()
+    await asyncio.sleep(0.2)
+    assert app.presto.partials == drawn, "drew while the screen was off"
+    m.poll_now = False
+    first = ui.current()[4][0]
+    was_on = m.view(first).on
+    t.press(*SLOT[0])                       # lands on a tile: must not switch it
+    await asyncio.sleep(0.08)
+    assert not app.asleep and app.presto.backlight >= 0.1, "touch did not wake"
+    assert app.presto.partials > drawn, "no repaint on wake"
+    assert network.WLAN.pm == network.WLAN.PM_PERFORMANCE, "Wi-Fi power save not undone"
+    t.release()
+    await asyncio.sleep(0.6)
+    assert not m.has_active_intent() and m.view(first).on == was_on, "the waking touch switched something"
+    assert m.last_ok_at != ok_at and m.freshness()[0] == "live", "no poll after wake: %s" % (m.freshness(),)
+    # A settings-commit restart while off comes back off.
+    import time
+    import app as appmod
+    app.sleep()
+    app.save_idle_state()
+    again = appmod.App()
+    assert again.asleep and again.presto.backlight == 0, "restart did not keep the screen off"
+    # ...and one while dimmed keeps counting towards screen off: idle 10 min
+    # with a 15 min delay restarts dimmed, and turns off 5 min later, not 15.
+    app.wake()
+    app.change_setting("off_after_s", 900)
+    app.dimmed = True
+    app.ui.last_touch = time.ticks_add(time.ticks_ms(), -600000)
+    app.save_idle_state()
+    again = appmod.App()
+    idle = time.ticks_diff(time.ticks_ms(), again.ui.last_touch)
+    assert again.dimmed and not again.asleep, "restart did not keep the screen dimmed"
+    assert 600000 <= idle < 605000, "idle time not carried over the restart: %d ms" % idle
+    print("idle carried over restart:", idle // 1000, "s")
+    app.dimmed = False
+    app.wake()
+    app.change_setting("off_after_s", 0)
+    print("screen off ok")
 
 
 def main():

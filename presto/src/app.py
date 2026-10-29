@@ -1,5 +1,5 @@
 # swkit panel for the Pimoroni Presto: boot, Wi-Fi, controller discovery,
-# polling, ambient LEDs and screen dimming. Drawing and touch are in ui.py,
+# polling, ambient LEDs, screen dimming and screen off. Drawing and touch are in ui.py,
 # device state handling in model.py.
 
 try:
@@ -12,7 +12,12 @@ try:
 except ImportError:
     network = None
 
-from compat import ticks_ms, ticks_diff, gc_collect
+try:
+    from machine import Timer
+except ImportError:
+    Timer = None
+
+from compat import ticks_ms, ticks_diff, ticks_add, gc_collect
 from settings import Settings, mount_ramfs
 from api import Client
 import mdns
@@ -21,6 +26,13 @@ import model as M
 HOSTNAME = "swkit-panel"
 RECONNECT_AFTER_MS = 30000     # unreachable this long -> look for the controller again
 COMMIT_IDLE_S = 600            # untouched this long with unsaved settings -> restart to commit them
+IDLE_FILE = "swkit_idle"       # in the RAM disk: "<awake|dim|off> <idle ms>" carries idleness over a restart
+IDLE_CARRY_MAX_MS = 86400000   # an idle time restored from the note is capped at a day
+# Tap sound: a short tone, timed by a hardware timer so the length doesn't
+# depend on how long the redraw after the tap takes. Lower than the piezo's
+# loudest (shrill) range around 2.5-4 kHz.
+CLICK_HZ = 1200
+CLICK_MS = 16
 
 
 def _parse_url(url):
@@ -34,12 +46,15 @@ def _parse_url(url):
 
 
 class App:
-    VERSION = "1.1.0"
+    VERSION = "1.2.0"
 
     def __init__(self):
         # Settings first: flash may only be written before Presto() starts
         # core1 (see settings.py), so pending changes are committed here.
-        self.settings = Settings(ram_dir=mount_ramfs())
+        ram_dir = mount_ramfs()
+        self.settings = Settings(ram_dir=ram_dir)
+        self.idle_path = (ram_dir.rstrip("/") + "/" + IDLE_FILE) if ram_dir else None
+        resume, idle_ms = _parse_idle(_take(self.idle_path))
         # Without a RAM copy a restart would lose changes instead of saving them.
         self.can_commit = self.settings.commit() and not self.settings.memory_only
         # The hostname must be set before Presto() brings Wi-Fi up; the
@@ -51,21 +66,40 @@ class App:
                 pass
         from presto import Presto, Buzzer
         self.presto = Presto(full_res=True, ambient_light=False)
+        # Restarted while idle (settings commit): come back the same way,
+        # without lighting up a dark room.
+        self.asleep = resume == "off"
+        self.dimmed = resume in ("dim", "off")
+        if self.dimmed:
+            self.update_backlight()
         try:
             self.buzzer = Buzzer(43)
         except Exception:  # noqa: BLE001 - optional nicety
             self.buzzer = None
+        self.click_timer = None
+        self.click_stop = self._click_stop      # bound once: the timer calls it from an IRQ
+        if Timer is not None and self.buzzer is not None:
+            try:
+                self.click_timer = Timer()
+            except Exception:  # noqa: BLE001 - falls back to an asyncio stop
+                pass
         self.client = None
         self.server = None          # dict describing the chosen controller
         self.info_name = None
         self.model = None
         self.secret_url = ""
         self.press_flash = 0
-        self.dimmed = False
         self.picker_task = None
+        self.wifi_pm = None         # power-management mode to restore on wake
+        self.wifi_check_now = False
 
         import ui
         self.ui = ui.UI(self)
+        self.ui.dimmed = self.dimmed
+        self.ui.asleep = self.asleep
+        # Keep counting from the last touch before the restart, so the
+        # screen-off and go-home delays aren't restarted by it.
+        self.ui.last_touch = ticks_add(self.ui.last_touch, -idle_ms)
         self.apply_settings()
 
     # ---------- helpers used by the UI ----------
@@ -90,12 +124,21 @@ class App:
             pass
         return info
 
+    def update_backlight(self):
+        s = self.settings
+        if self.asleep:
+            level = 0.0             # fully off: the PWM duty goes to 0
+        elif self.dimmed:
+            level = max(0.02, min(1.0, s["dim_level"]))
+        else:
+            level = max(0.1, min(1.0, s["backlight"]))
+        self.presto.set_backlight(level)
+
     def apply_settings(self):
         s = self.settings
-        if not self.dimmed:
-            self.presto.set_backlight(max(0.1, min(1.0, s["backlight"])))
-        self.presto.auto_ambient_leds(s["ambient"] == "glow")
-        if s["ambient"] == "off":
+        self.update_backlight()
+        self.presto.auto_ambient_leds(s["ambient"] == "glow" and not self.asleep)
+        if s["ambient"] == "off" or self.asleep:
             self._leds(0, 0, 0)
 
     def change_setting(self, key, value, save=True):
@@ -109,18 +152,69 @@ class App:
     def click(self):
         if not self.settings["click"] or self.buzzer is None:
             return
-        self.buzzer.set_tone(2400)
-        asyncio.create_task(self._click_off())
+        self.buzzer.set_tone(CLICK_HZ)
+        if self.click_timer is not None:
+            # An asyncio sleep would end only when the UI loop yields, after
+            # the redraw that follows the tap: the length varied with it.
+            # hard=True stops it from the timer interrupt, even mid-render.
+            self.click_timer.init(mode=Timer.ONE_SHOT, period=CLICK_MS, callback=self.click_stop, hard=True)
+        else:
+            asyncio.create_task(self._click_off())
+
+    def _click_stop(self, _timer):
+        # Runs in interrupt context: no allocation (set_tone(0) only sets the duty).
+        self.buzzer.set_tone(0)
 
     async def _click_off(self):
-        await asyncio.sleep(0.012)
-        self.buzzer.set_tone(-1)
+        await asyncio.sleep(CLICK_MS / 1000)
+        self.buzzer.set_tone(0)
+
+    def sleep(self):
+        """Screen off: backlight and LEDs off, polling paused, Wi-Fi in
+        power-save mode. The touch controller keeps working, so a touch
+        wakes the panel (and only wakes it, as when dimmed)."""
+        if self.asleep:
+            return
+        self.asleep = self.dimmed = True
+        self.ui.asleep = self.ui.dimmed = True
+        self.update_backlight()
+        self.presto.auto_ambient_leds(False)
+        self._leds(0, 0, 0)
+        self.wifi_powersave(True)
 
     def wake(self):
         self.ui.dimmed = False
+        if self.asleep:
+            self.asleep = False
+            self.ui.asleep = False
+            self.wifi_powersave(False)
+            self.wifi_check_now = True
+            if self.model is not None:
+                self.model.resume()
+            # Paint the current state while the backlight is still off, so
+            # the screen doesn't light up showing what it was when it slept.
+            self.ui.repaint_now()
+            self.presto.auto_ambient_leds(self.settings["ambient"] == "glow")
         if self.dimmed:
             self.dimmed = False
-            self.presto.set_backlight(max(0.1, min(1.0, self.settings["backlight"])))
+            self.update_backlight()
+
+    def wifi_powersave(self, on):
+        """Lets the radio sleep between beacons while the screen is off. The
+        connection stays up, so waking needs no reconnect."""
+        if network is None:
+            return
+        try:
+            wlan = network.WLAN(network.STA_IF)
+            if on:
+                if self.wifi_pm is None:
+                    self.wifi_pm = wlan.config("pm")
+                wlan.config(pm=network.WLAN.PM_POWERSAVE)
+            elif self.wifi_pm is not None:
+                wlan.config(pm=self.wifi_pm)
+                self.wifi_pm = None
+        except Exception as e:  # noqa: BLE001 - a saving, not a requirement
+            print("wifi power save:", e)
 
     def notify(self, msg, level=None):
         self.ui.notify(msg, level)
@@ -153,6 +247,8 @@ class App:
         self.spawn("idle", self.idle_loop)
         self.spawn("leds", self.led_loop)
         await self.connect_wifi()
+        if self.asleep:
+            self.wifi_powersave(True)   # restarted while the screen was off
         self.spawn("wifi", self.wifi_watch)
         await self.choose_server()
 
@@ -192,15 +288,31 @@ class App:
             pass
 
     def restart(self, title):
-        """Clean restart, e.g. to commit settings to flash at boot."""
+        """Clean restart, e.g. to commit settings to flash at boot. An idle
+        panel (dimmed or off) comes back up idle."""
         print("restart:", title)
-        try:
-            self.ui.set_boot("sync", title, "Restarting the panel...")
-            self.ui.render((0, 0, 480, 480))
-        except Exception:  # noqa: BLE001
-            pass
+        self.save_idle_state()
+        if not self.asleep:
+            try:
+                self.ui.set_boot("sync", title, "Restarting the panel...")
+                self.ui.render((0, 0, 480, 480))
+            except Exception:  # noqa: BLE001
+                pass
         import machine
         machine.reset()
+
+    def save_idle_state(self):
+        """Tells the next boot (RAM disk, read once) whether to start dimmed
+        or off, and how long the panel has been idle."""
+        if not self.idle_path:
+            return
+        state = "off" if self.asleep else "dim" if self.dimmed else "awake"
+        idle_ms = max(0, ticks_diff(ticks_ms(), self.ui.last_touch))
+        try:
+            with open(self.idle_path, "w") as f:
+                f.write("%s %d" % (state, idle_ms))
+        except OSError as e:
+            print("idle state:", e)
 
     async def connect_wifi(self):
         ui = self.ui
@@ -230,9 +342,15 @@ class App:
             await asyncio.sleep(15)
 
     async def wifi_watch(self):
-        """EzWiFi never reconnects by itself."""
+        """EzWiFi never reconnects by itself. Checks every 10 s, not while
+        the screen is off, and straight after waking."""
+        last = ticks_ms()
         while True:
-            await asyncio.sleep(10)
+            await asyncio.sleep(1)
+            if self.asleep or (not self.wifi_check_now and ticks_diff(ticks_ms(), last) < 10000):
+                continue
+            self.wifi_check_now = False
+            last = ticks_ms()
             if not self.presto.wifi.isconnected():
                 self.notify("Wi-Fi dropped, reconnecting...", "warn")
                 try:
@@ -381,6 +499,11 @@ class App:
         last = 0
         unreachable_since = None
         while True:
+            if self.asleep:
+                # Nothing to show and no push channel yet: don't poll.
+                unreachable_since = None
+                await asyncio.sleep(0.2)
+                continue
             now = ticks_ms()
             cadence = M.POLL_FAST_MS if m.has_active_intent() else M.POLL_MS
             if m.poll_now or ticks_diff(now, last) >= cadence:
@@ -419,10 +542,13 @@ class App:
             await asyncio.sleep(1)
             s = self.settings
             idle = ticks_diff(ticks_ms(), self.ui.last_touch) // 1000
-            if s["dim_after_s"] and idle >= s["dim_after_s"] and not self.dimmed and self.ui.t is None:
+            # Off wins when its delay is the shorter one.
+            if s["off_after_s"] and idle >= s["off_after_s"] and not self.asleep and self.ui.t is None:
+                self.sleep()
+            elif s["dim_after_s"] and idle >= s["dim_after_s"] and not self.dimmed and self.ui.t is None:
                 self.dimmed = True
                 self.ui.dimmed = True
-                self.presto.set_backlight(max(0.02, min(1.0, s["dim_level"])))
+                self.update_backlight()
             if not self.dimmed:
                 self.ui.dimmed = False
             if s["home_after_s"] and idle >= s["home_after_s"] and self.ui.mode == "main":
@@ -444,7 +570,7 @@ class App:
         the controller is unreachable, dark otherwise."""
         while True:
             await asyncio.sleep(0.05)
-            if self.settings["ambient"] != "status":
+            if self.settings["ambient"] != "status" or self.asleep:
                 continue
             now = ticks_ms()
             m = self.model
@@ -460,6 +586,34 @@ class App:
             if self.dimmed:
                 r, g, b = r // 2, g // 2, b // 2
             self._leds(r, g, b)
+
+
+def _take(path):
+    """Reads and removes a one-shot file; None if there is none."""
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            value = f.read().strip()
+    except OSError:
+        return None
+    try:
+        import os
+        os.remove(path)
+    except OSError:
+        pass
+    return value or None
+
+
+def _parse_idle(note):
+    """"<awake|dim|off> <idle ms>" -> (state or None, idle ms)."""
+    parts = (note or "").split()
+    state = parts[0] if parts and parts[0] in ("dim", "off") else None
+    try:
+        idle_ms = int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        idle_ms = 0
+    return state, max(0, min(IDLE_CARRY_MAX_MS, idle_ms))
 
 
 def main():

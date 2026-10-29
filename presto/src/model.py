@@ -133,6 +133,7 @@ class Model:
         self.intents = {}         # index -> {"power": Intent|None, "bri": Intent|None}
         self.flash = {}           # index -> ticks when "confirmed" flash ends
         self.poll_now = False     # set to request an immediate poll
+        self.resuming = False     # polling just resumed after screen off (panel only)
         self.on_press = lambda dev: None  # a button reported a new press
 
     # ---------- helpers ----------
@@ -575,20 +576,34 @@ class Model:
         try:
             data = await self.client.get("/api/devices", POLL_TIMEOUT_S)
         except Exception as e:  # noqa: BLE001
-            first = self.last_err is None
+            first = self.last_err is None or self.resuming
             self.last_err = e
+            self.resuming = False
             if first:
                 self.changed()
             return False
         if not isinstance(data, list):
             self.last_err = ValueError("unexpected reply")
+            self.resuming = False
             self.changed()
             return False
+        self.resuming = False
         self.apply_snapshot(data, started)
         return True
 
+    def resume(self):
+        """Polling restarts after the panel slept (screen off, no polls).
+        Until the next poll answers, the last known state is shown as
+        "Updating…" rather than as a lost connection: the data is old because
+        the panel chose not to ask, not because the controller went away."""
+        self.resuming = True
+        self.poll_now = True
+        self.changed()
+
     def freshness(self):
         """Returns (level, text): level is connecting | live | aging | stale."""
+        if self.resuming and self.last_ok_at:
+            return "connecting", "Updating…"
         if not self.last_ok_at:
             if self.last_err is not None:
                 return "stale", "Offline"
