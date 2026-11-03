@@ -17,8 +17,8 @@ func registerInfoTools(registry *ToolRegistry, controller app.DeviceController) 
 			Properties: map[string]any{
 				"type": map[string]any{
 					"type":        "string",
-					"description": "Optional device type filter: 'light', 'color_light', 'outlet', or 'button'",
-					"enum":        []string{"light", "color_light", "outlet", "button"},
+					"description": "Optional device type filter",
+					"enum":        []string{"light", "color_light", "dimmable_light", "outlet", "button", "scene", "window_shutter"},
 				},
 			},
 		},
@@ -78,6 +78,9 @@ func makeListDevices(controller app.DeviceController) func(context.Context, json
 			IsHealthy      bool   `json:"is_healthy"`
 			IsFaulty       bool   `json:"is_faulty"`
 			HomeKitEnabled bool   `json:"homekit_enabled"`
+			// WindowShutter is set for window shutters only: is_on is then
+			// just "position known and above 0%".
+			WindowShutter map[string]any `json:"window_shutter,omitempty"`
 		}
 
 		var devices []deviceInfo
@@ -93,6 +96,7 @@ func makeListDevices(controller app.DeviceController) func(context.Context, json
 				IsHealthy:      d.IsHealthy,
 				IsFaulty:       d.IsFaulty,
 				HomeKitEnabled: d.HomeKitEnabled,
+				WindowShutter:  shutterInfo(d.WindowShutter),
 			})
 		}
 
@@ -153,6 +157,8 @@ func makeGetSystemStatus(controller app.DeviceController) func(context.Context, 
 			"dimmable_lights": summary.DimmableLightsCount,
 			"outlets":         summary.OutletsCount,
 			"buttons":         summary.ButtonsCount,
+			"scenes":          summary.ScenesCount,
+			"window_shutters": summary.WindowShuttersCount,
 			"homekit_enabled": summary.HomeKitEnabled,
 			"homekit_devices": summary.HomeKitDevices,
 		}
