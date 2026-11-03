@@ -20,6 +20,7 @@ var controllableTargetTypes = map[app.DeviceType]bool{
 	app.DeviceTypeDimmableLight: true,
 	app.DeviceTypeOutlet:        true,
 	app.DeviceTypeScene:         true,
+	app.DeviceTypeWindowShutter: true,
 }
 
 // handleApiSchema returns the full configuration schema graph as JSON: nodes
@@ -157,7 +158,7 @@ func buildSchemaGraph(state app.AppState, cfg *app.EditableConfig) apiSchemaResp
 			Detail:     buildDeviceDetail(d),
 		})
 
-		for _, ref := range []struct {
+		refs := []struct {
 			ioId string
 			role string
 		}{
@@ -165,7 +166,21 @@ func buildSchemaGraph(state app.AppState, cfg *app.EditableConfig) apiSchemaResp
 			{d.RgbwIoId, "rgbw"},
 			{d.AnalogIoId, "analog"},
 			{d.EventInputId, "event_input"},
-		} {
+		}
+		// Window shutters own two outputs; their ids are already the
+		// configured (canonical) ids. Separately labeled edges.
+		if d.WindowShutter != nil {
+			refs = append(refs,
+				struct {
+					ioId string
+					role string
+				}{d.WindowShutter.OpenIoId, "open_output"},
+				struct {
+					ioId string
+					role string
+				}{d.WindowShutter.CloseIoId, "close_output"})
+		}
+		for _, ref := range refs {
 			if ref.ioId == "" {
 				continue
 			}
@@ -389,6 +404,18 @@ func buildDeviceDetail(d app.DeviceState) map[string]any {
 	case app.DeviceTypeScene:
 		detail["state_names"] = d.SceneStateNames
 		detail["state_index"] = d.SceneStateIndex
+	case app.DeviceTypeWindowShutter:
+		if ws := d.WindowShutter; ws != nil {
+			detail["open_io_id"] = ws.OpenIoId
+			detail["close_io_id"] = ws.CloseIoId
+			detail["motion"] = ws.Motion
+			detail["position_known"] = ws.PositionKnown
+			detail["current_position"] = ws.CurrentPosition
+			detail["target_position"] = ws.TargetPosition
+			detail["open_duration_seconds"] = ws.OpenDurationSeconds
+			detail["close_duration_seconds"] = ws.CloseDurationSeconds
+			detail["remaining_travel_ms"] = ws.RemainingTravelMilliseconds
+		}
 	}
 
 	if len(detail) == 0 {

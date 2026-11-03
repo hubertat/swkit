@@ -189,6 +189,7 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 			OutletsCount:        summary.OutletsCount,
 			ButtonsCount:        summary.ButtonsCount,
 			ScenesCount:         summary.ScenesCount,
+			WindowShuttersCount: summary.WindowShuttersCount,
 			HomeKitEnabled:      summary.HomeKitEnabled,
 			HomeKitDevices:      summary.HomeKitDevices,
 		},
@@ -228,6 +229,7 @@ func (ws *WebServer) handleApiState(w http.ResponseWriter, r *http.Request) {
 			Brightness:      d.Brightness,
 			SceneStateIndex: d.SceneStateIndex,
 			SceneStateNames: d.SceneStateNames,
+			WindowShutter:   controlShutterFrom(d.WindowShutter),
 		}
 		if !d.LastEventTime.IsZero() {
 			dev.LastEventTime = &d.LastEventTime
@@ -393,6 +395,7 @@ type apiSummary struct {
 	OutletsCount        int  `json:"outlets_count"`
 	ButtonsCount        int  `json:"buttons_count"`
 	ScenesCount         int  `json:"scenes_count"`
+	WindowShuttersCount int  `json:"window_shutters_count"`
 	HomeKitEnabled      bool `json:"homekit_enabled"`
 	HomeKitDevices      int  `json:"homekit_devices"`
 }
@@ -428,6 +431,9 @@ type apiDevice struct {
 	Brightness      int      `json:"brightness,omitempty"`
 	SceneStateIndex int      `json:"scene_state_index,omitempty"`
 	SceneStateNames []string `json:"scene_state_names,omitempty"`
+	// WindowShutter (window shutters only): motion, estimated position and
+	// both output io ids; see controlShutterState.
+	WindowShutter *controlShutterState `json:"window_shutter,omitempty"`
 }
 
 type apiControlRelation struct {

@@ -187,10 +187,60 @@ func (cs *ControlServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-cache")
+	// Features lists additive API capabilities (the API version only
+	// changes on incompatible changes): "window_shutter" means the
+	// open/close/stop/set_position actions and window_shutter payloads are
+	// available.
+	features := []string{}
+	if _, ok := cs.provider.(app.WindowShutterController); ok {
+		features = append(features, controlFeatureWindowShutter)
+	}
 	json.NewEncoder(w).Encode(struct {
-		Name string `json:"name"`
-		API  int    `json:"api"`
-	}{Name: cs.name, API: controlAPIVersion})
+		Name     string   `json:"name"`
+		API      int      `json:"api"`
+		Features []string `json:"features"`
+	}{Name: cs.name, API: controlAPIVersion, Features: features})
+}
+
+const controlFeatureWindowShutter = "window_shutter"
+
+// controlShutterState is the window shutter payload, in device lists and in
+// action responses. Positions are percent open (0 closed, 100 open) and are
+// estimated from travel time, never measured; current_position is
+// meaningful only when position_known. target_position is -1 when there is
+// no target (idle with unknown position). remaining_travel_ms is the
+// server-calculated time until the outputs stop (reversal wait and endpoint
+// overrun included): clients derive completion deadlines from it rather
+// than from position reaching 0/100.
+type controlShutterState struct {
+	Motion            string `json:"motion"`
+	TargetPosition    int    `json:"target_position"`
+	CurrentPosition   int    `json:"current_position"`
+	PositionKnown     bool   `json:"position_known"`
+	PendingStart      bool   `json:"pending_start"`
+	OpenIoId          string `json:"open_io_id"`
+	CloseIoId         string `json:"close_io_id"`
+	OpenDurationSecs  int    `json:"open_duration_seconds"`
+	CloseDurationSecs int    `json:"close_duration_seconds"`
+	RemainingTravelMs int64  `json:"remaining_travel_ms"`
+}
+
+func controlShutterFrom(s *app.WindowShutterState) *controlShutterState {
+	if s == nil {
+		return nil
+	}
+	return &controlShutterState{
+		Motion:            s.Motion,
+		TargetPosition:    s.TargetPosition,
+		CurrentPosition:   s.CurrentPosition,
+		PositionKnown:     s.PositionKnown,
+		PendingStart:      s.PendingStart,
+		OpenIoId:          s.OpenIoId,
+		CloseIoId:         s.CloseIoId,
+		OpenDurationSecs:  s.OpenDurationSeconds,
+		CloseDurationSecs: s.CloseDurationSeconds,
+		RemainingTravelMs: s.RemainingTravelMilliseconds,
+	}
 }
 
 // controlDeviceResponse is the response for device list endpoint
@@ -218,6 +268,10 @@ type controlDeviceResponse struct {
 	// LastEventAgeMs is how long ago the button's last event happened, so the
 	// client can show a relative time without trusting its own clock.
 	LastEventAgeMs int64 `json:"last_event_age_ms,omitempty"`
+	// WindowShutter is present for window shutters only. is_on is then a
+	// legacy compatibility value (known position > 0); shutter clients use
+	// this payload.
+	WindowShutter *controlShutterState `json:"window_shutter,omitempty"`
 }
 
 // handleDeviceList returns the list of devices with their current state
@@ -235,7 +289,8 @@ func (cs *ControlServer) handleDeviceList(w http.ResponseWriter, r *http.Request
 			d.Type == app.DeviceTypeColorLight ||
 			d.Type == app.DeviceTypeDimmableLight ||
 			d.Type == app.DeviceTypeOutlet ||
-			d.Type == app.DeviceTypeScene
+			d.Type == app.DeviceTypeScene ||
+			d.Type == app.DeviceTypeWindowShutter
 		hasBrightness := d.Type == app.DeviceTypeDimmableLight
 
 		resp := controlDeviceResponse{
@@ -250,6 +305,7 @@ func (cs *ControlServer) handleDeviceList(w http.ResponseWriter, r *http.Request
 			Brightness:    d.Brightness,
 			LastEventType: d.LastEventType,
 			StateError:    d.StateError,
+			WindowShutter: controlShutterFrom(d.WindowShutter),
 		}
 		if !d.LastEventTime.IsZero() {
 			resp.LastEventAgeMs = max(time.Since(d.LastEventTime).Milliseconds(), 1)
@@ -281,6 +337,10 @@ type controlActionResponse struct {
 	// SceneIndex is present only for a scene toggle: the state the server
 	// actually selected (authoritative, unlike the list's scene_next).
 	SceneIndex *int `json:"scene_index,omitempty"`
+	// WindowShutter is present for commands to a window shutter (generic
+	// set/toggle included): the state right after the accepted command.
+	// Reconcile shutter intent from it, never from is_on.
+	WindowShutter *controlShutterState `json:"window_shutter,omitempty"`
 }
 
 // handleDeviceAction routes POST requests to toggle or set
@@ -347,6 +407,33 @@ func (cs *ControlServer) handleDeviceAction(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		result = cs.provider.SetDeviceValueFor(index, body.Value, body.Seconds)
+	case "open", "close", "stop", "set_position":
+		sc, ok := cs.provider.(app.WindowShutterController)
+		if !ok {
+			http.Error(w, "window shutters are not supported by this controller", http.StatusNotImplemented)
+			return
+		}
+		switch action {
+		case "open":
+			result = sc.OpenDevice(index)
+		case "close":
+			result = sc.CloseDevice(index)
+		case "stop":
+			result = sc.StopDevice(index)
+		case "set_position":
+			var body struct {
+				Value *int `json:"value"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Value == nil {
+				http.Error(w, "invalid request body: expected {\"value\": <0-100>}", http.StatusBadRequest)
+				return
+			}
+			if *body.Value < 0 || *body.Value > 100 {
+				http.Error(w, "position must be between 0 and 100", http.StatusBadRequest)
+				return
+			}
+			result = sc.SetDevicePosition(index, *body.Value)
+		}
 	default:
 		http.NotFound(w, r)
 		return
@@ -360,9 +447,10 @@ func (cs *ControlServer) handleDeviceAction(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(controlActionResponse{
-		DeviceName: result.DeviceName,
-		Action:     result.Action,
-		IsOn:       result.NewState,
-		SceneIndex: result.SceneIndex,
+		DeviceName:    result.DeviceName,
+		Action:        result.Action,
+		IsOn:          result.NewState,
+		SceneIndex:    result.SceneIndex,
+		WindowShutter: controlShutterFrom(result.WindowShutter),
 	})
 }
