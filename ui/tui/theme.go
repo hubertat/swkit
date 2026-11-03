@@ -168,6 +168,7 @@ const (
 	IconOutlet     = "🔌"
 	IconButton     = "👆"
 	IconScene      = "🎬"
+	IconShutter    = "🪟"
 	IconDriver     = "⚡"
 	IconHomeKit    = "🍎"
 	IconChat       = "💬"

@@ -75,6 +75,9 @@ func (ce *ConfigEditor) sceneDeviceCandidates(sceneIdx int) []sceneDeviceCandida
 	for _, o := range ce.config.Outlets {
 		add(o.Name, "outlet")
 	}
+	for _, w := range ce.config.WindowShutters {
+		add(w.Name, "shutter")
+	}
 	for _, d := range ce.deviceStates {
 		if d.Type == app.DeviceTypeColorLight {
 			add(d.Name, "color light")

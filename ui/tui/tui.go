@@ -111,7 +111,11 @@ type Model struct {
 	ioImportInput  textinput.Model
 	timedPrompt    bool // true when the "on for N seconds" duration input is active
 	timedInput     textinput.Model
-	timedTarget    int // device index being timed-controlled
+	timedTarget    int  // device index being timed-controlled
+	posPrompt      bool // true when the shutter "move to N %" input is active
+	posInput       textinput.Model
+	posTarget      int    // device index of the shutter being positioned
+	deviceMsg      string // last device-control error (Devices tab), cleared by the next command
 
 	// configDiscardConfirm is true while the "discard your edits and load
 	// the latest config?" modal is up, offered after Ctrl+S/Ctrl+R hits a
@@ -231,6 +235,7 @@ func NewModelFromOptions(opts Options) Model {
 		ioNameInput:    newIoNameInput(),
 		ioImportInput:  newIoImportInput(),
 		timedInput:     newTimedInput(),
+		posInput:       newPositionInput(),
 		ctx:            ctx,
 		cancel:         cancel,
 		agent:          ag,
@@ -483,6 +488,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Handle shutter position prompt - intercept all keys
+		if m.posPrompt {
+			switch msg.Type {
+			case tea.KeyEnter:
+				cmd := m.commitPositionPrompt()
+				m.posPrompt = false
+				m.posInput.Blur()
+				return m, cmd
+			case tea.KeyEsc:
+				m.posPrompt = false
+				m.posInput.Blur()
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.posInput, cmd = m.posInput.Update(msg)
+				return m, cmd
+			}
+		}
+
 		// Handle timed-control duration prompt - intercept all keys
 		if m.timedPrompt {
 			switch msg.Type {
@@ -677,12 +701,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Refresh):
 			return m, m.refreshState()
 
-		case key.Matches(msg, m.keys.Filter):
-			if m.activeTab == TabIoDebug {
-				m.ioDebugFilter = (m.ioDebugFilter + 1) % ioFilterCount
-				m.cursor = 0
-				return m, nil
-			}
+		case key.Matches(msg, m.keys.Filter) && m.activeTab == TabIoDebug:
+			// Scoped to the IO tab so "f" still reaches the Devices tab's
+			// timed-control prompt below.
+			m.ioDebugFilter = (m.ioDebugFilter + 1) % ioFilterCount
+			m.cursor = 0
+			return m, nil
 
 		case key.Matches(msg, m.keys.Name):
 			if m.activeTab == TabIoDebug && m.ioDebugFilter != IoFilterAll {
@@ -711,6 +735,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 			}
 
+		case m.activeTab == TabDevices && m.selectedShutter() != nil &&
+			(msg.String() == "o" || msg.String() == "c" || msg.String() == "s" || msg.String() == "p"):
+			// Shutter keys, scoped to a selected shutter on the Devices tab
+			// (c stays "clear" on the Logs tab, handled above).
+			switch msg.String() {
+			case "o":
+				return m, m.shutterCommand("open", 0)
+			case "c":
+				return m, m.shutterCommand("close", 0)
+			case "s":
+				return m, m.shutterCommand("stop", 0)
+			case "p":
+				if !m.selectedShutter().PositionKnown {
+					m.deviceMsg = "Position unknown: open or close the shutter fully once first"
+					return m, nil
+				}
+				m.posTarget = m.cursor
+				m.posInput.SetValue("")
+				m.posInput.Focus()
+				m.posPrompt = true
+				return m, textinput.Blink
+			}
+
 		case msg.String() == "+" || msg.String() == "=" || msg.String() == "-" || msg.String() == "_":
 			delta := 5
 			if msg.String() == "-" || msg.String() == "_" {
@@ -719,11 +766,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeTab == TabIoDebug && m.ioDebugFilter == IoFilterAnalog {
 				return m, m.stepSelectedIoAnalog(delta)
 			}
+			if m.activeTab == TabDevices && m.selectedShutter() != nil {
+				ws := m.selectedShutter()
+				if !ws.PositionKnown {
+					m.deviceMsg = "Position unknown: open or close the shutter fully once first"
+					return m, nil
+				}
+				base := ws.CurrentPosition
+				if ws.Motion != "stopped" && ws.TargetPosition >= 0 {
+					base = ws.TargetPosition
+				}
+				return m, m.shutterCommand("position", clampPct(base+delta))
+			}
 			if m.activeTab == TabDevices {
 				return m, m.stepSelectedDeviceBrightness(delta)
 			}
 
 		case msg.String() == "f":
+			if m.activeTab == TabDevices && m.selectedShutter() != nil {
+				m.deviceMsg = "Timed on/off is not available for window shutters"
+				return m, nil
+			}
 			if m.activeTab == TabDevices && m.cursor >= 0 && m.cursor < len(m.state.Devices) {
 				m.timedTarget = m.cursor
 				m.timedInput.SetValue("")
@@ -782,6 +845,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case configIoToggleMsg:
 		switch msg.IoType {
 		case "output":
+			if owner := m.shutterOwnerOf(msg.DriverName, msg.Index, "output"); owner != "" {
+				m.configEditor.statusMsg = "Output is driven by window shutter " + owner + "; use the shutter controls"
+				return m, nil
+			}
 			if controller, ok := m.provider.(app.IoOutputController); ok {
 				driver, index := msg.DriverName, msg.Index
 				return m, func() tea.Msg {
@@ -822,8 +889,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ControlResultMsg:
-		// Control operation completed - state will update on next poll
-		// Could add error feedback here in the future
+		// Control operation completed - state will update on next poll.
+		// Errors are shown on the Devices tab until the next command.
+		if msg.Result.Error != nil {
+			m.deviceMsg = msg.Result.DeviceName + ": " + msg.Result.Error.Error()
+		}
 		return m, nil
 	}
 
@@ -888,6 +958,68 @@ func (m Model) commitTimedPrompt() tea.Cmd {
 	}
 }
 
+// selectedShutter returns the selected device's shutter state when the
+// Devices tab cursor is on a window shutter, else nil.
+func (m Model) selectedShutter() *app.WindowShutterState {
+	if m.cursor < 0 || m.cursor >= len(m.state.Devices) {
+		return nil
+	}
+	d := m.state.Devices[m.cursor]
+	if d.Type != app.DeviceTypeWindowShutter {
+		return nil
+	}
+	return d.WindowShutter
+}
+
+func clampPct(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
+}
+
+// shutterCommand sends an open/close/stop/position command to the selected
+// shutter asynchronously (the provider call may block on a driver).
+func (m *Model) shutterCommand(cmd string, pct int) tea.Cmd {
+	return m.shutterCommandAt(m.cursor, cmd, pct)
+}
+
+func (m *Model) shutterCommandAt(index int, cmd string, pct int) tea.Cmd {
+	controller, ok := m.provider.(app.WindowShutterController)
+	if !ok {
+		m.deviceMsg = "This controller does not support window shutters"
+		return nil
+	}
+	m.deviceMsg = ""
+	return func() tea.Msg {
+		var res app.ControlResult
+		switch cmd {
+		case "open":
+			res = controller.OpenDevice(index)
+		case "close":
+			res = controller.CloseDevice(index)
+		case "stop":
+			res = controller.StopDevice(index)
+		case "position":
+			res = controller.SetDevicePosition(index, pct)
+		}
+		return ControlResultMsg{Result: res}
+	}
+}
+
+// commitPositionPrompt moves the targeted shutter to the entered percentage.
+func (m *Model) commitPositionPrompt() tea.Cmd {
+	v, err := strconv.Atoi(strings.TrimSpace(m.posInput.Value()))
+	if err != nil || v < 0 || v > 100 {
+		m.deviceMsg = "Enter a position between 0 and 100"
+		return nil
+	}
+	return m.shutterCommandAt(m.posTarget, "position", v)
+}
+
 // toggleSelectedDevice sends a toggle command for the currently selected device
 func (m Model) toggleSelectedDevice() tea.Cmd {
 	controller, ok := m.provider.(app.DeviceController)
@@ -927,7 +1059,7 @@ func (m Model) stepSelectedDeviceBrightness(deltaPct int) tea.Cmd {
 }
 
 // toggleSelectedIoOutput sends a toggle command for the selected IO output
-func (m Model) toggleSelectedIoOutput() tea.Cmd {
+func (m *Model) toggleSelectedIoOutput() tea.Cmd {
 	controller, ok := m.provider.(app.IoOutputController)
 	if !ok {
 		return nil
@@ -937,10 +1069,46 @@ func (m Model) toggleSelectedIoOutput() tea.Cmd {
 		return nil
 	}
 	pt := outputs[m.cursor]
+	if owner := m.shutterOwnerOf(pt.DriverName, pt.Index, "output"); owner != "" {
+		m.ioExportMsg = "Output is driven by window shutter " + owner + "; use the shutter controls"
+		return nil
+	}
 	return func() tea.Msg {
 		_ = controller.ToggleIoOutput(pt.DriverName, pt.Index)
 		return nil
 	}
+}
+
+// shutterOwnerOf returns "<shutter> (open|close)" when the IO point is one
+// of a window shutter's outputs, else "". Raw toggles of those outputs would
+// bypass the shutter's sequencing (the provider rejects them too).
+func (m Model) shutterOwnerOf(driverName string, index int, ioType string) string {
+	if ioType != "output" {
+		return ""
+	}
+	var pt *app.IoPointDebugState
+	for i := range m.state.IoDebug {
+		p := &m.state.IoDebug[i]
+		if p.DriverName == driverName && p.Index == index && p.Type == "output" {
+			pt = p
+			break
+		}
+	}
+	if pt == nil {
+		return ""
+	}
+	id := app.IoPointToId(*pt)
+	for _, d := range m.state.Devices {
+		if ws := d.WindowShutter; ws != nil {
+			if ws.OpenIoId == id {
+				return d.Name + " (open)"
+			}
+			if ws.CloseIoId == id {
+				return d.Name + " (close)"
+			}
+		}
+	}
+	return ""
 }
 
 // stepSelectedIoAnalog adjusts the selected analog output by deltaPct percent of
@@ -1376,6 +1544,16 @@ func (m Model) renderDevices(height int) string {
 		}
 		result += "\n" + m.theme.Secondary.Render("Turn "+name+" on for (seconds): ") + m.timedInput.View()
 	}
+	if m.posPrompt {
+		name := ""
+		if m.posTarget >= 0 && m.posTarget < len(m.state.Devices) {
+			name = m.state.Devices[m.posTarget].Name
+		}
+		result += "\n" + m.theme.Secondary.Render("Move "+name+" to (% open, 0-100): ") + m.posInput.View()
+	}
+	if m.deviceMsg != "" {
+		result += "\n" + m.theme.Error.Render(m.deviceMsg)
+	}
 	return result
 }
 
@@ -1396,6 +1574,14 @@ func (m Model) renderDeviceList(rows int) string {
 		stateText := m.theme.Off.Render(IconOff)
 		if device.Type != app.DeviceTypeButton && device.IsOn {
 			stateText = m.theme.On.Render(IconOn)
+		}
+		if device.Type == app.DeviceTypeWindowShutter && device.WindowShutter != nil {
+			ws := device.WindowShutter
+			if ws.Motion != "stopped" || ws.PendingStart {
+				stateText = m.theme.Event.Render(shutterStateLabel(ws))
+			} else {
+				stateText = m.theme.Secondary.Render(shutterStateLabel(ws))
+			}
 		}
 		if device.Type == app.DeviceTypeButton {
 			now := m.state.Timestamp
@@ -1482,6 +1668,30 @@ func (m Model) renderDeviceDetail() string {
 
 	if device.Type == app.DeviceTypeDimmableLight {
 		lines = append(lines, m.theme.Secondary.Render("Brightness: ")+itoa(device.Brightness)+"%")
+	}
+
+	if ws := device.WindowShutter; ws != nil {
+		pos := "unknown (open or close fully once)"
+		if ws.PositionKnown {
+			pos = itoa(ws.CurrentPosition) + "% open (estimated)"
+		}
+		target := "-"
+		if ws.TargetPosition >= 0 {
+			target = itoa(ws.TargetPosition) + "%"
+		}
+		lines = append(lines,
+			m.theme.Secondary.Render("State:    ")+shutterStateLabel(ws),
+			m.theme.Secondary.Render("Position: ")+pos,
+			m.theme.Secondary.Render("Target:   ")+target,
+			m.theme.Secondary.Render("Travel:   ")+fmt.Sprintf("open %ds, close %ds", ws.OpenDurationSeconds, ws.CloseDurationSeconds))
+		if ws.RemainingTravelMilliseconds > 0 {
+			lines = append(lines, m.theme.Secondary.Render("Stops in: ")+fmt.Sprintf("%.1fs", float64(ws.RemainingTravelMilliseconds)/1000))
+		}
+		lines = append(lines, "", m.theme.BoxTitle.Render("IO Config"),
+			m.theme.Secondary.Render("Open:  ")+ws.OpenIoId,
+			m.theme.Secondary.Render("Close: ")+ws.CloseIoId,
+			"", m.theme.Muted.Render("enter toggle · o open · c close · s stop"),
+			m.theme.Muted.Render("p position · +/- 5%"))
 	}
 
 	// IO Config section
@@ -1784,8 +1994,14 @@ func (m Model) renderHelp() string {
 		m.state.Devices[m.cursor].Type == app.DeviceTypeDimmableLight {
 		parts = append(parts, m.theme.HelpKey.Render("+/-")+" "+m.theme.HelpDesc.Render("brightness"))
 	}
-	// Surface the timed-control key on the Devices tab.
-	if m.activeTab == TabDevices && len(m.state.Devices) > 0 {
+	// Shutter keys replace timed control for a selected window shutter.
+	if m.activeTab == TabDevices && m.selectedShutter() != nil {
+		parts = append(parts,
+			m.theme.HelpKey.Render("o/c/s")+" "+m.theme.HelpDesc.Render("open/close/stop"),
+			m.theme.HelpKey.Render("p")+" "+m.theme.HelpDesc.Render("position"),
+			m.theme.HelpKey.Render("+/-")+" "+m.theme.HelpDesc.Render("±5%"))
+	} else if m.activeTab == TabDevices && len(m.state.Devices) > 0 {
+		// Surface the timed-control key on the Devices tab.
 		parts = append(parts, m.theme.HelpKey.Render("f")+" "+m.theme.HelpDesc.Render("on for…"))
 	}
 	// Surface the page up/down keys on tabs that have a scrollable list.
@@ -1811,8 +2027,31 @@ func deviceIcon(t app.DeviceType) string {
 		return IconButton
 	case app.DeviceTypeScene:
 		return IconScene
+	case app.DeviceTypeWindowShutter:
+		return IconShutter
 	default:
 		return "?"
+	}
+}
+
+// shutterStateLabel summarizes a shutter's motion and estimated position.
+func shutterStateLabel(ws *app.WindowShutterState) string {
+	switch {
+	case ws.PendingStart:
+		return "starting"
+	case ws.Motion == "opening" || ws.Motion == "closing":
+		if ws.PositionKnown {
+			return ws.Motion + " " + itoa(ws.CurrentPosition) + "%"
+		}
+		return ws.Motion
+	case !ws.PositionKnown:
+		return "position ?"
+	case ws.CurrentPosition <= 0:
+		return "closed"
+	case ws.CurrentPosition >= 100:
+		return "open"
+	default:
+		return itoa(ws.CurrentPosition) + "% open"
 	}
 }
 
@@ -1862,6 +2101,14 @@ func newIoImportInput() textinput.Model {
 	ti.SetValue("io_names.json")
 	ti.CharLimit = 120
 	ti.Width = 40
+	return ti
+}
+
+func newPositionInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "50"
+	ti.CharLimit = 3
+	ti.Width = 5
 	return ti
 }
 

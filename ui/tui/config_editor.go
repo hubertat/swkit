@@ -35,6 +35,7 @@ const (
 	ConfigModeCtrlWizardEvent  // wizard step 2: pick button + event
 	ConfigModeClearSelect      // clear step 1: choose what to clear
 	ConfigModeClearConfirm     // clear step 2: confirm the clear action
+	ConfigModeEditShutter      // edit a window shutter
 )
 
 // clearOption defines a type of clear operation
@@ -46,6 +47,7 @@ const (
 	clearOutlets                      // clear only outlets
 	clearButtons                      // clear only buttons
 	clearRelations                    // clear all control relations from buttons
+	clearShutters                     // clear only window shutters
 )
 
 var clearOptions = []struct {
@@ -56,6 +58,7 @@ var clearOptions = []struct {
 	{label: IconLight + " Lights only", option: clearLights},
 	{label: IconOutlet + " Outlets only", option: clearOutlets},
 	{label: IconButton + " Buttons only", option: clearButtons},
+	{label: IconShutter + " Window shutters only", option: clearShutters},
 	{label: "Control relations only", option: clearRelations},
 }
 
@@ -68,6 +71,7 @@ const (
 	configItemOutlet
 	configItemButton
 	configItemScene
+	configItemWindowShutter // listed after scenes, so other items keep their positions
 )
 
 // configListItem is an entry in the flattened config list
@@ -87,6 +91,7 @@ var addableDeviceTypes = []addableDeviceType{
 	{label: IconLight + " Light", itemType: configItemLight},
 	{label: IconLight + " Dimmable Light", itemType: configItemDimmableLight},
 	{label: IconOutlet + " Outlet", itemType: configItemOutlet},
+	{label: IconShutter + " Window Shutter", itemType: configItemWindowShutter},
 	{label: IconButton + " Button", itemType: configItemButton},
 	{label: IconScene + " Scene", itemType: configItemScene},
 }
@@ -265,7 +270,7 @@ func (ce *ConfigEditor) SetDeviceStates(devices []app.DeviceState) {
 func (ce *ConfigEditor) wizardOutputDevices() []app.DeviceState {
 	var result []app.DeviceState
 	for _, d := range ce.deviceStates {
-		if d.Type == app.DeviceTypeLight || d.Type == app.DeviceTypeColorLight || d.Type == app.DeviceTypeDimmableLight || d.Type == app.DeviceTypeOutlet {
+		if d.Type == app.DeviceTypeLight || d.Type == app.DeviceTypeColorLight || d.Type == app.DeviceTypeDimmableLight || d.Type == app.DeviceTypeOutlet || d.Type == app.DeviceTypeWindowShutter {
 			result = append(result, d)
 		}
 	}
@@ -464,6 +469,13 @@ func (ce *ConfigEditor) rebuildItems() {
 			name:     s.Name,
 		})
 	}
+	for i, w := range ce.config.WindowShutters {
+		ce.items = append(ce.items, configListItem{
+			itemType: configItemWindowShutter,
+			index:    i,
+			name:     w.Name,
+		})
+	}
 }
 
 // lightFieldCount returns the number of editable fields for a Light
@@ -489,6 +501,8 @@ func (ce *ConfigEditor) Update(msg tea.Msg) tea.Cmd {
 		return ce.updateEditDimmableLight(msg)
 	case ConfigModeEditOutlet:
 		return ce.updateEditOutlet(msg)
+	case ConfigModeEditShutter:
+		return ce.updateEditShutter(msg)
 	case ConfigModeEditButton:
 		return ce.updateEditButton(msg)
 	case ConfigModeEditScene:
@@ -580,6 +594,8 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 				ce.mode = ConfigModeEditDimmableLight
 			case configItemOutlet:
 				ce.mode = ConfigModeEditOutlet
+			case configItemWindowShutter:
+				ce.mode = ConfigModeEditShutter
 			case configItemButton:
 				ce.mode = ConfigModeEditButton
 			case configItemScene:
@@ -602,7 +618,7 @@ func (ce *ConfigEditor) updateList(msg tea.Msg) tea.Cmd {
 		// Pre-position cursor if selected list item is a controllable output device
 		if ce.cursor < len(ce.items) {
 			item := ce.items[ce.cursor]
-			if item.itemType == configItemLight || item.itemType == configItemDimmableLight || item.itemType == configItemOutlet {
+			if item.itemType == configItemLight || item.itemType == configItemDimmableLight || item.itemType == configItemOutlet || item.itemType == configItemWindowShutter {
 				for i, d := range devices {
 					if d.Name == item.name {
 						ce.wizardDeviceCursor = i
@@ -666,6 +682,12 @@ func (ce *ConfigEditor) addDeviceOfType(itemType configListItemType) tea.Cmd {
 		ce.setCursorToItem(configItemOutlet, len(ce.config.Outlets)-1)
 		ce.mode = ConfigModeEditOutlet
 		return ce.startEditingOutletField(&ce.config.Outlets[len(ce.config.Outlets)-1])
+	case configItemWindowShutter:
+		ce.config.WindowShutters = append(ce.config.WindowShutters, app.WindowShutterEditConfig{OpenDurationSeconds: 30})
+		ce.rebuildItems()
+		ce.setCursorToItem(configItemWindowShutter, len(ce.config.WindowShutters)-1)
+		ce.mode = ConfigModeEditShutter
+		return ce.startEditingShutterField(&ce.config.WindowShutters[len(ce.config.WindowShutters)-1])
 	case configItemButton:
 		ce.config.Buttons = append(ce.config.Buttons, app.ButtonEditConfig{})
 		ce.rebuildItems()
@@ -722,6 +744,13 @@ func (ce *ConfigEditor) deleteItem() tea.Cmd {
 	case configItemScene:
 		ce.config.Scenes = append(ce.config.Scenes[:item.index], ce.config.Scenes[item.index+1:]...)
 		ce.refreshOutputDeviceNames()
+	case configItemWindowShutter:
+		name := ce.config.WindowShutters[item.index].Name
+		ce.config.WindowShutters = append(ce.config.WindowShutters[:item.index], ce.config.WindowShutters[item.index+1:]...)
+		// Drop button relations and scene steps aimed at it, so the
+		// config stays saveable.
+		ce.removeTargetReferences(name)
+		ce.refreshOutputDeviceNames()
 	default:
 		ce.config.Buttons = append(ce.config.Buttons[:item.index], ce.config.Buttons[item.index+1:]...)
 	}
@@ -745,6 +774,9 @@ func (ce *ConfigEditor) refreshOutputDeviceNames() {
 	}
 	for _, o := range ce.config.Outlets {
 		ce.config.OutputDeviceNames = append(ce.config.OutputDeviceNames, o.Name)
+	}
+	for _, w := range ce.config.WindowShutters {
+		ce.config.OutputDeviceNames = append(ce.config.OutputDeviceNames, w.Name)
 	}
 	// Scenes are Controllable too, so they are valid control/action targets.
 	for _, s := range ce.config.Scenes {
@@ -1399,6 +1431,15 @@ func (ce *ConfigEditor) applyIoSelection(ioId string) {
 			ce.config.Buttons[item.index].EventInputName = ioId
 			ce.markDirty()
 		}
+	case configItemWindowShutter:
+		switch ce.ioPickerField {
+		case shutterFieldOpen:
+			ce.config.WindowShutters[item.index].OpenDigitalOutName = ioId
+			ce.markDirty()
+		case shutterFieldClose:
+			ce.config.WindowShutters[item.index].CloseDigitalOutName = ioId
+			ce.markDirty()
+		}
 	}
 }
 
@@ -1417,8 +1458,8 @@ func (ce *ConfigEditor) ioPointToIdForCurrentField(pt app.IoPointDebugState) str
 			case 2:
 				return app.IoPointToIdWithType(pt, "a_out")
 			}
-		case configItemOutlet:
-			if ce.ioPickerField == 1 {
+		case configItemOutlet, configItemWindowShutter:
+			if ce.ioPickerField >= 1 {
 				return app.IoPointToIdWithType(pt, "d_out")
 			}
 		case configItemButton:
@@ -1612,11 +1653,15 @@ func (ce *ConfigEditor) updateClearConfirm(msg tea.KeyMsg) tea.Cmd {
 func (ce *ConfigEditor) executeClear() {
 	switch ce.clearChoice {
 	case clearAll:
-		cleared := len(ce.config.Lights) + len(ce.config.DimmableLights) + len(ce.config.Outlets) + len(ce.config.Buttons)
+		cleared := len(ce.config.Lights) + len(ce.config.DimmableLights) + len(ce.config.Outlets) + len(ce.config.Buttons) + len(ce.config.WindowShutters)
+		for _, w := range ce.config.WindowShutters {
+			ce.removeTargetReferences(w.Name)
+		}
 		ce.config.Lights = nil
 		ce.config.DimmableLights = nil
 		ce.config.Outlets = nil
 		ce.config.Buttons = nil
+		ce.config.WindowShutters = nil
 		ce.statusMsg = fmt.Sprintf("Cleared all %d devices", cleared)
 	case clearLights:
 		cleared := len(ce.config.Lights)
@@ -1626,6 +1671,13 @@ func (ce *ConfigEditor) executeClear() {
 		cleared := len(ce.config.Outlets)
 		ce.config.Outlets = nil
 		ce.statusMsg = fmt.Sprintf("Cleared %d outlets", cleared)
+	case clearShutters:
+		cleared := len(ce.config.WindowShutters)
+		for _, w := range ce.config.WindowShutters {
+			ce.removeTargetReferences(w.Name)
+		}
+		ce.config.WindowShutters = nil
+		ce.statusMsg = fmt.Sprintf("Cleared %d window shutters", cleared)
 	case clearButtons:
 		cleared := len(ce.config.Buttons)
 		ce.config.Buttons = nil
@@ -1648,7 +1700,7 @@ func (ce *ConfigEditor) executeClear() {
 func (ce *ConfigEditor) clearOptionDescription() string {
 	switch ce.clearChoice {
 	case clearAll:
-		total := len(ce.config.Lights) + len(ce.config.DimmableLights) + len(ce.config.Outlets) + len(ce.config.Buttons)
+		total := len(ce.config.Lights) + len(ce.config.DimmableLights) + len(ce.config.Outlets) + len(ce.config.Buttons) + len(ce.config.WindowShutters)
 		relCount := 0
 		for _, b := range ce.config.Buttons {
 			relCount += len(b.ControlDevices)
@@ -1659,6 +1711,8 @@ func (ce *ConfigEditor) clearOptionDescription() string {
 		return fmt.Sprintf("%d lights", len(ce.config.Lights))
 	case clearOutlets:
 		return fmt.Sprintf("%d outlets", len(ce.config.Outlets))
+	case clearShutters:
+		return fmt.Sprintf("%d window shutters (and references to them)", len(ce.config.WindowShutters))
 	case clearButtons:
 		relCount := 0
 		for _, b := range ce.config.Buttons {
@@ -1709,6 +1763,8 @@ func (ce *ConfigEditor) View(theme Theme, height int) string {
 		return ce.viewEditDimmableLight(theme)
 	case ConfigModeEditOutlet:
 		return ce.viewEditOutlet(theme)
+	case ConfigModeEditShutter:
+		return ce.viewEditShutter(theme)
 	case ConfigModeEditButton:
 		return ce.viewEditButton(theme)
 	case ConfigModeEditScene:
@@ -1895,6 +1951,35 @@ func (ce *ConfigEditor) viewList(theme Theme, height int) string {
 
 			stateCount := theme.Muted.Render(fmt.Sprintf(" [%d states]", len(s.States)))
 			line := prefix + IconScene + " " + theme.Primary.Render(padRight(s.Name, 20)) + stateCount
+			lines = append(lines, style.Render(line))
+		}
+	}
+
+	// Section: Window shutters (listed last, see configItemWindowShutter)
+	if len(ce.config.WindowShutters) > 0 {
+		if len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, theme.BoxTitle.Render("Window Shutters"))
+		base := len(ce.config.Lights) + len(ce.config.DimmableLights) + len(ce.config.Outlets) + len(ce.config.Buttons) + len(ce.config.Scenes)
+		for i, w := range ce.config.WindowShutters {
+			listIdx := base + i
+			prefix := "   "
+			style := theme.ListItem
+			if listIdx == ce.cursor {
+				prefix = " ▶ "
+				style = theme.ListItemSelected
+				focusLine = len(lines)
+			}
+			hkText := ""
+			if w.DisableHomekit {
+				hkText = theme.Muted.Render(" (no HK)")
+			}
+			ioText := theme.Secondary.Render("▲ " + w.OpenDigitalOutName + "  ▼ " + w.CloseDigitalOutName)
+			if w.OpenDigitalOutName == "" && w.CloseDigitalOutName == "" {
+				ioText = theme.Muted.Render("[no IO]")
+			}
+			line := prefix + IconShutter + " " + theme.Primary.Render(padRight(w.Name, 20)) + " " + ioText + hkText
 			lines = append(lines, style.Render(line))
 		}
 	}
@@ -2523,7 +2608,7 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 	case ConfigModeAddSelector:
 		return theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("confirm") + "  " +
 			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
-	case ConfigModeEditLight, ConfigModeEditDimmableLight, ConfigModeEditOutlet, ConfigModeEditButton:
+	case ConfigModeEditLight, ConfigModeEditDimmableLight, ConfigModeEditOutlet, ConfigModeEditButton, ConfigModeEditShutter:
 		parts := []string{
 			theme.HelpKey.Render("enter") + " " + theme.HelpDesc.Render("edit"),
 			theme.HelpKey.Render("space") + " " + theme.HelpDesc.Render("toggle"),
