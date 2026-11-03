@@ -314,7 +314,6 @@ func NewWindowShutter(config WindowShutterConfig, openOut, closeOut drivers.Digi
 // running. An output whose deactivation failed is marked stopFailed, which
 // blocks the opposite direction until the output is observed off.
 func (ws *WindowShutter) establishSafeOutputs() {
-	now := ws.now()
 	deenergized := false
 	for _, o := range []struct {
 		st    *outputState
@@ -335,7 +334,7 @@ func (ws *WindowShutter) establishSafeOutputs() {
 				"shutter", ws.name, "output", o.label, "readErr", err, "err", setErr)
 			continue
 		}
-		o.st.exp = outputExp{active: true, expected: false, deadline: now.Add(outputPendingTimeout)}
+		o.st.exp = outputExp{active: true, expected: false, deadline: ws.now().Add(outputPendingTimeout)}
 		deenergized = true
 		if err == nil {
 			ws.logger.Warn("window shutter output was on at startup; switched it off", "shutter", ws.name, "output", o.label)
@@ -344,7 +343,7 @@ func (ws *WindowShutter) establishSafeOutputs() {
 	if deenergized {
 		ws.energizedEver = true
 		ws.lastActiveDir = motionStopped // neither direction is "same direction"
-		ws.lastDeenergized = now
+		ws.lastDeenergized = ws.now()    // after the writes returned
 	}
 }
 
@@ -1002,7 +1001,10 @@ func (ws *WindowShutter) writeOutputLocked(st *outputState, out drivers.DigitalO
 func (ws *WindowShutter) deactivateOutputsLocked(now time.Time) error {
 	var errs error
 	attempted := false
-	if ws.logicalOnLocked(&ws.open) {
+	// An output whose earlier deactivation failed (stopFailed, e.g. at
+	// startup) may still be energized although its logical state is off:
+	// retry it too, so Stop never reports success while it could be on.
+	if ws.logicalOnLocked(&ws.open) || ws.open.stopFailed {
 		attempted = true
 		if err := ws.writeOutputLocked(&ws.open, ws.openDout, false); err != nil {
 			ws.mu.Lock()
@@ -1011,7 +1013,7 @@ func (ws *WindowShutter) deactivateOutputsLocked(now time.Time) error {
 			errs = errors.Join(errs, fmt.Errorf("window shutter %s: failed to deenergize open output: %w", ws.name, err))
 		}
 	}
-	if ws.logicalOnLocked(&ws.close) {
+	if ws.logicalOnLocked(&ws.close) || ws.close.stopFailed {
 		attempted = true
 		if err := ws.writeOutputLocked(&ws.close, ws.closeDout, false); err != nil {
 			ws.mu.Lock()
@@ -1021,8 +1023,11 @@ func (ws *WindowShutter) deactivateOutputsLocked(now time.Time) error {
 		}
 	}
 	if attempted {
+		// The motor is off only once the writes returned: the reversal delay
+		// counts from then, not from before slow writes (now is the start).
+		done := ws.now()
 		ws.mu.Lock()
-		ws.lastDeenergized = now
+		ws.lastDeenergized = done
 		ws.mu.Unlock()
 	}
 	return errs

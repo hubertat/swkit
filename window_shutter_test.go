@@ -1430,3 +1430,72 @@ func TestShutterRejectedPositionKeepsPendingReversal(t *testing.T) {
 		t.Fatal("the accepted close must still start")
 	}
 }
+
+// slowOut advances the fake clock during Set, like a slow driver write.
+type slowOut struct {
+	*fakeOut
+	fc    *shutterClock
+	delay time.Duration
+}
+
+func (s *slowOut) Set(v bool) error {
+	s.fc.mu.Lock()
+	s.fc.now = s.fc.now.Add(s.delay)
+	s.fc.mu.Unlock()
+	return s.fakeOut.Set(v)
+}
+
+func TestShutterStopRetriesFailedStartupDeactivation(t *testing.T) {
+	open := &fakeOut{name: "open"}
+	closeOut := &fakeOut{name: "close", on: true, setErr: fmt.Errorf("unreachable")}
+	ws := NewWindowShutter(shutterConfig(), open, closeOut, testLogger())
+	ws.dispatch = func(f func()) {}
+	// Communication recovers; the relay is still energized.
+	closeOut.mu.Lock()
+	closeOut.setErr = nil
+	closeOut.mu.Unlock()
+	if err := ws.Stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if closeOut.isOn() {
+		t.Fatal("Stop must retry an output whose startup deactivation failed")
+	}
+	// Still failing: Stop must report the failure, not success.
+	closeOut.mu.Lock()
+	closeOut.on, closeOut.setErr = true, fmt.Errorf("unreachable")
+	closeOut.mu.Unlock()
+	ws2 := NewWindowShutter(shutterConfig(), &fakeOut{name: "o2"}, closeOut, testLogger())
+	ws2.dispatch = func(f func()) {}
+	if err := ws2.Stop(); err == nil {
+		t.Fatal("Stop must fail while the output cannot be switched off")
+	}
+}
+
+func TestShutterReversalDelayCountsFromWriteCompletion(t *testing.T) {
+	h := newShutterHarness(t, shutterConfig())
+	slow := &slowOut{fakeOut: h.close, fc: h.fc}
+	h.ws.closeDout = slow
+	h.calibrateOpen(t)
+	if err := h.ws.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	h.fc.Advance(3 * time.Second)
+	slow.delay = time.Second // the deactivation write takes 1 s
+	if err := h.ws.Open(); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if h.close.isOn() {
+		t.Fatal("close must be off")
+	}
+	if h.open.isOn() {
+		t.Fatal("open must wait the reversal delay after the slow deactivation returned")
+	}
+	h.fc.Advance(499 * time.Millisecond)
+	if h.open.isOn() {
+		t.Fatal("reversal delay must count from write completion")
+	}
+	h.fc.Advance(time.Millisecond)
+	if !h.open.isOn() {
+		t.Fatal("open must start after the delay")
+	}
+}
