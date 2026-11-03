@@ -323,6 +323,18 @@ function pump(index, it) {
         })
         .catch(e => {
             it.inFlight = false;
+            // A failed shutter move may still have been accepted by the
+            // controller (the reply was lost), so a Stop queued behind it
+            // must still go out: report the failure, keep only the Stop.
+            const stop = it.kind === 'shutter' && job.cmd !== 'stop' ? it.queue.find(j => j.cmd === 'stop') : null;
+            if (stop && getIntent(index, it.slot) === it) {
+                toast("Couldn't " + job.verb + ': ' + e.message + '. Sending Stop.', 'error');
+                it.queue = [stop];
+                it.accepted = null;
+                it.label = { cmd: 'stop' };
+                pump(index, it);
+                return;
+            }
             fail(index, it, job.verb, e);
         });
 }

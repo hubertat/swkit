@@ -300,3 +300,24 @@ func setupWithDriver(sw *SwKit, d drivers.IoDriver) error {
 	sw.testDriver = d
 	return sw.Setup(context.Background(), log.New(nil))
 }
+
+func TestSetupRejectsAliasedShutterOutput(t *testing.T) {
+	shared := &fakeOut{name: "w4"}
+	d := &debugDriver{MockIoDriver: &drivers.MockIoDriver{}, name: "aliasdrv", outs: map[string]drivers.DigitalOutput{
+		"4": shared, "2:1": shared, "5": &fakeOut{name: "w5"},
+	}}
+	sw := &SwKit{
+		Name:   "t",
+		Lights: []LightConfig{{Name: "L1", DigitalOutName: "aliasdrv|d_out|4"}},
+		WindowShutters: []WindowShutterConfig{{
+			Name: "Sh", OpenDigitalOutName: "aliasdrv|d_out|2:1", CloseDigitalOutName: "aliasdrv|d_out|5", OpenDurationSeconds: 10,
+		}},
+	}
+	err := setupWithDriver(sw, d)
+	if err == nil || !strings.Contains(err.Error(), "already used by light L1") {
+		t.Fatalf("aliased output must be rejected: %v", err)
+	}
+	if shared.isOn() {
+		t.Fatal("nothing may be energized")
+	}
+}

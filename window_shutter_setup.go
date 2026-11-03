@@ -185,3 +185,44 @@ func (sw *SwKit) rollbackSetup(setupDrivers []drivers.IoDriver) error {
 	}
 	return errs
 }
+
+// checkShutterOutputIdentity rejects a shutter whose resolved outputs are the
+// same physical output, or one already used by another device, comparing
+// driver output identities (String()) rather than config ids.
+func (sw *SwKit) checkShutterOutputIdentity(name string, openOut, closeOut drivers.DigitalOutput) error {
+	if openOut == nil || closeOut == nil {
+		return nil
+	}
+	if openOut.String() == closeOut.String() {
+		return fmt.Errorf("window shutter %q: open and close outputs are the same output (%s)", name, openOut.String())
+	}
+	used := make(map[string]string)
+	add := func(out drivers.DigitalOutput, owner string) {
+		if out != nil {
+			used[out.String()] = owner
+		}
+	}
+	for _, l := range sw.lights {
+		add(l.output, "light "+l.name)
+	}
+	for _, o := range sw.outlets {
+		add(o.output, "outlet "+o.name)
+	}
+	for _, cl := range sw.colorLights {
+		add(cl.onDigitalOut, "color light "+cl.name)
+	}
+	for _, dl := range sw.dimmableLights {
+		add(dl.onOut, "dimmable light "+dl.name)
+	}
+	for _, ws := range sw.windowShutters {
+		add(ws.openDout, "window shutter "+ws.name)
+		add(ws.closeDout, "window shutter "+ws.name)
+	}
+	var errs error
+	for _, out := range []drivers.DigitalOutput{openOut, closeOut} {
+		if owner, ok := used[out.String()]; ok {
+			errs = errors.Join(errs, fmt.Errorf("window shutter %q: output %s is already used by %s", name, out.String(), owner))
+		}
+	}
+	return errs
+}

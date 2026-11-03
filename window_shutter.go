@@ -287,6 +287,8 @@ func NewWindowShutter(config WindowShutterConfig, openOut, closeOut drivers.Digi
 		targetPos: -1,
 	}
 
+	ws.establishSafeOutputs()
+
 	// Observe external output changes promptly where supported. Shelly
 	// reports them asynchronously from its MQTT goroutine; Wago invokes the
 	// callback synchronously from Set, which is why the dispatch below is
@@ -303,6 +305,47 @@ func NewWindowShutter(config WindowShutterConfig, openOut, closeOut drivers.Digi
 		"openOut", openOut.String(), "closeOut", closeOut.String(),
 		"openDuration", openDuration, "closeDuration", closeDuration, "reverseDelay", reverseDelay)
 	return ws
+}
+
+// establishSafeOutputs makes "both outputs off" true before any command is
+// accepted, instead of assuming it: an output that reads on (or cannot be
+// read) is switched off. If that happened, the reversal delay applies to the
+// first movement in either direction, since a motor may just have been
+// running. An output whose deactivation failed is marked stopFailed, which
+// blocks the opposite direction until the output is observed off.
+func (ws *WindowShutter) establishSafeOutputs() {
+	now := ws.now()
+	deenergized := false
+	for _, o := range []struct {
+		st    *outputState
+		out   drivers.DigitalOutput
+		label string
+	}{{&ws.open, ws.openDout, "open"}, {&ws.close, ws.closeDout, "close"}} {
+		if o.out == nil {
+			continue
+		}
+		on, err := o.out.GetState()
+		if err == nil && !on {
+			continue // known off: nothing to do (and no write at startup)
+		}
+		if setErr := o.out.Set(false); setErr != nil {
+			o.st.stopFailed = true
+			ws.isFaulty = true
+			ws.logger.Warn("window shutter could not switch its output off at startup; the opposite direction is blocked until it reads off",
+				"shutter", ws.name, "output", o.label, "readErr", err, "err", setErr)
+			continue
+		}
+		o.st.exp = outputExp{active: true, expected: false, deadline: now.Add(outputPendingTimeout)}
+		deenergized = true
+		if err == nil {
+			ws.logger.Warn("window shutter output was on at startup; switched it off", "shutter", ws.name, "output", o.label)
+		}
+	}
+	if deenergized {
+		ws.energizedEver = true
+		ws.lastActiveDir = motionStopped // neither direction is "same direction"
+		ws.lastDeenergized = now
+	}
 }
 
 func configIoIdOr(configId string, out drivers.DigitalOutput) string {
@@ -504,6 +547,17 @@ func (ws *WindowShutter) setPositionLocked(p int) error {
 		return err
 	}
 
+	// Validate before touching the accepted movement: a rejected request
+	// must not cancel a pending start (e.g. a reversal) it was meant to
+	// replace.
+	ws.mu.Lock()
+	_, knownNow := ws.posAtLocked(ws.now())
+	ws.mu.Unlock()
+	endpoint := p == 0 || p == 100
+	if !knownNow && !endpoint {
+		return fmt.Errorf("window shutter %s: position is unknown; run a full open or close first", ws.name)
+	}
+
 	if ps := ws.pendingStartLocked(); ps != nil {
 		if ps.target == p {
 			return nil // repeat of the accepted numeric target
@@ -515,10 +569,6 @@ func (ws *WindowShutter) setPositionLocked(p int) error {
 	curMotion, curTarget := ws.motion, ws.targetPos
 	pos, known := ws.posAtLocked(ws.now())
 	ws.mu.Unlock()
-	endpoint := p == 0 || p == 100
-	if !known && !endpoint {
-		return fmt.Errorf("window shutter %s: position is unknown; run a full open or close first", ws.name)
-	}
 
 	if curMotion != motionStopped {
 		if curTarget == p {
@@ -661,6 +711,9 @@ func (ws *WindowShutter) reversalWaitLocked(dir motion) time.Duration {
 		return 0
 	}
 	elapsed := ws.now().Sub(ws.lastDeenergized)
+	if elapsed < 0 {
+		elapsed = 0 // clock stepped back: wait the full delay rather than forever
+	}
 	if elapsed >= ws.reverseDelay {
 		return 0
 	}
@@ -1249,6 +1302,10 @@ func (ws *WindowShutter) adoptExternalStopLocked(now time.Time, transitionKnown 
 	ws.external = false
 	ws.moveStart = time.Time{}
 	ws.moveStopAt = time.Time{}
+	// The motor was just deenergized (by someone else): the reversal delay
+	// counts from this observation (a poll may see it late, never early).
+	ws.lastDeenergized = now
+	ws.energizedEver = true
 	ws.mu.Unlock()
 }
 

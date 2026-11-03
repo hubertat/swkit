@@ -1334,3 +1334,99 @@ func TestShutterFaultOnlyForIoErrors(t *testing.T) {
 		t.Fatal("fault must clear once outputs are readable")
 	}
 }
+
+func TestShutterStartupSwitchesOffEnergizedOutput(t *testing.T) {
+	fc := newShutterClock()
+	open, closeOut := &fakeOut{name: "open"}, &fakeOut{name: "close", on: true} // close relay left on
+	ws := NewWindowShutter(shutterConfig(), open, closeOut, testLogger())
+	ws.now, ws.afterFunc, ws.dispatch = fc.Now, fc.AfterFunc, func(f func()) {}
+	if closeOut.isOn() {
+		t.Fatal("an output found on at startup must be switched off")
+	}
+	if err := ws.Open(); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if open.isOn() && closeOut.isOn() {
+		t.Fatal("both outputs energized")
+	}
+	if open.isOn() {
+		t.Fatal("the first movement after a startup deactivation must wait for the reversal delay")
+	}
+	fc.Advance(500 * time.Millisecond)
+	if !open.isOn() || closeOut.isOn() {
+		t.Fatal("open must start after the delay, alone")
+	}
+}
+
+func TestShutterStartupUnswitchableOutputBlocksOpposite(t *testing.T) {
+	open := &fakeOut{name: "open"}
+	closeOut := &fakeOut{name: "close", on: true, setErr: fmt.Errorf("unreachable")}
+	ws := NewWindowShutter(shutterConfig(), open, closeOut, testLogger())
+	ws.dispatch = func(f func()) {}
+	if err := ws.Open(); err == nil {
+		t.Fatal("open must be refused while the close output may still be on")
+	}
+	if open.isOn() {
+		t.Fatal("open output must not be energized")
+	}
+	if !ws.Snapshot().Faulty {
+		t.Fatal("startup deactivation failure is a fault")
+	}
+	// Once the close output is observed off, opening works.
+	closeOut.mu.Lock()
+	closeOut.on, closeOut.setErr = false, nil
+	closeOut.mu.Unlock()
+	if err := ws.Sync(true); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if err := ws.Open(); err != nil {
+		t.Fatalf("open after confirmed off: %v", err)
+	}
+}
+
+func TestShutterExternalStopObservesReversalDelay(t *testing.T) {
+	h := newShutterHarness(t, shutterConfig())
+	h.calibrateOpen(t)
+	if err := h.ws.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	h.fc.Advance(5 * time.Second)
+	h.close.setOn(false) // stopped by someone else
+	h.drain()
+	if s := h.snap(); s.Motion != "stopped" {
+		t.Fatalf("external stop: %+v", s)
+	}
+	if err := h.ws.Open(); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if h.open.isOn() {
+		t.Fatal("opposite direction right after an external stop must wait for the reversal delay")
+	}
+	h.fc.Advance(500 * time.Millisecond)
+	if !h.open.isOn() {
+		t.Fatal("open must start after the delay")
+	}
+}
+
+func TestShutterRejectedPositionKeepsPendingReversal(t *testing.T) {
+	h := newShutterHarness(t, shutterConfig())
+	if err := h.ws.Open(); err != nil { // from unknown
+		t.Fatalf("open: %v", err)
+	}
+	if err := h.ws.Close(); err != nil { // reversal: pending
+		t.Fatalf("close: %v", err)
+	}
+	if !h.snap().PendingReversal {
+		t.Fatal("close must be pending")
+	}
+	if err := h.ws.SetPosition(50); err == nil {
+		t.Fatal("intermediate target with unknown position must be rejected")
+	}
+	if s := h.snap(); !s.PendingReversal || s.TargetPosition != -1 && s.Motion != "stopped" {
+		t.Fatalf("rejected request must not cancel the accepted close: %+v", s)
+	}
+	h.fc.Advance(500 * time.Millisecond)
+	if !h.close.isOn() {
+		t.Fatal("the accepted close must still start")
+	}
+}

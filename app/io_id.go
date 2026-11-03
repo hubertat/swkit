@@ -68,3 +68,49 @@ func ioPointNameForConfig(pt IoPointDebugState) string {
 		return pt.Name
 	}
 }
+
+// CanonicalOutputId maps a d_out config io id to one canonical spelling, so
+// aliases of one physical output compare equal in save validation. Wago
+// accepts both the driver-global index ("wago|d_out|4") and module:port
+// ("wago|d_out|2:1", letters allowed: "b:a"); the module:port form is
+// resolved through the live IO debug points (named "M<module>:DO<port>[...]"),
+// since only the running driver knows the module layout. Ids that cannot be
+// resolved are returned trimmed but otherwise unchanged.
+func CanonicalOutputId(ioId string, state AppState) string {
+	id := strings.TrimSpace(ioId)
+	parts := strings.Split(id, "|")
+	if len(parts) != 3 || parts[0] != "wago" || parts[1] != "d_out" {
+		return id
+	}
+	mp := strings.Split(parts[2], ":")
+	if len(mp) != 2 {
+		return id
+	}
+	module, ok1 := wagoNumber(mp[0])
+	port, ok2 := wagoNumber(mp[1])
+	if !ok1 || !ok2 {
+		return id
+	}
+	prefix := "M" + strconv.Itoa(module) + ":DO" + strconv.Itoa(port) + "["
+	for _, pt := range state.IoDebug {
+		if pt.DriverName == "wago" && pt.Type == "output" && strings.HasPrefix(pt.Name, prefix) {
+			return "wago|d_out|" + strconv.Itoa(pt.Index)
+		}
+	}
+	return id
+}
+
+// wagoNumber parses a 1-based Wago module/port number, as a decimal or a
+// letter (a = 1), mirroring the driver's parseIoId.
+func wagoNumber(s string) (int, bool) {
+	if n, err := strconv.Atoi(s); err == nil {
+		return n, n > 0
+	}
+	if len(s) == 1 {
+		c := strings.ToLower(s)[0]
+		if c >= 'a' && c <= 'z' {
+			return int(c-'a') + 1, true
+		}
+	}
+	return 0, false
+}

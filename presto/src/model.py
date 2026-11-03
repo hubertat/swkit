@@ -416,6 +416,18 @@ class Model:
             resp = await self.client.post(job["path"], job.get("body"), CMD_TIMEOUT_S)
         except Exception as e:  # noqa: BLE001 - any failure is reported the same way
             it.in_flight = False
+            # A failed shutter move may still have been accepted (the reply
+            # was lost), so a Stop queued behind it must still go out.
+            stop = None
+            if job.get("shutter") and job.get("cmd") != "stop":
+                stop = next((j for j in it.queue if j.get("cmd") == "stop"), None)
+            if stop is not None and self.get_intent(index, it.slot) is it:
+                self.notify("Couldn't %s: %s. Sending Stop." % (job["verb"], err_text(e)), "error")
+                it.queue = [stop]
+                it.accepted = None
+                it.label = ("stop", None)
+                self.pump(index, it)
+                return
             self.fail(index, it, job["verb"], e)
             return
         it.in_flight = False

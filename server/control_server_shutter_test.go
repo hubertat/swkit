@@ -51,8 +51,12 @@ func (f *shutterController) SetDevice(i int, v bool) app.ControlResult {
 	}
 	return f.result("close", i, app.WindowShutterState{Motion: "closing", TargetPosition: 0})
 }
-func (f *shutterController) SetDeviceBrightness(int, int) app.ControlResult    { return app.ControlResult{} }
-func (f *shutterController) AdjustDeviceBrightness(int, int) app.ControlResult { return app.ControlResult{} }
+func (f *shutterController) SetDeviceBrightness(int, int) app.ControlResult {
+	return app.ControlResult{}
+}
+func (f *shutterController) AdjustDeviceBrightness(int, int) app.ControlResult {
+	return app.ControlResult{}
+}
 func (f *shutterController) SetDeviceValueFor(int, bool, int) app.ControlResult {
 	return app.ControlResult{Error: errors.New("timed on/off is not supported by window shutter")}
 }

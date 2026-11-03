@@ -196,3 +196,35 @@ func TestNormalizeWindowShutters(t *testing.T) {
 		t.Fatalf("normalize: %+v", cfg.WindowShutters[0])
 	}
 }
+
+func TestValidateWagoOutputAliases(t *testing.T) {
+	state := AppState{
+		Drivers: []DriverState{{Name: "wago"}},
+		IoDebug: []IoPointDebugState{
+			{DriverName: "wago", Index: 4, Name: "M2:DO1[4]", Type: "output"},
+			{DriverName: "wago", Index: 5, Name: "M2:DO2[5]", Type: "output"},
+		},
+	}
+	if got := CanonicalOutputId("wago|d_out|b:a", state); got != "wago|d_out|4" {
+		t.Fatalf("canonical: %q", got)
+	}
+	cfg := EditableConfig{
+		Lights: []LightEditConfig{{Name: "L1", DigitalOutName: "wago|d_out|4"}},
+		WindowShutters: []WindowShutterEditConfig{{
+			Name: "Sh", OpenDigitalOutName: "wago|d_out|2:1", CloseDigitalOutName: "wago|d_out|2:2", OpenDurationSeconds: 10,
+		}},
+	}
+	if !hasErr(ValidateEditableConfig(cfg, state), "assigned to more than one field") {
+		t.Fatal("an alias of a light's output must be rejected")
+	}
+	cfg.Lights = nil
+	cfg.WindowShutters[0].CloseDigitalOutName = "wago|d_out|4" // alias of its own open output
+	if !hasErr(ValidateEditableConfig(cfg, state), "assigned to more than one field") {
+		t.Fatal("open and close aliasing one output must be rejected")
+	}
+	cfg.WindowShutters[0].CloseDigitalOutName = "wago|d_out|5"
+	cfg.ColorLightOutputOwners = map[string]string{"wago|d_out|2:1": "Strip"}
+	if !hasErr(ValidateEditableConfig(cfg, state), `already used by color light "Strip"`) {
+		t.Fatal("color light alias must be rejected")
+	}
+}

@@ -298,8 +298,10 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 			if strings.TrimSpace(ws.OpenDigitalOutName) != strings.TrimSpace(ws.CloseDigitalOutName) || f.field == "OpenDigitalOutName" {
 				digitalOutUses = append(digitalOutUses, ioUse{f.field, label, f.id})
 			}
-			if owner, ok := cfg.ColorLightOutputOwners[f.id]; ok {
-				errs = append(errs, fmt.Sprintf("%s: %s %q is already used by color light %q", label, f.field, f.id, owner))
+			for ownedId, owner := range cfg.ColorLightOutputOwners {
+				if CanonicalOutputId(ownedId, state) == CanonicalOutputId(f.id, state) {
+					errs = append(errs, fmt.Sprintf("%s: %s %q is already used by color light %q", label, f.field, f.id, owner))
+				}
 			}
 		}
 	}
@@ -313,10 +315,14 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 	}
 
 	// Duplicate assignment: same io id used by more than one device/field.
+	// Output ids are compared in canonical form (CanonicalOutputId), so two
+	// aliases of one physical output (e.g. Wago "2:1" and its global index)
+	// count as the same output.
 	reportDuplicates := func(uses []ioUse) {
 		byId := make(map[string][]string)
 		for _, u := range uses {
-			byId[u.ioId] = append(byId[u.ioId], u.device+"."+u.field)
+			key := CanonicalOutputId(u.ioId, state)
+			byId[key] = append(byId[key], u.device+"."+u.field)
 		}
 		for ioId, users := range byId {
 			if len(users) > 1 {

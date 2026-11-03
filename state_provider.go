@@ -312,13 +312,17 @@ func (p *SwKitProvider) GetState() app.AppState {
 	// Shutter outputs are matched by their config io id, derived from each
 	// point through app.IoPointToId (driver-specific name translation), so
 	// Shelly switch/light and Wago global-index outputs are recognised.
+	// Matching is by physical output identity (see shutterOutputOwners),
+	// so address aliases (e.g. Wago "1:1" vs global "0") cannot hide one.
 	shutterOwners := shutterOutputOwners(sw)
 	// Annotate each IO point with the device that uses it (if any)
 	for i, pt := range state.IoDebug {
-		if pt.Type == "output" {
-			if owner, ok := shutterOwners[app.IoPointToId(pt)]; ok {
-				state.IoDebug[i].ConfiguredAs = owner
-				continue
+		if pt.Type == "output" && shutterOwners.drivers[pt.DriverName] {
+			if ident, ok := outputIdentityOfPoint(sw.ioDrivers[pt.DriverName], pt); ok {
+				if owner, owned := shutterOwners.byIdentity[ident]; owned {
+					state.IoDebug[i].ConfiguredAs = owner
+					continue
+				}
 			}
 		}
 		ioTypeStr := "d_in"
@@ -652,16 +656,51 @@ func shutterStateFromSnapshot(snap WindowShutterSnapshot) *app.WindowShutterStat
 	}
 }
 
-// shutterOutputOwners maps each shutter output's config io id to a label
-// ("<shutter> (open)" / "<shutter> (close)").
-func shutterOutputOwners(sw *SwKit) map[string]string {
-	owners := make(map[string]string, 2*len(sw.windowShutters))
+// shutterOwnership identifies the outputs owned by window shutters by their
+// physical identity: the resolved driver output's String(), which is the same
+// for every config alias of one output (Wago "1:1", "a:a" and global "0"
+// all resolve to the same output). drivers lists the drivers involved.
+type shutterOwnership struct {
+	byIdentity map[string]string // output identity -> "<shutter> (open|close)"
+	drivers    map[string]bool
+}
+
+func shutterOutputOwners(sw *SwKit) shutterOwnership {
+	o := shutterOwnership{byIdentity: make(map[string]string), drivers: make(map[string]bool)}
 	for _, ws := range sw.windowShutters {
 		openId, closeId := ws.OutputIoIds()
-		owners[openId] = ws.name + " (open)"
-		owners[closeId] = ws.name + " (close)"
+		for _, id := range []string{openId, closeId} {
+			if dn, _, _, err := drivers.ResolveIoIdString(id); err == nil {
+				o.drivers[dn] = true
+			}
+		}
+		if ws.openDout != nil {
+			o.byIdentity[ws.openDout.String()] = ws.name + " (open)"
+		}
+		if ws.closeDout != nil {
+			o.byIdentity[ws.closeDout.String()] = ws.name + " (close)"
+		}
 	}
-	return owners
+	return o
+}
+
+// outputIdentityOfPoint resolves a raw digital output debug point to the
+// driver output it addresses and returns that output's identity. The point
+// is converted with app.IoPointToId (Shelly switch/light naming, Wago global
+// index), the same mapping the IO annotations and editors use.
+func outputIdentityOfPoint(driver drivers.IoDriver, pt app.IoPointDebugState) (string, bool) {
+	if driver == nil {
+		return "", false
+	}
+	_, _, name, err := drivers.ResolveIoIdString(app.IoPointToId(pt))
+	if err != nil {
+		return "", false
+	}
+	out, err := driver.GetDigitalOutput(name)
+	if err != nil || out == nil {
+		return "", false
+	}
+	return out.String(), true
 }
 
 func isOutputHealthy(output drivers.DigitalOutput) bool {
@@ -1133,18 +1172,8 @@ func (p *SwKitProvider) SetIoAnalogOutput(driverName string, outputIndex int, va
 // annotations, so Shelly switches/lights and Wago global indexes translate
 // correctly. If shutters use this driver and the index cannot be mapped,
 // ownership cannot be established and the write is rejected.
-func checkRawOutputOwnership(driverName string, driver drivers.IoDriver, index int, owners map[string]string) error {
-	if len(owners) == 0 {
-		return nil
-	}
-	driverOwns := false
-	for id := range owners {
-		if dn, _, _, err := drivers.ResolveIoIdString(id); err == nil && dn == driverName {
-			driverOwns = true
-			break
-		}
-	}
-	if !driverOwns {
+func checkRawOutputOwnership(driverName string, driver drivers.IoDriver, index int, owners shutterOwnership) error {
+	if !owners.drivers[driverName] {
 		return nil
 	}
 	provider, ok := driver.(drivers.IoDebugProvider)
@@ -1155,9 +1184,13 @@ func checkRawOutputOwnership(driverName string, driver drivers.IoDriver, index i
 		if pt.Index != index || pt.Type != drivers.IoTypeDigitalOutput {
 			continue
 		}
-		id := app.IoPointToId(app.IoPointDebugState{DriverName: driverName, Index: pt.Index, Name: pt.Name, Type: "output"})
-		if owner, owned := owners[id]; owned {
-			return fmt.Errorf("output %s is controlled by window shutter %s; use the shutter controls", id, owner)
+		dp := app.IoPointDebugState{DriverName: driverName, Index: pt.Index, Name: pt.Name, Type: "output"}
+		ident, ok := outputIdentityOfPoint(driver, dp)
+		if !ok {
+			return fmt.Errorf("output %d of driver %q cannot be resolved; raw writes are disabled while window shutters use this driver", index, driverName)
+		}
+		if owner, owned := owners.byIdentity[ident]; owned {
+			return fmt.Errorf("output %s is controlled by window shutter %s; use the shutter controls", app.IoPointToId(dp), owner)
 		}
 		return nil
 	}

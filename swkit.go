@@ -470,6 +470,12 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) (retErr error) {
 		if err != nil {
 			return errors.Join(err, fmt.Errorf("failed to get close output for window shutter %s", wsConf.Name))
 		}
+		// Config ids can alias one physical output (e.g. Wago "1:1" and
+		// "0"), so the literal-id checks are repeated on the resolved
+		// outputs before any shutter could drive them.
+		if err := sw.checkShutterOutputIdentity(wsConf.Name, openOut, closeOut); err != nil {
+			return err
+		}
 		sw.windowShutters = append(sw.windowShutters, NewWindowShutter(wsConf, openOut, closeOut, logger))
 	}
 

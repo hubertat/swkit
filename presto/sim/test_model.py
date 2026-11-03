@@ -509,6 +509,33 @@ async def test_shutter_failed_command_reports():
     assert toasts and toasts[-1][0] == "error" and "position is unknown" in toasts[-1][1], toasts
 
 
+
+async def test_shutter_failed_move_still_sends_queued_stop():
+    m, c, toasts = setup(shutter(position_known=True, current_position=50))
+    gate = asyncio.Event()
+    d = m.devices[0]
+    orig = c.post
+    calls = [0]
+
+    async def post(path, body=None, timeout=8.0):
+        calls[0] += 1
+        if calls[0] == 1:
+            await gate.wait()
+            raise OSError("reply lost")      # the Open's reply is lost
+        return await orig(path, body, timeout)
+    c.post = post
+    m.shutter_command(d, "open")
+    await settle()
+    m.shutter_command(d, "stop")            # queued behind the in-flight Open
+    gate.set()
+    for _ in range(4):
+        await settle()
+    assert [p.split("/")[-1] for p, _ in c.sent] == ["stop"], c.sent
+    assert toasts and toasts[0][0] == "error" and "Sending Stop" in toasts[0][1], toasts
+    it = m.get_intent(0, "sh")
+    assert it is not None and it.phase == "waiting", "the Stop must be tracked until confirmed"
+
+
 def run():
     tests = [(k, v) for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

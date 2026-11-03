@@ -1080,31 +1080,22 @@ func (m *Model) toggleSelectedIoOutput() tea.Cmd {
 }
 
 // shutterOwnerOf returns "<shutter> (open|close)" when the IO point is one
-// of a window shutter's outputs, else "". Raw toggles of those outputs would
-// bypass the shutter's sequencing (the provider rejects them too).
+// of a window shutter's outputs, else "". It relies on the provider's
+// annotation (ConfiguredAs), which matches outputs by physical identity, so
+// config aliases (e.g. Wago module:port vs global index) cannot slip past.
+// Raw toggles of those outputs would bypass the shutter's sequencing (the
+// provider rejects them too).
 func (m Model) shutterOwnerOf(driverName string, index int, ioType string) string {
 	if ioType != "output" {
 		return ""
 	}
-	var pt *app.IoPointDebugState
-	for i := range m.state.IoDebug {
-		p := &m.state.IoDebug[i]
-		if p.DriverName == driverName && p.Index == index && p.Type == "output" {
-			pt = p
-			break
+	for _, p := range m.state.IoDebug {
+		if p.DriverName != driverName || p.Index != index || p.Type != "output" {
+			continue
 		}
-	}
-	if pt == nil {
-		return ""
-	}
-	id := app.IoPointToId(*pt)
-	for _, d := range m.state.Devices {
-		if ws := d.WindowShutter; ws != nil {
-			if ws.OpenIoId == id {
-				return d.Name + " (open)"
-			}
-			if ws.CloseIoId == id {
-				return d.Name + " (close)"
+		for _, d := range m.state.Devices {
+			if d.WindowShutter != nil && (p.ConfiguredAs == d.Name+" (open)" || p.ConfiguredAs == d.Name+" (close)") {
+				return p.ConfiguredAs
 			}
 		}
 	}
