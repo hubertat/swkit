@@ -37,7 +37,12 @@ DEVICES = [
     {"name": "Hall switch", "type": "button"},
     {"name": "Bedside left", "type": "button"},
     {"name": "Doorbell", "type": "button"},
+    # Window shutters (appended so the other indices stay put). Travel is
+    # simulated from time like the real controller's estimate.
+    {"name": "Bedroom shutter", "type": "window_shutter", "travel": 12},
+    {"name": "Living room shutter", "type": "window_shutter", "travel": 18, "pos": 100, "known": True},
 ]
+OVERRUN = 0.10
 
 
 def init():
@@ -49,6 +54,56 @@ def init():
         d["scene_index"] = 0       # selected state (published at toggle time)
         d["changed_at"] = time.time()
         d["last_event_time"] = None
+        if d["type"] == "window_shutter":
+            d.setdefault("pos", 0.0)
+            d.setdefault("known", False)
+            d.update(motion="stopped", target=-1, start_t=0, start_pos=0, stop_at=0, last_dir=None)
+
+
+def sh_pos(d, now):
+    """Estimated position (percent open), advancing while moving."""
+    if d["motion"] == "stopped":
+        return d["pos"]
+    delta = 100.0 * (now - d["start_t"]) / d["travel"]
+    p = d["start_pos"] + (delta if d["motion"] == "opening" else -delta)
+    return max(0.0, min(100.0, p))
+
+
+def sh_settle(d, now):
+    if d["motion"] != "stopped" and now >= d["stop_at"]:
+        d["pos"] = float(d["target"])
+        if d["target"] in (0, 100):
+            d["known"] = True
+        d["motion"] = "stopped"
+
+
+def sh_stop(d, now):
+    if d["motion"] != "stopped":
+        d["pos"] = sh_pos(d, now) if d["known"] else d["pos"]
+        d["motion"] = "stopped"
+        d["target"] = int(round(d["pos"])) if d["known"] else -1
+
+
+def sh_start(d, target, now):
+    if not d["known"] and target not in (0, 100):
+        raise ValueError("window shutter %s: position is unknown; run a full open or close first" % d["name"])
+    sh_stop(d, now)
+    d["motion"] = "opening" if (target == 100 if not d["known"] else target > d["pos"]) else "closing"
+    dist = abs(target - d["pos"]) if d["known"] else 100
+    run = d["travel"] * dist / 100.0 + (d["travel"] * OVERRUN if target in (0, 100) else 0)
+    d.update(target=target, start_t=now, start_pos=d["pos"], stop_at=now + run, last_dir=d["motion"])
+
+
+def sh_state(d, now):
+    sh_settle(d, now)
+    return {
+        "motion": d["motion"], "target_position": d["target"],
+        "current_position": int(round(sh_pos(d, now))) if d["known"] else 0,
+        "position_known": d["known"], "pending_start": False,
+        "open_io_id": "mock|d_out|%d0" % d["index"], "close_io_id": "mock|d_out|%d1" % d["index"],
+        "open_duration_seconds": d["travel"], "close_duration_seconds": d["travel"],
+        "remaining_travel_ms": max(0, int((d["stop_at"] - now) * 1000)) if d["motion"] != "stopped" else 0,
+    }
 
 
 def later(fn):
@@ -82,6 +137,10 @@ def snapshot():
             r["scene_count"] = len(d["scene_states"])
             r["scene_state"] = d["scene_states"][d["scene_index"]]
             r["scene_next"] = next_state(d)
+        if t == "window_shutter":
+            ws = sh_state(d, now)
+            r["window_shutter"] = ws
+            r["is_on"] = ws["position_known"] and ws["current_position"] > 0
         if t == "button" and d["last_event_time"]:
             r["last_event_type"] = d["last_event_type"]
             r["last_event_age_ms"] = max(1, int((now - d["last_event_time"]) * 1000))
@@ -115,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/control/api/info":
-            return self.reply(200, {"name": "Mock home", "api": 1})
+            return self.reply(200, {"name": "Mock home", "api": 1, "features": ["window_shutter"]})
         if self.path == "/control/api/devices":
             with LOCK:
                 return self.reply(200, snapshot())
@@ -136,6 +195,30 @@ class Handler(BaseHTTPRequestHandler):
         if not d["is_healthy"]:
             return self.reply(500, text="device not healthy")
         with LOCK:
+            if d["type"] == "window_shutter":
+                now = time.time()
+                sh_settle(d, now)
+                try:
+                    if action == "stop":
+                        sh_stop(d, now)
+                    elif action == "open" or (action == "set" and body.get("value")):
+                        sh_start(d, 100, now)
+                    elif action == "close" or action == "set":
+                        sh_start(d, 0, now)
+                    elif action == "set_position":
+                        sh_start(d, max(0, min(100, int(body.get("value", 0)))), now)
+                    elif action == "toggle":
+                        if d["motion"] != "stopped":
+                            sh_stop(d, now)
+                        else:
+                            sh_start(d, 0 if d["last_dir"] == "opening" else 100, now)
+                    else:
+                        return self.reply(404, text="not found")
+                except ValueError as e:
+                    return self.reply(409, text=str(e))
+                ws = sh_state(d, now)
+                return self.reply(200, {"device_name": d["name"], "action": action,
+                                        "is_on": ws["position_known"] and ws["current_position"] > 0, "window_shutter": ws})
             if action == "toggle":
                 if d["type"] == "scene":
                     # Selected (and published) now; the lights follow after the delay.

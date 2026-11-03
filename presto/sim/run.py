@@ -82,8 +82,12 @@ class Driver:
 # narrower tiles beside the page rail), rail arrows, tabs (see ui.py layout).
 SLOT = [(125, 159), (355, 159), (125, 257), (355, 257), (125, 355), (355, 355)]
 PAGE_UP, PAGE_DOWN = (436, 170), (436, 344)     # page rail beside the grid
-TAB = [(48, 442), (144, 442), (240, 442), (336, 442), (432, 442)]
+# Six tabs: Lights, Outlets, Shutters, Scenes, Buttons, Settings.
+TAB = [(40, 442), (120, 442), (200, 442), (280, 442), (360, 442), (440, 442)]
 SHEET_CLOSE = (438, 58)
+# Shutter sheet: Open/Stop/Close row and the 25% preset (see draw_shutter_sheet).
+SHEET_STOP = (240, 191)
+SHEET_PRESET_25 = (148, 337)
 
 
 async def tour(d):
@@ -110,7 +114,31 @@ async def tour(d):
     await d.shot("outlets")
     mock_swkit.DEVICES[14].update(last_event_type="double_press", last_event_time=time.time())
     mock_swkit.DEVICES[13].update(last_event_type="single_press", last_event_time=time.time() - 140)
-    await d.tap(*TAB[3])
+    await d.tap(*TAB[2])                  # shutters
+    await d.wait(0.6)
+    await d.shot("shutters")
+    await d.tap(*SLOT[0])                 # Bedroom shutter: toggle -> opening (calibrating)
+    await d.wait(0.05)
+    await d.shot("shutters-pending")
+    await d.wait(1.5)
+    await d.shot("shutters-moving")
+    await d.long_press(*SLOT[1])          # Living room shutter detail (known position)
+    await d.wait(0.4)
+    await d.shot("sheet-shutter")
+    await d.tap(*SHEET_PRESET_25)         # move to 25%
+    await d.wait(1.5)
+    await d.shot("sheet-shutter-moving")
+    await d.tap(*SHEET_STOP)              # Stop
+    await d.wait(1.2)
+    await d.shot("sheet-shutter-stopped")
+    await d.tap(*SHEET_CLOSE)
+    await d.wait(0.3)
+    await d.long_press(*SLOT[0])          # Bedroom shutter: unknown position, intermediates disabled
+    await d.wait(0.4)
+    await d.shot("sheet-shutter-unknown")
+    await d.tap(*SHEET_CLOSE)
+    await d.wait(0.3)
+    await d.tap(*TAB[4])
     await d.wait(2.4)
     await d.shot("buttons")
     await d.tap(*SLOT[0])                 # a button's detail
@@ -118,7 +146,7 @@ async def tour(d):
     await d.shot("sheet-button")
     await d.tap(*SHEET_CLOSE)
     await d.wait(0.3)
-    await d.tap(*TAB[4])                  # settings
+    await d.tap(*TAB[5])                  # settings
     await d.wait(0.4)
     await d.shot("settings")
     await d.tap(239, 268)                 # Light order: On first

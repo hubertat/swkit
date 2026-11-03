@@ -35,7 +35,9 @@ async def drag(t, x0, y0, x1, y1):
 
 SLOT = [(125, 159), (355, 159), (125, 257), (355, 257), (125, 355), (355, 355)]
 PAGE_UP, PAGE_DOWN = (436, 170), (436, 344)     # page rail beside the grid
-TABS = [(48, 442), (144, 442), (240, 442), (336, 442), (432, 442)]
+# Six tabs: Lights, Outlets, Shutters, Scenes, Buttons, Settings.
+TABS = [(40, 442), (120, 442), (200, 442), (280, 442), (360, 442), (440, 442)]
+SHEET_STOP, SHEET_PRESET_25 = (240, 191), (148, 337)   # shutter sheet (see ui.draw_shutter_sheet)
 SHEET_CLOSE = (438, 58)
 
 
@@ -68,8 +70,9 @@ async def tour(app):
         await tap(t, x, y)                 # every tab
         await tap(t, *SLOT[0])
         await tap(t, *SHEET_CLOSE)
+    await shutters(app, t)
     # Settings: every screen, every chip row on the first two.
-    await tap(t, *TABS[4])
+    await tap(t, *TABS[5])
     for _ in range(4):
         for y in (150, 268, 316, 350):
             await tap(t, 120, y)
@@ -135,6 +138,29 @@ async def tour(app):
     assert settings.Settings()["light_sort"] == "name", "flash copy not updated"
     print("boot commit ok")
     await screen_off(app, t)
+
+
+async def shutters(app, t):
+    """Shutter page: tap toggles, the sheet's preset/Stop/slider go through
+    the single command stream, and a Stop wins over a queued move."""
+    ui, m = app.ui, app.model
+    await tap(t, *TABS[2])
+    assert ui.section_key() == "shutters", "not on the shutters page: %s" % ui.section_key()
+    living = [d for d in m.devices.values() if d["name"] == "Living room shutter"][0]
+    await tap(t, *SLOT[1], hold=0.7)            # long press -> shutter sheet
+    assert ui.sheet == living["index"], "shutter sheet did not open"
+    await tap(t, *SHEET_PRESET_25)
+    await asyncio.sleep(1.5)
+    ws = m.devices[living["index"]]["window_shutter"]
+    assert ws["motion"] == "closing" and ws["target_position"] == 25, "preset not applied: %s" % ws
+    await drag(t, 300, 280, 200, 280)           # slider drag, then Stop at once
+    await tap(t, *SHEET_STOP)
+    await asyncio.sleep(1.5)
+    ws = m.devices[living["index"]]["window_shutter"]
+    assert ws["motion"] == "stopped", "Stop did not win over the slider: %s" % ws
+    assert not m.has_active_intent(), "shutter intent left behind"
+    await tap(t, *SHEET_CLOSE)
+    print("shutters ok:", ws["current_position"], "% open")
 
 
 async def screen_off(app, t):

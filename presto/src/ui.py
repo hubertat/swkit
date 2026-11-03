@@ -78,13 +78,16 @@ OK = (74, 200, 120)
 MUTED_ON = (120, 112, 92)    # an "on" tile while the controller is unreachable
 STALE_BG = (74, 28, 28)
 
-ON_COLOR = {"light": AMBER, "color_light": AMBER, "dimmable_light": AMBER, "outlet": TEAL, "scene": VIOLET}
+ON_COLOR = {"light": AMBER, "color_light": AMBER, "dimmable_light": AMBER, "outlet": TEAL, "scene": VIOLET,
+            "window_shutter": BLUE}
+# Window shutters: "dns" (stacked slats) at rest, an arrow while moving.
 TYPE_ICON = {"light": "lightbulb", "color_light": "lightbulb", "dimmable_light": "lightbulb",
-             "outlet": "outlet", "scene": "scene", "button": "button"}
-SECTION_ICON = {"lights": "lightbulb", "outlets": "outlet", "scenes": "scene", "inputs": "button"}
+             "outlet": "outlet", "scene": "scene", "button": "button", "window_shutter": "dns"}
+SECTION_ICON = {"lights": "lightbulb", "outlets": "outlet", "shutters": "dns", "scenes": "scene", "inputs": "button"}
+SHUTTER_PRESETS = (0, 25, 50, 75, 100)
 
 # Targets that don't light up under the finger.
-NO_PRESS = ("backdrop", "sheet_body", "bri_slider", "backlight", "toast")
+NO_PRESS = ("backdrop", "sheet_body", "bri_slider", "sh_slider", "backlight", "toast")
 
 # Hot-rect flags
 F_LONG = 1      # supports long-press
@@ -393,6 +396,9 @@ class UI:
             return "%d buttons" % len(devs)
         if key == "settings":
             return "Settings"
+        if key == "shutters":
+            moving = sum(1 for d in devs if m.view(d).moving)
+            return ("%d of %d moving" % (moving, len(devs))) if moving else "%d shutters" % len(devs)
         return "%d %s" % (len(devs), sect["title"].lower() if sect else "")
 
     def per_tick(self, now):
@@ -591,6 +597,16 @@ class UI:
             d = self.dev(self.sheet)
             if d:
                 m.set_power(d, None)
+        elif action == "sh":
+            d = self.dev(self.sheet)
+            if d:
+                m.shutter_command(d, arg)
+        elif action == "sh_pos":
+            d = self.dev(self.sheet)
+            if d:
+                m.shutter_command(d, "position", arg)
+        elif action == "sh_need_cal":
+            self.notify("Position unknown: open or close fully once first.", "warn")
         elif action == "setting":
             key, value = arg
             app.change_setting(key, value)
@@ -625,6 +641,10 @@ class UI:
             d = self.dev(self.sheet)
             if d:
                 self.model().set_brightness(d, v * 100, final)
+        elif h[1] == "sh_slider":
+            d = self.dev(self.sheet)
+            if d:
+                self.model().set_shutter_position(d, v * 100, final)
         elif h[1] == "backlight":
             level = round(0.1 + v * 0.9, 2)
             self.app.change_setting("backlight", level, final)
@@ -923,7 +943,8 @@ class UI:
         pressed = self.is_pressed("tile", index)
         oncol = MUTED_ON if stale else ON_COLOR.get(t, AMBER)
         offline = v.sync == "offline"
-        lit = v.on and v.kind != "input" and not offline
+        # A shutter lights up while it moves; its position has the bar.
+        lit = (v.moving if v.kind == "shutter" else v.on and v.kind != "input") and not offline
         if v.kind == "input" and v.recent:
             bg, fg, sub_col, icon_col = (32, 58, 104), TEXT, (190, 214, 255), BLUE
         elif lit:
@@ -932,7 +953,9 @@ class UI:
             bg, fg, sub_col, icon_col = (22, 25, 31), FAINT, FAINT, FAINT
         else:
             bg, fg, sub_col, icon_col = SURFACE, TEXT, DIM, DIM
-        if v.sync == "unconfirmed" or (v.unknown and not v.on_known):
+        # An uncalibrated shutter position is not a warning, only unread state is.
+        unread = v.unknown and not v.on_known and v.kind != "shutter"
+        if v.sync == "unconfirmed" or unread:
             sub_col = WARN if not lit else (110, 60, 0)
         if pressed:
             bg = _shade(bg, 1.18) if not lit else _shade(bg, 0.86)
@@ -941,20 +964,25 @@ class UI:
         g.rrect(rx, ry, rw, rh, 18, bg)
         if v.busy:
             g.hatch(rx, ry, rw, rh, 18, _shade(bg, 0.86) if lit else SURFACE_2)
-        if v.unknown and not v.on_known and not v.busy:
+        if unread and not v.busy:
             g.rrect(rx, ry, rw, rh, 18, FAINT, 2)
         if v.sync == "unconfirmed":
             g.rrect(rx, ry, rw, rh, 18, WARN, 3)
         elif index in m.flash:
             g.rrect(rx, ry, rw, rh, 18, (255, 255, 255) if not lit else INK, 2)
 
-        bri_bar = d.get("has_brightness")
+        bri_bar = d.get("has_brightness") or (v.kind == "shutter" and v.pos_known)
         mid = ry + rh // 2 - (4 if bri_bar else 0)
         # Beside the page rail the icon shrinks a little to leave the name room.
         narrow = r[2] < TILE_W
         ic, ir, isz, tx = (31, 20, 28, 58) if narrow else (36, 23, 32, 68)
         g.circle(rx + ic, mid, ir, _shade(bg, 0.84) if lit else _shade(bg, 1.35))
-        g.icon("help" if (v.unknown and not v.on_known) else TYPE_ICON.get(t, "info"), rx + ic, mid, isz, icon_col)
+        icon = TYPE_ICON.get(t, "info")
+        if v.kind == "shutter":
+            icon = "expand_less" if v.motion == "opening" else "expand_more" if v.motion == "closing" else "dns"
+        elif v.unknown and not v.on_known:
+            icon = "help"
+        g.icon(icon, rx + ic, mid, isz, icon_col)
 
         tw = rw - tx - 10
         tx += rx
@@ -977,7 +1005,7 @@ class UI:
         if bri_bar:
             bx, bw, by = rx + 16, rw - 32, ry + rh - 10
             g.rrect(bx, by, bw, 4, 2, _shade(bg, 0.8) if lit else SURFACE_2)
-            fill = bw * (v.bri if v.on else 0) // 100
+            fill = bw * ((v.pos or 0) if v.kind == "shutter" else (v.bri if v.on else 0)) // 100
             if fill > 4:
                 g.rrect(bx, by, fill, 4, 2, INK if lit else DIM)
 
@@ -1052,6 +1080,8 @@ class UI:
             for i, s in enumerate(TIMERS):
                 self.button(16 + i * (cw + 8), y, cw, 46, M.dur_label(s), "timer", s, icon="timer", size=17)
             y += 56
+        elif v.kind == "shutter":
+            y = self.draw_shutter_sheet(d, v, y)
         elif v.kind == "scene":
             count = d.get("scene_count") or 2
             idx = d.get("scene_index") or 0
@@ -1080,7 +1110,53 @@ class UI:
                 g.text_mid(val, W - 32, y + 27, 20, TEXT, 2, W - 200)
                 y += 62
         if d.get("is_faulty") and y < H - 24:
-            g.text("HomeKit reports a fault on this device.", 20, y + 14, 16, WARN)
+            g.text("Output fault on this shutter." if v.kind == "shutter" else "HomeKit reports a fault on this device.",
+                   20, y + 14, 16, WARN)
+
+    def draw_shutter_sheet(self, d, v, y):
+        """Open / Stop / Close, a position slider and presets. The position is
+        estimated from travel time; intermediate targets need it known."""
+        g = self.g
+        bw = (W - 32 - 16) // 3
+        self.button(16, y, bw, 58, "Open", "sh", "open", "selected" if v.motion == "opening" else "normal",
+                    icon="expand_less", size=20)
+        self.button(24 + bw, y, bw, 58, "Stop", "sh", "stop", "normal", icon="remove", size=20)
+        self.button(32 + 2 * bw, y, bw, 58, "Close", "sh", "close", "selected" if v.motion == "closing" else "normal",
+                    icon="expand_more", size=20)
+        y += 70
+        known = v.pos_known
+        g.text("Position (estimated)" if known else "Position unknown", 20, y + 14, 16, DIM)
+        g.text(("%d%% open" % v.pos) if known else "open or close fully once", W - 20, y + 14, 16, TEXT if known else WARN, 2)
+        y += 20
+        sr = (16, y, W - 32, 56)
+        if known:
+            self.add_hot(sr, "sh_slider", None, F_SLIDER)
+        if g.visible(*sr):
+            pad = 22
+            tx, tw = sr[0] + pad, sr[2] - 2 * pad
+            g.rrect(tx - 4, y + 22, tw + 8, 12, 6, SURFACE_2)
+            if known:
+                it = v.cmd
+                p = it.target if it is not None and it.phase == "dragging" and isinstance(it.target, int) else v.pos
+                k = tx + tw * p // 100
+                g.rrect(tx - 4, y + 22, k - tx + 8, 12, 6, BLUE)
+                g.circle(k, y + 28, 17, TEXT)
+        y += 64
+        n = len(SHUTTER_PRESETS)
+        cw = (W - 32 - (n - 1) * 8) // n
+        for i, p in enumerate(SHUTTER_PRESETS):
+            label = "Closed" if p == 0 else "Open" if p == 100 else "%d%%" % p
+            # Endpoints always work (and calibrate); intermediates need a known position.
+            if known or p in (0, 100):
+                style = "selected" if known and not v.moving and v.pos == p else "normal"
+                self.button(16 + i * (cw + 8), y, cw, 42, label, "sh_pos", p, style, size=16)
+            else:
+                self.button(16 + i * (cw + 8), y, cw, 42, label, "sh_need_cal", p, "disabled", size=16)
+        y += 52
+        ws = v.ws or {}
+        g.text("Travel: open %ds, close %ds" % (ws.get("open_duration_seconds") or 0, ws.get("close_duration_seconds") or 0),
+               20, y + 14, 15, DIM, 0, W - 40)
+        return y + 28
 
     # ----- settings -----
 

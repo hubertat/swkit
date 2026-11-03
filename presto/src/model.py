@@ -17,6 +17,16 @@
 # and brightness keep only the latest unsent target, scene steps queue.
 # A state the server could not read (state_error) stays "unknown" and is
 # never shown as "off".
+#
+# Window shutters use a third slot, "sh": one serialized command stream for
+# position, direction, Stop and Toggle (as control.js). Unsent position /
+# direction targets coalesce, Toggle queues, Stop drops unsent movement and
+# goes next. Acceptance comes from the action reply's window_shutter payload
+# (never is_on) and is confirmed by a poll started after the ack (a Stop only
+# by a stopped report). Travel completion is tracked separately: the
+# server's remaining_travel_ms sets a per-run deadline (plus grace), so a long
+# run, a reversal wait or the endpoint overrun is never called done or
+# overdue too early. The position is an estimate from travel time.
 
 try:
     import asyncio
@@ -33,6 +43,9 @@ CONFIRM_MS = 6000
 UNCONFIRMED_HOLD_MS = 15000
 STALE_MS = 6000
 DEBOUNCE_MS = 160
+SHUTTER_DEBOUNCE_MS = 250
+TRAVEL_GRACE_MS = 2 * POLL_MS + 2000
+SLOTS = ("power", "bri", "sh")
 RECENT_PRESS_MS = 3000
 CONFIRM_FLASH_MS = 700
 
@@ -43,12 +56,14 @@ TYPE_NAME = {
     "outlet": "Outlet",
     "scene": "Scene",
     "button": "Button",
+    "window_shutter": "Window shutter",
 }
 
 # Pages in display order; each lists the device types it holds.
 SECTIONS = (
     {"key": "lights", "title": "Lights", "types": ("light", "color_light", "dimmable_light"), "all_off": True},
     {"key": "outlets", "title": "Outlets", "types": ("outlet",), "all_off": True},
+    {"key": "shutters", "title": "Shutters", "types": ("window_shutter",), "all_off": False},
     {"key": "scenes", "title": "Scenes", "types": ("scene",), "all_off": False},
     {"key": "inputs", "title": "Buttons", "types": ("button",), "all_off": False},
 )
@@ -59,6 +74,8 @@ PHASE_RANK = {"sending": 4, "dragging": 3, "waiting": 2, "unconfirmed": 1}
 def kind_of(dev):
     if dev.get("type") == "scene":
         return "scene"
+    if dev.get("type") == "window_shutter" and isinstance(dev.get("window_shutter"), dict):
+        return "shutter"
     if dev.get("controllable"):
         return "power"
     return "input"
@@ -104,6 +121,8 @@ class Intent:
         self.resolve_any = False  # scene: the last toggle ack carried scene_index
         self.expire_at = None     # waiting -> unconfirmed
         self.clear_at = None      # unconfirmed -> dropped
+        self.accepted = None      # shutter: window_shutter payload of the last ack
+        self.label = None         # shutter: (cmd, pct) being sent
 
     def live(self):
         return self.phase != "unconfirmed"
@@ -115,7 +134,8 @@ def _live(it):
 
 class View:
     """What a tile or the detail sheet shows for one device."""
-    __slots__ = ("on", "on_known", "unknown", "bri", "sync", "sub", "kind", "busy", "pw", "br", "cmd", "fault", "recent")
+    __slots__ = ("on", "on_known", "unknown", "bri", "sync", "sub", "kind", "busy", "pw", "br", "cmd", "fault", "recent",
+                 "pos", "pos_known", "motion", "pending", "target", "moving", "overdue", "ws")
 
 
 class Model:
@@ -130,7 +150,9 @@ class Model:
         self.structure = None     # changes when the device list changes
         self.version = 0          # bumped on every visible change
         self.dirty = None         # changed device indices since take_dirty(); None = everything
-        self.intents = {}         # index -> {"power": Intent|None, "bri": Intent|None}
+        self.intents = {}         # index -> {"power", "bri", "sh": Intent|None}
+        self.travel = {}          # shutter index -> (run key, completion deadline ticks)
+        self._travel_tick = 0
         self.flash = {}           # index -> ticks when "confirmed" flash ends
         self.poll_now = False     # set to request an immediate poll
         self.resuming = False     # polling just resumed after screen off (panel only)
@@ -164,7 +186,7 @@ class Model:
         if cur is None or (it is not None and cur is not it):
             return
         slots[slot] = None
-        if slots["power"] is None and slots["bri"] is None:
+        if all(slots.get(k) is None for k in SLOTS):
             del self.intents[index]
         self.changed(index)
 
@@ -172,12 +194,12 @@ class Model:
         index = dev["index"]
         slots = self.intents.get(index)
         if slots is None:
-            slots = {"power": None, "bri": None}
+            slots = {"power": None, "bri": None, "sh": None}
             self.intents[index] = slots
         it = slots[slot]
         if it is not None and it.kind != kind and not it.in_flight:
             self.clear_intent(index, slot, it)
-            slots = self.intents.setdefault(index, {"power": None, "bri": None})
+            slots = self.intents.setdefault(index, {"power": None, "bri": None, "sh": None})
             it = None
         if it is None:
             it = Intent(slot, kind, dev["name"])
@@ -220,6 +242,9 @@ class Model:
     def view(self, dev):
         v = View()
         kind = kind_of(dev)
+        v.pos = v.pos_known = v.motion = v.pending = v.target = v.moving = v.overdue = v.ws = None
+        if kind == "shutter":
+            return self.shutter_view(dev, v)
         index = dev["index"]
         pw = self.get_intent(index, "power")
         br = self.get_intent(index, "bri")
@@ -298,7 +323,68 @@ class Model:
         v.recent = kind == "input" and bool(dev.get("last_event_type")) and self.event_age(dev) < RECENT_PRESS_MS
         return v
 
+    def shutter_view(self, dev, v):
+        index = dev["index"]
+        it = self.get_intent(index, "sh")
+        offline = not dev.get("is_healthy", True)
+        ws = dict(dev.get("window_shutter") or {})
+        if _live(it) and it.accepted:
+            ws.update(it.accepted)   # show what the server accepted until confirmed
+        known = bool(ws.get("position_known"))
+        pos = estimated_pos(ws, ticks_diff(ticks_ms(), self.snapshot_at)) if known else None
+        motion = ws.get("motion") or "stopped"
+        pending = bool(ws.get("pending_start"))
+        moving = motion != "stopped" or pending
+        tr = self.travel.get(index)
+        overdue = it is None and moving and tr is not None and ticks_diff(ticks_ms(), tr[1]) >= 0
+        if offline:
+            sync = "offline"
+        elif it is not None:
+            sync = it.phase
+        elif overdue:
+            sync = "unconfirmed"
+        else:
+            sync = "ok"
+        busy = sync in ("sending", "waiting", "dragging")
+        if offline:
+            sub = "Offline"
+        elif sync in ("sending", "dragging"):
+            sub = shutter_cmd_text(it.label)
+        elif overdue:
+            sub = "Not stopped yet"
+        elif sync == "unconfirmed":
+            sub = "Unconfirmed"
+        else:
+            shown = dict(ws)
+            if pos is not None:
+                shown["current_position"] = pos
+            sub = shutter_state_text(shown)
+        v.on = known and (pos or 0) > 0
+        v.on_known = known
+        v.unknown = not known
+        v.bri = 0
+        v.sync = sync
+        v.sub = sub
+        v.kind = "shutter"
+        v.busy = busy
+        v.pw = None
+        v.br = None
+        v.cmd = it
+        v.fault = bool(dev.get("is_faulty")) and not offline
+        v.recent = False
+        v.pos = pos
+        v.pos_known = known
+        v.motion = motion
+        v.pending = pending
+        v.target = ws.get("target_position", -1)
+        v.moving = moving
+        v.overdue = overdue
+        v.ws = ws
+        return v
+
     def reported_text(self, dev, it):
+        if it.kind == "shutter":
+            return "it still reports " + shutter_state_text(dev.get("window_shutter") or {}).lower()
         if it.kind == "bri":
             return "it still reports %d%%" % (dev.get("brightness") or 0)
         if it.kind == "scene":
@@ -335,6 +421,8 @@ class Model:
         it.in_flight = False
         if job.get("scene"):
             self.scene_acked(index, it, resp)
+        if job.get("shutter"):
+            self.shutter_acked(index, it, resp)
         if job.get("ack"):
             self.notify(job["ack"])
         self.pump(index, it)
@@ -373,13 +461,16 @@ class Model:
             slots = self.intents.get(index)
             if not slots:
                 continue
-            for slot in ("power", "bri"):
+            for slot in SLOTS:
                 it = slots.get(slot)
                 if it is None:
                     continue
                 if it.debounce_at is not None and ticks_diff(now, it.debounce_at) >= 0:
                     it.debounce_at = None
-                    it.queue = [self._bri_job(index, it)]
+                    if it.kind == "shutter":
+                        self._queue_shutter(index, it, self._shutter_job(index, it.name, "position", it.target))
+                    else:
+                        it.queue = [self._bri_job(index, it)]
                     self.pump(index, it)
                 if it.phase == "waiting" and it.expire_at is not None and ticks_diff(now, it.expire_at) >= 0:
                     it.phase = "unconfirmed"
@@ -394,6 +485,12 @@ class Model:
         for index in list(self.flash):
             if ticks_diff(now, self.flash[index]) >= 0:
                 del self.flash[index]
+                self.changed(index)
+        # Moving shutters: refresh the interpolated position / overdue check
+        # about once a second between polls.
+        if self.travel and ticks_diff(now, self._travel_tick) >= 1000:
+            self._travel_tick = now
+            for index in self.travel:
                 self.changed(index)
 
     def confirms(self, it, dev, poll_started_at):
@@ -411,6 +508,16 @@ class Model:
             return not dev.get("state_error") and bool(dev.get("is_on")) == it.target
         if it.kind == "bri":
             return abs((dev.get("brightness") or 0) - it.target) <= 1
+        if it.kind == "shutter":
+            if ticks_diff(poll_started_at, it.ack_at) < 0:
+                return False
+            ws = dev.get("window_shutter")
+            if not isinstance(ws, dict):
+                return False
+            a = it.accepted
+            if a and a.get("motion") == "stopped" and not a.get("pending_start"):
+                return ws.get("motion") == "stopped" and not ws.get("pending_start")
+            return True
         if it.kind == "scene":
             # The server answered the last toggle authoritatively, so a poll
             # that started after that answer settles the intent whatever it
@@ -477,6 +584,9 @@ class Model:
         if v.kind == "scene":
             self.set_power(dev, None)
             return True
+        if v.kind == "shutter":
+            self.shutter_command(dev, "toggle")
+            return True
         if not v.on_known:
             if _live(v.pw) and v.pw.target is None:
                 self.notify("Waiting for %s to report its state." % dev["name"], "warn")
@@ -503,6 +613,77 @@ class Model:
             if not it.in_flight:
                 it.phase = "dragging"
         self.changed(index)
+
+    # ---------- window shutters ----------
+
+    def _shutter_job(self, index, name, cmd, pct=None):
+        base = "/api/devices/%d/" % index
+        if cmd == "position":
+            return {"path": base + "set_position", "body": {"value": pct}, "verb": "move %s to %d%%" % (name, pct),
+                    "shutter": True, "cmd": cmd, "pct": pct}
+        return {"path": base + cmd, "verb": "%s %s" % (cmd, name), "shutter": True, "cmd": cmd}
+
+    def _queue_shutter(self, index, it, job):
+        cmd = job["cmd"]
+        if cmd == "stop":
+            it.queue = [job]                      # Stop drops unsent movement
+        elif cmd == "toggle":
+            it.queue.append(job)                  # discrete: every tap counts
+        else:
+            it.queue = [j for j in it.queue if j["cmd"] in ("stop", "toggle")] + [job]
+        it.label = (cmd, job.get("pct"))
+        it.accepted = None
+
+    def shutter_command(self, dev, cmd, pct=None):
+        """Queues open | close | stop | toggle | position on the shutter's
+        single command stream."""
+        index = dev["index"]
+        if not dev.get("is_healthy", True):
+            self.notify(dev["name"] + " is offline.", "warn")
+            return
+        it = self.intent_for(dev, "sh", "shutter")
+        if cmd == "stop":
+            it.debounce_at = None                 # also drops a slider value not sent yet
+        self._queue_shutter(index, it, self._shutter_job(index, dev["name"], cmd, pct))
+        it.phase = "sending"
+        self.changed(index)
+        self.pump(index, it)
+
+    def set_shutter_position(self, dev, value, immediate):
+        """Slider: debounced, then coalesced into the command stream."""
+        index = dev["index"]
+        pct = max(0, min(100, int(value + 0.5)))
+        if immediate:
+            self.shutter_command(dev, "position", pct)
+            return
+        it = self.intent_for(dev, "sh", "shutter")
+        it.target = pct
+        it.label = ("position", pct)
+        it.debounce_at = ticks_add(ticks_ms(), SHUTTER_DEBOUNCE_MS)
+        if not it.in_flight:
+            it.phase = "dragging"
+        self.changed(index)
+
+    def shutter_acked(self, index, it, resp):
+        if self.get_intent(index, it.slot) is not it:
+            return
+        ws = resp.get("window_shutter") if isinstance(resp, dict) else None
+        it.accepted = ws if isinstance(ws, dict) else None
+        if it.accepted and not it.queue:
+            mo = it.accepted.get("motion")
+            it.label = ("stop" if mo == "stopped" else "open" if mo == "opening" else "close", None)
+
+    def _track_travel(self, d):
+        ws = d.get("window_shutter")
+        index = d["index"]
+        if not isinstance(ws, dict) or (ws.get("motion") == "stopped" and not ws.get("pending_start")):
+            self.travel.pop(index, None)
+            return
+        key = "%s:%s:%s" % (ws.get("motion"), ws.get("target_position"), "p" if ws.get("pending_start") else "m")
+        cur = self.travel.get(index)
+        if cur is not None and cur[0] == key:
+            return
+        self.travel[index] = (key, ticks_add(ticks_ms(), (ws.get("remaining_travel_ms") or 0) + TRAVEL_GRACE_MS))
 
     def on_count(self, devs):
         return sum(1 for d in devs if self.view(d).on)
@@ -544,7 +725,7 @@ class Model:
             everything = True
         for index in list(self.intents):
             d = nxt.get(index)
-            for slot in ("power", "bri"):
+            for slot in SLOTS:
                 it = self.get_intent(index, slot)
                 if it is not None and (d is None or d.get("name") != it.name):
                     self.clear_intent(index, slot, it)
@@ -554,8 +735,13 @@ class Model:
         if key != self.structure:
             self.structure = key
             everything = True       # devices moved between sections
+        for index in list(self.travel):
+            if index not in nxt:
+                del self.travel[index]
         for d in lst:
-            for slot in ("power", "bri"):
+            if d.get("type") == "window_shutter":
+                self._track_travel(d)
+            for slot in SLOTS:
                 it = self.get_intent(d["index"], slot)
                 if it is not None and self.confirms(it, d, started_at):
                     was = it.phase == "unconfirmed"
@@ -631,13 +817,61 @@ class Model:
         if s == "dragging":
             return "sending", "Adjusting…", ""
         if s == "waiting":
+            if v.kind == "shutter":
+                return s, "Command accepted", "Accepted " + ago(ticks_diff(ticks_ms(), v.cmd.ack_at)) + ". Confirming."
             return s, "Waiting for the device to confirm", "Accepted " + ago(ticks_diff(ticks_ms(), v.cmd.ack_at)) + "."
+        if s == "unconfirmed" and v.kind == "shutter" and v.overdue:
+            return s, "Still moving", "The run should have finished. Stop it, or check the controller."
         if s == "unconfirmed":
             r = self.reported_text(dev, v.cmd)
             return s, "Not confirmed", r[:1].upper() + r[1:] + ". Try again."
+        if v.kind == "shutter":
+            if v.moving:
+                secs = ((v.ws or {}).get("remaining_travel_ms") or 0) // 1000
+                return "waiting", "Waiting to reverse" if v.pending else "Moving", "About %d s until the motor stops." % secs
+            return "ok", "Stopped", "Updated " + ago(ticks_diff(ticks_ms(), self.last_ok_at))
         if v.kind == "input":
             return "ok", "Listening", "Updated " + ago(ticks_diff(ticks_ms(), self.last_ok_at))
         return "ok", "Confirmed by device", "Updated " + ago(ticks_diff(ticks_ms(), self.last_ok_at))
+
+
+def shutter_state_text(ws):
+    """Motion and estimated position, e.g. "Closing · 40%", "Open"."""
+    known = ws.get("position_known")
+    pct = "%d%%" % ws.get("current_position", 0) if known else ""
+    if ws.get("pending_start"):
+        return "Starting…"
+    mo = ws.get("motion")
+    if mo == "opening":
+        return "Opening · " + pct if pct else "Opening"
+    if mo == "closing":
+        return "Closing · " + pct if pct else "Closing"
+    if not known:
+        return "Position unknown"
+    p = ws.get("current_position", 0)
+    if p <= 0:
+        return "Closed"
+    if p >= 100:
+        return "Open"
+    return "%d%% open" % p
+
+
+def shutter_cmd_text(label):
+    cmd, pct = label or (None, None)
+    return {"open": "Opening…", "close": "Closing…", "stop": "Stopping…", "toggle": "Toggling…"}.get(
+        cmd, "Moving to %d%%…" % pct if cmd == "position" else "Sending…")
+
+
+def estimated_pos(ws, since_ms):
+    """Interpolates the server's estimate between polls (display only)."""
+    p = ws.get("current_position", 0)
+    mo = ws.get("motion")
+    if mo in ("opening", "closing") and not ws.get("pending_start"):
+        dur = (ws.get("open_duration_seconds") if mo == "opening" else ws.get("close_duration_seconds")) or 0
+        if dur > 0:
+            moved = 100 * min(since_ms, ws.get("remaining_travel_ms") or 0) / (dur * 1000)
+            p = p + moved if mo == "opening" else p - moved
+    return max(0, min(100, int(p + 0.5)))
 
 
 def _same(a, b):

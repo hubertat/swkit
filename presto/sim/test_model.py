@@ -404,6 +404,111 @@ async def test_resume_then_failed_poll_is_stale():
     assert m.freshness()[0] == "stale", m.freshness()
 
 
+def shutter(index=0, **ws):
+    w = {"motion": "stopped", "target_position": -1, "current_position": 0, "position_known": False,
+         "pending_start": False, "open_io_id": "a", "close_io_id": "b",
+         "open_duration_seconds": 20, "close_duration_seconds": 20, "remaining_travel_ms": 0}
+    w.update(ws)
+    return {"index": index, "name": "Shutter %d" % index, "type": "window_shutter", "is_on": False,
+            "is_healthy": True, "controllable": True, "has_brightness": False, "brightness": 0,
+            "window_shutter": w}
+
+
+async def test_shutter_tap_toggles_and_reconciles_ack():
+    m, c, _ = setup(shutter())
+    # Toggle-to-stop: the ack says stopped, so only a stopped poll confirms.
+    c.reply = lambda path, n: {"window_shutter": dict(shutter()["window_shutter"], motion="stopped")}
+    assert m.view(m.devices[0]).kind == "shutter"
+    m.tap(m.devices[0])
+    await settle()
+    assert c.sent == [("/api/devices/0/toggle", None)], c.sent
+    it = m.get_intent(0, "sh")
+    assert it.phase == "waiting" and it.accepted["motion"] == "stopped"
+    advance(100)
+    m.apply_snapshot([shutter(motion="opening", target_position=100, remaining_travel_ms=20000)], clock[0])
+    assert m.get_intent(0, "sh") is not None, "a moving report must not confirm an accepted stop"
+    advance(100)
+    m.apply_snapshot([shutter()], clock[0])
+    assert m.get_intent(0, "sh") is None
+    assert m.view(m.devices[0]).sub == "Position unknown"
+
+
+async def test_shutter_stop_discards_queued_moves():
+    m, c, _ = setup(shutter(position_known=True, current_position=50))
+    c.gate = asyncio.Event()
+    d = m.devices[0]
+    m.shutter_command(d, "position", 20)
+    await settle()
+    m.shutter_command(d, "position", 30)
+    m.shutter_command(d, "open")
+    m.set_shutter_position(d, 70, False)    # debounced slider value
+    m.shutter_command(d, "stop")
+    advance(M.SHUTTER_DEBOUNCE_MS + 1)
+    m.tick()
+    c.gate.set()
+    for _ in range(4):
+        await settle()
+    paths = [p.split("/")[-1] for p, _ in c.sent]
+    assert paths == ["set_position", "stop"], c.sent
+    assert c.max_in_flight == 1
+
+
+async def test_shutter_moves_coalesce_toggles_queue():
+    m, c, _ = setup(shutter(position_known=True, current_position=50))
+    c.gate = asyncio.Event()
+    d = m.devices[0]
+    m.shutter_command(d, "position", 25)
+    await settle()
+    m.shutter_command(d, "position", 50)
+    m.shutter_command(d, "position", 75)
+    m.shutter_command(d, "toggle")
+    m.shutter_command(d, "toggle")
+    c.gate.set()
+    for _ in range(6):
+        await settle()
+    sent = [(p.split("/")[-1], (b or {}).get("value")) for p, b in c.sent]
+    assert sent == [("set_position", 25), ("set_position", 75), ("toggle", None), ("toggle", None)], sent
+
+
+async def test_shutter_travel_deadline_and_overrun():
+    m, c, toasts = setup(shutter(position_known=True, current_position=90, motion="opening", target_position=100,
+                                 remaining_travel_ms=4000))
+    v = m.view(m.devices[0])
+    assert v.moving and not v.overdue and v.sync == "ok"
+    # Position already 100% during the endpoint overrun: still moving, not done.
+    advance(3000)
+    m.apply_snapshot([shutter(position_known=True, current_position=100, motion="opening", target_position=100,
+                              remaining_travel_ms=1000)], clock[0])
+    v = m.view(m.devices[0])
+    assert v.moving and v.sub.startswith("Opening"), v.sub
+    # A run that never stops goes overdue after remaining + grace.
+    advance(1000 + M.TRAVEL_GRACE_MS + 1)
+    m.apply_snapshot([shutter(position_known=True, current_position=100, motion="opening", target_position=100,
+                              remaining_travel_ms=0)], clock[0])
+    v = m.view(m.devices[0])
+    assert v.overdue and v.sync == "unconfirmed" and v.sub == "Not stopped yet", (v.overdue, v.sync, v.sub)
+    m.apply_snapshot([shutter(position_known=True, current_position=100)], clock[0])
+    assert not m.view(m.devices[0]).overdue and 0 not in m.travel
+
+
+async def test_shutter_unknown_position_is_not_fault():
+    m, c, _ = setup(shutter())
+    v = m.view(m.devices[0])
+    assert not v.fault and v.sync == "ok" and v.unknown and v.sub == "Position unknown"
+
+
+async def test_shutter_failed_command_reports():
+    m, c, toasts = setup(shutter())
+
+    class HttpError(Exception):
+        pass
+    c.fail = HttpError("position is unknown; run a full open or close first")
+    m.shutter_command(m.devices[0], "position", 40)
+    await settle()
+    assert m.get_intent(0, "sh") is None
+    assert toasts and toasts[-1][0] == "error" and "position is unknown" in toasts[-1][1], toasts
+
+
 def run():
     tests = [(k, v) for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
