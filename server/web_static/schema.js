@@ -55,6 +55,7 @@
         outlet: '\u{1F50C}',
         button: '\u{1F446}',
         scene: '\u{1F3AC}',
+        window_shutter: '\u{1FA9F}',
         missing: '❓',
     };
 
@@ -64,6 +65,7 @@
         color_light: '#bb9af7',
         outlet: 'var(--success)',
         button: 'var(--accent)',
+        window_shutter: 'var(--info)',
     };
 
     // ---- Module state (single object; stage 2 edit-mode fields go here too) ----
@@ -982,6 +984,9 @@
             setDotState(dot, extra, 'off', '');
         } else if (n.device_type === 'dimmable_light') {
             setDotState(dot, extra, n.is_on ? 'on' : 'off', n.is_on ? ((detail.brightness || 0) + '%') : '');
+        } else if (n.device_type === 'window_shutter') {
+            const moving = detail.motion && detail.motion !== 'stopped';
+            setDotState(dot, extra, moving ? 'on' : 'off', shutterStateText(detail));
         } else {
             setDotState(dot, extra, n.is_on ? 'on' : 'off', '');
         }
@@ -1215,11 +1220,24 @@
             case 'rgbw_io_id': return 'RGBW';
             case 'analog_io_id': return 'Analog';
             case 'event_input_id': return 'Event input';
+            case 'open_io_id': return 'Open output';
+            case 'close_io_id': return 'Close output';
             default: return key;
         }
     }
 
-    const IO_DETAIL_KEYS = ['output_io_id', 'rgbw_io_id', 'analog_io_id', 'event_input_id'];
+    const IO_DETAIL_KEYS = ['output_io_id', 'rgbw_io_id', 'analog_io_id', 'event_input_id', 'open_io_id', 'close_io_id'];
+
+    // shutterStateText formats a window shutter's motion / estimated
+    // position (from a /api/state window_shutter payload or a schema node's
+    // detail, which use the same field names).
+    function shutterStateText(ws) {
+        if (!ws) return '';
+        if (ws.pending_start) return 'starting';
+        if (ws.motion && ws.motion !== 'stopped') return ws.motion + (ws.position_known ? ' ' + ws.current_position + '%' : '');
+        if (!ws.position_known) return 'position unknown';
+        return ws.current_position + '% open';
+    }
 
     // relTimeAgo/formatEventFact/formatSceneFact format the same "State"
     // facts both at initial render (from the /api/schema node snapshot, via
@@ -1371,6 +1389,9 @@
                     const activeIdx = detail.state_index || 0;
                     stateRows += factRow('Active state', escHtml(formatSceneFact(activeIdx, detail.state_names)), { live: 'scene_state' });
                     stateRows += buildSceneStateNamesList(detail.state_names, activeIdx);
+                } else if (node.device_type === 'window_shutter') {
+                    stateRows += factRow('State', escHtml(shutterStateText(detail)), { live: 'shutter' });
+                    stateRows += factRow('Travel', 'open ' + (detail.open_duration_seconds || 0) + ' s, close ' + (detail.close_duration_seconds || 0) + ' s');
                 } else {
                     stateRows += factRow('State', node.is_on ? 'on' : 'off', { live: 'is_on' });
                     if (node.device_type === 'dimmable_light') {
@@ -1883,6 +1904,7 @@
             Lights: (cfg.Lights || []).map(function(l) { return withEditId(Object.assign({}, l)); }),
             DimmableLights: (cfg.DimmableLights || []).map(function(d) { return withEditId(Object.assign({}, d)); }),
             Outlets: (cfg.Outlets || []).map(function(o) { return withEditId(Object.assign({}, o)); }),
+            WindowShutters: (cfg.WindowShutters || []).map(function(w) { return withEditId(Object.assign({}, w)); }),
             Buttons: (cfg.Buttons || []).map(function(b) {
                 return withEditId(Object.assign({}, b, {
                     ControlDevices: (b.ControlDevices || []).map(function(cd) { return Object.assign({}, cd); }),
@@ -1904,6 +1926,7 @@
             case 'light': return S.working.Lights;
             case 'dimmable_light': return S.working.DimmableLights;
             case 'outlet': return S.working.Outlets;
+            case 'window_shutter': return S.working.WindowShutters;
             case 'button': return S.working.Buttons;
             case 'scene': return S.working.Scenes;
             default: return null;
@@ -1925,7 +1948,7 @@
 
     function allWorkingNames() {
         const names = new Set();
-        ['Lights', 'DimmableLights', 'Outlets', 'Buttons', 'Scenes'].forEach(function(key) {
+        ['Lights', 'DimmableLights', 'Outlets', 'WindowShutters', 'Buttons', 'Scenes'].forEach(function(key) {
             (S.working[key] || []).forEach(function(e) { names.add(e.Name); });
         });
         return names;
@@ -1939,6 +1962,7 @@
             case 'button': return 'Button';
             case 'scene': return 'Scene';
             case 'color_light': return 'Color Light';
+            case 'window_shutter': return 'Window Shutter';
             default: return kind;
         }
     }
@@ -2072,6 +2096,7 @@
             { kind: 'light', icon: '\u{1F4A1}' },
             { kind: 'dimmable_light', icon: '\u{1F506}' },
             { kind: 'outlet', icon: '\u{1F50C}' },
+            { kind: 'window_shutter', icon: '\u{1FA9F}' },
             { kind: 'button', icon: '\u{1F446}' },
             { kind: 'scene', icon: '\u{1F3AC}' },
         ].forEach(function(it) {
@@ -2123,6 +2148,11 @@
             case 'outlet':
                 entry = withEditId({ Name: name, DigitalOutName: '', DisableHomekit: false });
                 S.working.Outlets.push(entry);
+                break;
+            case 'window_shutter':
+                entry = withEditId({ Name: name, OpenDigitalOutName: '', CloseDigitalOutName: '', OpenDurationSeconds: 30, CloseDurationSeconds: 0, ReverseDelayMilliseconds: 0, DisableHomekit: false });
+                S.working.WindowShutters = S.working.WindowShutters || [];
+                S.working.WindowShutters.push(entry);
                 break;
             case 'button':
                 entry = withEditId({ Name: name, EventInputName: '', DisableHomekit: false, ControlDevices: [] });
@@ -2214,6 +2244,14 @@
             const id = addDeviceNode('dimmable_light', dl, { output_io_id: dl.DigitalOutName, analog_io_id: dl.AnalogOutName });
             addIoEdge(id, dl.DigitalOutName, 'output');
             addIoEdge(id, dl.AnalogOutName, 'analog');
+        });
+        (working.WindowShutters || []).forEach(function(w) {
+            const id = addDeviceNode('window_shutter', w, {
+                open_io_id: w.OpenDigitalOutName, close_io_id: w.CloseDigitalOutName,
+                open_duration_seconds: w.OpenDurationSeconds, close_duration_seconds: w.CloseDurationSeconds || w.OpenDurationSeconds,
+            });
+            addIoEdge(id, w.OpenDigitalOutName, 'open_output');
+            addIoEdge(id, w.CloseDigitalOutName, 'close_output');
         });
         (working.Scenes || []).forEach(function(s) {
             addDeviceNode('scene', s, { state_names: (s.States || []).map(function(st) { return st.Name; }) });
@@ -2389,7 +2427,7 @@
     // action-string grammar, so no target name may contain one.
     function targetNameOptions() {
         const set = new Set();
-        ['Lights', 'DimmableLights', 'Outlets', 'Scenes'].forEach(function(key) {
+        ['Lights', 'DimmableLights', 'Outlets', 'WindowShutters', 'Scenes'].forEach(function(key) {
             (S.working[key] || []).forEach(function(e) { set.add(e.Name); });
         });
         (S.colorLightNodes || []).forEach(function(n) { set.add(n.label); });
@@ -2497,7 +2535,7 @@
             errEl.style.display = 'none';
             const old = entry.Name;
             entry.Name = trimmed;
-            if (kind === 'light' || kind === 'dimmable_light' || kind === 'outlet' || kind === 'scene') {
+            if (kind === 'light' || kind === 'dimmable_light' || kind === 'outlet' || kind === 'window_shutter' || kind === 'scene') {
                 propagateRename(old, trimmed);
             }
             S.selectedId = 'device:' + kind + ':' + trimmed;
@@ -2549,6 +2587,35 @@
         }));
     }
 
+    // buildShutterForm edits a maintained two-output roller shutter. Limits
+    // mirror app.ValidateWindowShutterFields (published as meta.shutter_limits).
+    function buildShutterForm(panel, entry) {
+        const lim = (S.editData && S.editData.meta && S.editData.meta.shutter_limits) || {};
+        const minD = lim.min_duration_seconds || 1, maxD = lim.max_duration_seconds || 600, maxR = lim.max_reverse_delay_ms || 5000;
+        buildNameField(panel, entry, 'window_shutter');
+        panel.appendChild(ioFieldEl('Open output', entry.OpenDigitalOutName, 'd_out', function(v) {
+            entry.OpenDigitalOutName = v; markDirty(); scheduleRedrawEdit();
+        }));
+        panel.appendChild(ioFieldEl('Close output', entry.CloseDigitalOutName, 'd_out', function(v) {
+            entry.CloseDigitalOutName = v; markDirty(); scheduleRedrawEdit();
+        }));
+        panel.appendChild(labeledField('Full opening time, s (' + minD + '-' + maxD + ')', numberInputEl(entry.OpenDurationSeconds, minD, maxD, function(v) {
+            entry.OpenDurationSeconds = v; markDirty(); scheduleRedrawEdit();
+        })));
+        panel.appendChild(labeledField('Full closing time, s (0 = same as opening; otherwise ' + minD + '-' + maxD + ')', numberInputEl(entry.CloseDurationSeconds, 0, maxD, function(v) {
+            entry.CloseDurationSeconds = v; markDirty(); scheduleRedrawEdit();
+        })));
+        panel.appendChild(labeledField('Reversal delay, ms (' + (lim.reverse_delay_help || '0 uses 500 ms; otherwise 1-5000 ms') + ')', numberInputEl(entry.ReverseDelayMilliseconds, 0, maxR, function(v) {
+            entry.ReverseDelayMilliseconds = v; markDirty(); scheduleRedrawEdit();
+        })));
+        panel.appendChild(checkboxFieldEl('Disable HomeKit', entry.DisableHomekit, function(v) {
+            entry.DisableHomekit = v; markDirty(); redrawEdit();
+        }));
+        panel.appendChild(mkEl('p', { class: 'text-muted edit-help' },
+            'Endpoint runs add ' + (lim.endpoint_overrun_percent || 10) + '% of the travel time so the motor reaches its end limit; the motor needs working end limits. ' +
+            (lim.reload_note || 'Saving the configuration reloads it: moving shutters stop and every shutter\'s position becomes unknown until its next full open or close.')));
+    }
+
     function buildButtonForm(panel, entry) {
         buildNameField(panel, entry, 'button');
         panel.appendChild(ioFieldEl('Event Input', entry.EventInputName, 'push_event', function(v) {
@@ -2575,7 +2642,7 @@
             // device "" does not exist" error, instead of being caught here
             // where the user can see why the button is disabled.
             addBtn.disabled = true;
-            addBtn.title = 'No valid target exists yet - add a light, outlet, dimmable light, or scene first';
+            addBtn.title = 'No valid target exists yet - add a light, outlet, dimmable light, window shutter, or scene first';
         } else {
             addBtn.addEventListener('click', function() {
                 const targets = targetNameOptions();
@@ -2959,6 +3026,7 @@
             case 'light': buildLightForm(panel, entry); break;
             case 'dimmable_light': buildDimmableForm(panel, entry); break;
             case 'outlet': buildOutletForm(panel, entry); break;
+            case 'window_shutter': buildShutterForm(panel, entry); break;
             case 'button': buildButtonForm(panel, entry); break;
             case 'scene': buildSceneForm(panel, entry); break;
         }
@@ -3088,6 +3156,7 @@
             case 'button': return d.last_event_time || '';
             case 'scene': return String(d.scene_state_index || 0);
             case 'dimmable_light': return (d.is_on ? '1' : '0') + ':' + (d.brightness || 0);
+            case 'window_shutter': return d.window_shutter ? shutterStateText(d.window_shutter) : '';
             default: return d.is_on ? '1' : '0';
         }
     }
@@ -3244,6 +3313,9 @@
             });
         } else if (d.type === 'dimmable_light') {
             setDotState(dot, extra, d.is_on ? 'on' : 'off', d.is_on ? ((d.brightness || 0) + '%') : '');
+        } else if (d.type === 'window_shutter' && d.window_shutter) {
+            const ws = d.window_shutter;
+            setDotState(dot, extra, ws.motion !== 'stopped' || ws.pending_start ? 'on' : 'off', shutterStateText(ws));
         } else {
             setDotState(dot, extra, d.is_on ? 'on' : 'off', '');
         }
@@ -3276,6 +3348,9 @@
 
         const briEl = dock.querySelector('[data-live="brightness"]');
         if (briEl) briEl.textContent = (d.brightness || 0) + '%';
+
+        const shEl = dock.querySelector('[data-live="shutter"]');
+        if (shEl && d.window_shutter) shEl.textContent = shutterStateText(d.window_shutter);
 
         const evEl = dock.querySelector('[data-live="last_event"]');
         if (evEl) evEl.textContent = formatEventFact(d.last_event_type, d.last_event_time, now);

@@ -50,6 +50,7 @@
         dimmable_light: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
         outlet: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4.5"/><path d="M9.5 9.5v2M14.5 9.5v2M10 15.5h4"/></svg>',
         scene: '<svg viewBox="0 0 24 24"><path d="M11 3l1.7 4.6L17.3 9.3l-4.6 1.7L11 15.6 9.3 11 4.7 9.3l4.6-1.7z"/><path d="M18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8z"/></svg>',
+        window_shutter: '<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M4 7h16M4 11h16M4 15h16"/></svg>',
         play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
         plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
         copy: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
@@ -64,7 +65,7 @@
 
     const TYPE_LABEL = {
         light: 'Light', dimmable_light: 'Dimmable light', color_light: 'Color light',
-        outlet: 'Outlet', scene: 'Scene',
+        outlet: 'Outlet', scene: 'Scene', window_shutter: 'Window shutter',
     };
 
     // ---------- state ----------
@@ -123,6 +124,12 @@
     function uid() { return 'k' + (++seq); }
     function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
     function isBri(verb) { return verb === 'brightness' || verb === 'brightness_up' || verb === 'brightness_down'; }
+    function isShutterVerb(verb) { return verb === 'open' || verb === 'close' || verb === 'stop' || verb === 'position'; }
+    // A window shutter step lives in its own slot (m.sh) and is never merged
+    // with another step, so every shutter command stays a separate step in
+    // its original place.
+    function hasStep(m) { return !!(m.power || m.bri || m.sh); }
+    function shutterNameSet() { return new Set(((S.config && S.config.WindowShutters) || []).map(w => w.Name)); }
     function deepCopy(x) { return JSON.parse(JSON.stringify(x)); }
 
     // fmtDelayGo mirrors app.FormatStepDelay: the compact form written to config.
@@ -194,19 +201,32 @@
             parts = parts.slice(2);
         }
         const verb = (parts[0] || '').toLowerCase();
-        if (verb === 'on' || verb === 'off' || verb === 'toggle') {
+        if (verb === 'on' || verb === 'off' || verb === 'toggle' || verb === 'open' || verb === 'close' || verb === 'stop') {
             if (parts.length !== 2) return null;
             return { delay: delay, delayRaw: delayRaw, verb: verb, level: 0, device: parts[1] };
         }
-        if (isBri(verb)) {
+        if (isBri(verb) || verb === 'position') {
             if (parts.length !== 3 || !/^[+-]?\d+$/.test(parts[1])) return null;
-            return { delay: delay, delayRaw: delayRaw, verb: verb, level: parseInt(parts[1], 10), device: parts[2] };
+            const level = parseInt(parts[1], 10);
+            if (verb === 'position' && (level < 0 || level > 100)) return null;
+            return { delay: delay, delayRaw: delayRaw, verb: verb, level: level, device: parts[2] };
         }
         return null;
     }
 
+    // applyParsed stores a parsed step in a moment's slot (see slotFor).
+    function slotFor(p, shutters) {
+        if (shutters.has(p.device) || isShutterVerb(p.verb)) return 'sh';
+        return isBri(p.verb) ? 'bri' : 'power';
+    }
+    function applyParsed(m, p, slot) {
+        if (slot === 'sh') m.sh = { verb: p.verb, level: p.level };
+        else if (slot === 'bri') m.bri = { verb: p.verb, level: p.level };
+        else m.power = p.verb;
+    }
+
     function newMoment(device, delay) {
-        return { id: uid(), device: device, delay: delay || 0, delayRaw: null, power: null, bri: null, order: orderSeq++, briFirst: null };
+        return { id: uid(), device: device, delay: delay || 0, delayRaw: null, power: null, bri: null, sh: null, order: orderSeq++, briFirst: null };
     }
 
     // stateFromConfig groups a state's steps into moments without ever
@@ -218,21 +238,21 @@
     // becoming "on + 60%, then off".
     function stateFromConfig(st) {
         const moments = [], raw = [];
+        const shutters = shutterNameSet();
         let last = null;
         (st.Actions || []).forEach(function (a, i) {
             const p = parseStep(a);
             if (!p) { raw.push({ id: uid(), text: a, order: i }); last = null; return; }
-            const slot = isBri(p.verb) ? 'bri' : 'power';
-            let m = last && last.device === p.device && last.delay === p.delay && last[slot] === null ? last : null;
+            const slot = slotFor(p, shutters);
+            let m = slot !== 'sh' && last && !last.sh && last.device === p.device && last.delay === p.delay && last[slot] === null ? last : null;
             if (!m) {
                 // briFirst records the loaded step order so an untouched
                 // moment serializes exactly as written.
-                m = { id: uid(), device: p.device, delay: p.delay, delayRaw: p.delayRaw, power: null, bri: null, order: i, briFirst: slot === 'bri' };
+                m = { id: uid(), device: p.device, delay: p.delay, delayRaw: p.delayRaw, power: null, bri: null, sh: null, order: i, briFirst: slot === 'bri' };
                 moments.push(m);
             }
-            if (slot === 'bri') m.bri = { verb: p.verb, level: p.level };
-            else m.power = p.verb;
-            last = m;
+            applyParsed(m, p, slot);
+            last = slot === 'sh' ? null : m;
         });
         const state = { id: uid(), name: st.Name || '', moments: moments, raw: raw, origActions: (st.Actions || []).slice(), baseSer: '' };
         state.baseSer = JSON.stringify(buildActions(state));
@@ -258,8 +278,12 @@
         items.forEach(function (it) {
             if (it.raw) { out.push(it.raw.text); return; }
             const m = it.m;
-            if (!m.power && !m.bri) return;
+            if (!hasStep(m)) return;
             const prefix = m.delay > 0 ? 'after:' + (m.delayRaw || fmtDelayGo(m.delay)) + ':' : '';
+            if (m.sh) {
+                out.push(prefix + m.sh.verb + ':' + (m.sh.verb === 'position' ? m.sh.level + ':' : '') + m.device);
+                return;
+            }
             const pw = m.power ? prefix + m.power + ':' + m.device : null;
             const br = m.bri ? prefix + m.bri.verb + ':' + m.bri.level + ':' + m.device : null;
             // A moment edited here sets the level before switching on, so a
@@ -321,6 +345,7 @@
         (cfg.Lights || []).forEach(l => { out.push({ name: l.Name, type: 'light' }); known.add(l.Name); });
         (cfg.DimmableLights || []).forEach(l => { out.push({ name: l.Name, type: 'dimmable_light' }); known.add(l.Name); });
         (cfg.Outlets || []).forEach(o => { out.push({ name: o.Name, type: 'outlet' }); known.add(o.Name); });
+        (cfg.WindowShutters || []).forEach(w => { out.push({ name: w.Name, type: 'window_shutter' }); known.add(w.Name); });
         const savedScenes = new Set((cfg.Scenes || []).map(s => s.Name));
         (S.meta.output_device_names || []).forEach(function (n) {
             if (!known.has(n) && !savedScenes.has(n)) { out.push({ name: n, type: 'color_light' }); known.add(n); }
@@ -342,7 +367,7 @@
     function allDeviceNames() {
         const cfg = S.config, names = new Set();
         const savedScenes = new Set((cfg.Scenes || []).map(s => s.Name));
-        ['Lights', 'DimmableLights', 'Outlets', 'Buttons'].forEach(k => (cfg[k] || []).forEach(d => names.add(d.Name)));
+        ['Lights', 'DimmableLights', 'Outlets', 'WindowShutters', 'Buttons'].forEach(k => (cfg[k] || []).forEach(d => names.add(d.Name)));
         (S.meta.output_device_names || []).forEach(n => { if (!savedScenes.has(n)) names.add(n); });
         return names;
     }
@@ -487,10 +512,12 @@
                 stNames.add(st.name);
                 const outside = new Set();
                 st.moments.forEach(function (m) {
-                    if (!m.power && !m.bri) return;
+                    if (!hasStep(m)) return;
                     const t = targetType(s, m.device);
                     if (!t) out.push(label + ', state "' + st.name + '": "' + m.device + '" is not available (removed, renamed, or a scene defined later).');
                     else if (m.bri && t !== 'dimmable_light') out.push(label + ', state "' + st.name + '": "' + m.device + '" has no brightness control.');
+                    else if (m.sh && t !== 'window_shutter') out.push(label + ', state "' + st.name + '": "' + m.device + '" is not a window shutter (open/close/stop/position).');
+                    else if (t === 'window_shutter' && (m.power === 'on' || m.power === 'off' || m.bri)) out.push(label + ', state "' + st.name + '": window shutter "' + m.device + '" takes open, close, stop, position or toggle.');
                     if (s.devices.indexOf(m.device) < 0 && !outside.has(m.device)) {
                         outside.add(m.device);
                         out.push(label + ', state "' + st.name + '": "' + m.device + '" has steps but is not in the scene’s device list.');
@@ -542,9 +569,14 @@
         return null;
     }
 
+    // powerMoment builds the default step for a device: 'off'/'on' for
+    // lights, outlets and scenes; for a window shutter 'off' becomes Stop and
+    // 'on' becomes Open (a scene activation never stops motion by itself, so
+    // the Off state needs an explicit Stop).
     function powerMoment(device, verb) {
         const m = newMoment(device, 0);
-        m.power = verb;
+        if (shutterNameSet().has(device)) m.sh = { verb: verb === 'off' ? 'stop' : 'open', level: 0 };
+        else m.power = verb;
         return m;
     }
 
@@ -677,8 +709,7 @@
     }
 
     function includeDevice(st, t) {
-        const m = newMoment(t.name, 0);
-        m.power = 'on';
+        const m = powerMoment(t.name, 'on');
         st.moments.push(m);
         S.sel.device = t.name;
         S.sel.moment = m.id;
@@ -690,7 +721,8 @@
         const last = mine.reduce((a, m) => Math.max(a, m.delay), 0);
         const lastM = mine.find(m => m.delay === last);
         const m = newMoment(device, last > 0 ? last + 300000 : 300000);
-        m.power = lastM && lastM.power === 'off' ? 'on' : 'off';
+        if (shutterNameSet().has(device)) m.sh = { verb: 'stop', level: 0 };
+        else m.power = lastM && lastM.power === 'off' ? 'on' : 'off';
         st.moments.push(m);
         S.sel.moment = m.id;
         changed();
@@ -699,7 +731,7 @@
     // removeDevice drops every step for device in this state (power,
     // brightness and later ones): "No change".
     function removeDevice(sc, st, device) {
-        const later = st.moments.filter(m => m.device === device && m.delay > 0 && (m.power || m.bri)).length;
+        const later = st.moments.filter(m => m.device === device && m.delay > 0 && hasStep(m)).length;
         if (later &&
             !confirm('Make "' + device + '" change nothing in "' + st.name + '"?\n\nThis also removes its ' + later + ' later step(s).')) return;
         st.moments = st.moments.filter(m => m.device !== device);
@@ -716,13 +748,13 @@
         names.forEach(function (d) {
             if (s.devices.indexOf(d) >= 0) return;
             s.devices.push(d);
-            if (off && !off.moments.some(m => m.device === d && (m.power || m.bri))) off.moments.push(powerMoment(d, 'off'));
+            if (off && !off.moments.some(m => m.device === d && hasStep(m))) off.moments.push(powerMoment(d, 'off'));
         });
         changed();
     }
 
     function removeSceneDevice(s, d) {
-        const where = s.states.filter(st => st.moments.some(m => m.device === d && (m.power || m.bri))).map(st => st.name);
+        const where = s.states.filter(st => st.moments.some(m => m.device === d && hasStep(m))).map(st => st.name);
         const msg = 'Remove "' + d + '" from this scene?' +
             (where.length ? '\n\nIts steps in ' + where.map(n => '"' + n + '"').join(', ') + ' will be removed too.' : '') +
             '\n\nNothing changes on swkit until you save.';
@@ -759,7 +791,14 @@
         return (b.verb === 'brightness_up' ? '+' : '−') + b.level + '%';
     }
 
+    function shLabel(sh) {
+        if (!sh) return '';
+        if (sh.verb === 'position') return sh.level + '% open';
+        return { open: 'Open', close: 'Close', stop: 'Stop', toggle: 'Toggle' }[sh.verb] || sh.verb;
+    }
+
     function momentLabel(m, type) {
+        if (m.sh) return shLabel(m.sh);
         const parts = [];
         if (m.power) parts.push(powerLabel(m.power, type));
         if (m.bri) parts.push(briLabel(m.bri));
@@ -767,6 +806,7 @@
     }
 
     function momentKind(m) {
+        if (m.sh) return { open: 'on', close: 'off', stop: 'toggle', toggle: 'toggle', position: 'bri' }[m.sh.verb] || 'none';
         if (m.power === 'off') return 'off';
         if (m.power === 'toggle') return 'toggle';
         if (m.power === 'on') return 'on';
@@ -775,12 +815,12 @@
     }
 
     function summaryNodes(scene, st) {
-        if (!st.moments.some(m => m.power || m.bri) && !st.raw.length) {
+        if (!st.moments.some(m => hasStep(m)) && !st.raw.length) {
             return [h('span', { class: 'ss-muted' }, 'No device changes in this state. Tap a device below to set what it does.')];
         }
         const groups = new Map();
         st.moments.slice().sort((a, b) => a.delay - b.delay || a.order - b.order).forEach(function (m) {
-            if (!m.power && !m.bri) return;
+            if (!hasStep(m)) return;
             if (!groups.has(m.delay)) groups.set(m.delay, []);
             groups.get(m.delay).push(m);
         });
@@ -830,6 +870,14 @@
         // A healthy device whose state read failed reports is_on: false; that
         // is not "Off".
         if (d.state_error) return { now: 'unknown', text: 'Unknown', level: null };
+        if (d.type === 'window_shutter' && d.window_shutter) {
+            const ws = d.window_shutter;
+            if (ws.motion !== 'stopped' || ws.pending_start) {
+                return { now: 'on', text: (ws.pending_start ? 'Starting' : ws.motion === 'opening' ? 'Opening' : 'Closing'), level: ws.position_known ? ws.current_position : null };
+            }
+            if (!ws.position_known) return { now: 'unknown', text: 'Position unknown', level: null };
+            return { now: ws.current_position > 0 ? 'on' : 'off', text: ws.current_position >= 100 ? 'Open' : ws.current_position <= 0 ? 'Closed' : ws.current_position + '% open', level: ws.current_position };
+        }
         if (d.type === 'scene') {
             const idx = d.scene_state_index || 0;
             const stName = (d.scene_state_names || [])[idx] || (idx ? 'State ' + idx : 'Off');
@@ -975,7 +1023,7 @@
         // State tabs
         const tabs = h('div', { class: 'ss-states', role: 'tablist', 'aria-label': 'States' });
         sc.states.forEach(function (st, i) {
-            const n = st.moments.filter(m => m.power || m.bri).length;
+            const n = st.moments.filter(m => hasStep(m)).length;
             tabs.appendChild(h('button', {
                 class: 'ss-state' + (st.id === S.sel.state ? ' sel' : ''),
                 role: 'tab', 'aria-selected': st.id === S.sel.state ? 'true' : 'false',
@@ -1126,6 +1174,7 @@
     const GROUPS = [
         { title: 'Lights', types: ['light', 'dimmable_light', 'color_light'] },
         { title: 'Outlets', types: ['outlet'] },
+        { title: 'Shutters', types: ['window_shutter'] },
         { title: 'Scenes', types: ['scene'] },
     ];
 
@@ -1165,7 +1214,7 @@
     }
 
     function renderTile(sc, st, t) {
-        const mine = st.moments.filter(m => m.device === t.name && (m.power || m.bri));
+        const mine = st.moments.filter(m => m.device === t.name && hasStep(m));
         const now = mine.filter(m => m.delay === 0);
         const later = mine.filter(m => m.delay > 0);
         const included = mine.length > 0;
@@ -1365,7 +1414,7 @@
                     const m = newMoment(p.device, p.delay);
                     m.order = r.order; // the repaired step keeps its place in the list
                     m.delayRaw = p.delayRaw;
-                    if (isBri(p.verb)) m.bri = { verb: p.verb, level: p.level }; else m.power = p.verb;
+                    applyParsed(m, p, slotFor(p, shutterNameSet()));
                     st.moments.push(m);
                 } else {
                     r.text = input.value;
@@ -1415,8 +1464,8 @@
         return insp;
     }
 
-    function segmented(options, value, onPick, label) {
-        return h('div', { class: 'ss-seg', role: 'radiogroup', 'aria-label': label },
+    function segmented(options, value, onPick, label, extraClass) {
+        return h('div', { class: 'ss-seg' + (extraClass ? ' ' + extraClass : ''), role: 'radiogroup', 'aria-label': label },
             options.map(o => h('button', {
                 class: 'ss-seg-btn' + (o.value === value ? ' on' : ''),
                 role: 'radio', 'aria-checked': o.value === value ? 'true' : 'false',
@@ -1458,8 +1507,32 @@
         card.appendChild(h('div', { class: 'ss-row' }, h('span', { class: 'ss-label' }, 'When'),
             h('div', { class: 'ss-chips' }, presetBtns, custom), delayErr));
 
+        // Window shutter: one command per step.
+        if (type === 'window_shutter') {
+            const cur = m.sh ? m.sh.verb : null;
+            card.appendChild(h('div', { class: 'ss-row' }, h('span', { class: 'ss-label' }, 'Shutter'),
+                segmented([
+                    { value: null, label: 'Leave' },
+                    { value: 'open', label: 'Open', kind: 'on' },
+                    { value: 'close', label: 'Close', kind: 'off' },
+                    { value: 'stop', label: 'Stop', kind: 'toggle' },
+                    { value: 'toggle', label: 'Toggle', kind: 'toggle' },
+                    { value: 'position', label: 'Position' },
+                ], cur, function (v) {
+                    m.power = null;
+                    m.bri = null;
+                    if (!v) m.sh = null;
+                    else if (!m.sh) m.sh = { verb: v, level: v === 'position' ? 50 : 0 };
+                    else { m.sh.verb = v; if (v !== 'position') m.sh.level = 0; }
+                    S.sel.moment = m.id;
+                    changed();
+                }, 'Shutter', 'ss-seg-wrap')));
+            if (m.sh && m.sh.verb === 'position') card.appendChild(renderPosition(m));
+            card.appendChild(h('p', { class: 'ss-muted' }, 'Steps only start the motor; the shutter stops by itself at the end of its travel time. Position 0% is closed, 100% open; intermediate positions need a calibrated shutter (one full open or close since the last restart or save).'));
+        }
+
         // Power
-        if (type) {
+        if (type && type !== 'window_shutter') {
             const powerOpts = type === 'scene'
                 ? [{ value: null, label: 'Leave' }, { value: 'on', label: 'Start', kind: 'on' }, { value: 'off', label: 'Off', kind: 'off' }, { value: 'toggle', label: 'Next state', kind: 'toggle' }]
                 : [{ value: null, label: 'Leave' }, { value: 'on', label: 'On', kind: 'on' }, { value: 'off', label: 'Off', kind: 'off' }, { value: 'toggle', label: 'Toggle', kind: 'toggle' }];
@@ -1500,6 +1573,26 @@
             card.classList.add('sel');
         });
         return card;
+    }
+
+    function renderPosition(m) {
+        const val = h('output', { class: 'ss-level-val' }, m.sh.level + '%');
+        const range = h('input', { type: 'range', class: 'ss-range', min: 0, max: 100, step: 1, value: m.sh.level, 'aria-label': 'Position (% open)' });
+        range.style.setProperty('--pct', m.sh.level + '%');
+        range.addEventListener('input', function () {
+            m.sh.level = parseInt(range.value, 10);
+            val.textContent = m.sh.level + '%';
+            range.style.setProperty('--pct', m.sh.level + '%');
+            refreshTexts();
+        });
+        range.addEventListener('change', changed);
+        const presets = [0, 25, 50, 75, 100].map(p => h('button', {
+            class: 'ss-chipbtn' + (m.sh.level === p ? ' on' : ''),
+            onclick: () => { m.sh.level = p; changed(); },
+        }, p === 0 ? 'Closed' : p === 100 ? 'Open' : p + '%'));
+        return h('div', { class: 'ss-row' }, h('span', { class: 'ss-label' }, 'Open'),
+            h('div', { class: 'ss-level' }, range, val),
+            h('div', { class: 'ss-chips' }, presets));
     }
 
     function renderLevel(m) {

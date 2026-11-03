@@ -823,3 +823,55 @@ html[data-variant="compact"] .section-head { min-height: 24px; }
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
 }
+
+/* ---------- Window shutters ---------- */
+/* Tap toggles (start / stop / reverse); the ▲ ■ ▼ buttons are explicit.
+   Shutters are never "lit": motion and position carry the state. */
+
+.dev[data-kind="shutter"] { --on: var(--surface); }
+.dev[data-kind="shutter"][data-on="1"] { background: var(--surface); color: var(--text); border-color: var(--line); }
+.dev[data-kind="shutter"][data-on="1"] .dev-icon { background: var(--surface-2); color: var(--muted); }
+.dev[data-kind="shutter"][data-on="1"] .dev-sub { color: var(--muted); }
+.dev[data-kind="shutter"][data-on="1"] .dev-chip { background: var(--surface-2); color: var(--text-2); }
+.dev[data-kind="shutter"][data-motion="opening"] .dev-icon,
+.dev[data-kind="shutter"][data-motion="closing"] .dev-icon,
+.dev[data-kind="shutter"][data-motion="pending"] .dev-icon { background: var(--accent); color: var(--bg); }
+.dev[data-kind="shutter"] .dev-switch { display: none; }
+.dev[data-kind="shutter"][data-unknown="1"] .dev-chip { color: var(--muted); }
+
+/* position bar along the bottom edge: filled part = open */
+.dev-pos {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: var(--line);
+    pointer-events: none;
+}
+.dev-pos-fill { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.9s linear; }
+.dev-pos[hidden] { display: none; }
+
+.dev-shut { position: relative; z-index: 2; display: flex; gap: 4px; }
+.shut-btn {
+    flex: none;
+    width: 34px;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.8rem;
+    line-height: 1;
+}
+.shut-btn[data-cmd="stop"] { font-size: 0.7rem; }
+.shut-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+html[data-variant="tiles"] .dev-shut { display: none; }
+html[data-variant="list"] .dev[data-kind="shutter"] .dev-shut { grid-area: switch; }
+html[data-variant="list"] .dev[data-kind="shutter"] .dev-chip { display: none; }
+html[data-variant="compact"] .dev-shut,
+html[data-variant="compact"] .dev-pos { display: none; }
+
+.triple { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }

@@ -844,3 +844,6 @@
 @media (prefers-reduced-motion: reduce) {
     .ss *, .ss-savebar, .ss-toast, .ss-dlg, .ss-dlg * { animation: none !important; transition: none !important; }
 }
+
+/* window shutter command picker: six choices wrap into rows */
+.ss-seg.ss-seg-wrap { grid-auto-flow: row; grid-template-columns: repeat(3, 1fr); }

@@ -21,6 +21,19 @@
  * made. On/off and brightness keep only the latest unsent target; scene
  * steps queue, since every tap is one step.
  *
+ * Window shutters use a single third slot, "sh": position, direction, Stop
+ * and Toggle form one serialized command stream per shutter (never the
+ * power/brightness slots). Unsent position/direction targets coalesce
+ * (latest wins), Toggle is a discrete event that queues, and Stop discards
+ * every unsent movement command and goes out next. Acceptance is reconciled
+ * from the action response's window_shutter payload (the command actually
+ * accepted, e.g. Toggle-to-Stop), never from is_on, and confirmed by a poll
+ * that started after the acknowledgement (a Stop only by a poll reporting
+ * stopped). Travel completion is separate: the server's remaining_travel_ms
+ * sets a deadline (plus grace) for the run, so a long run, a reversal wait
+ * or the endpoint overrun (position already showing 0/100) is never
+ * reported as done or as failed too early.
+ *
  * Poll results never override an active sending/waiting intent, so the
  * displayed state only moves forward. A state the server could not read
  * stays "unknown" independently of any command status. Independently, the whole page is
@@ -41,6 +54,7 @@ const UNCONFIRMED_HOLD_MS = 15000;
 const STALE_MS = 6000;         // no successful poll for this long → page is stale
 const RESUME_GRACE_MS = 1500;  // after returning to the tab, before showing the banner
 const LONG_PRESS_MS = 450;
+const TRAVEL_GRACE_MS = 2 * POLL_MS + 2000; // slack past remaining_travel_ms before a run is overdue
 
 // ---------- small helpers ----------
 
@@ -123,6 +137,7 @@ const ICON = {
     outlet: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4.5"/><path d="M9.5 9.5v2M14.5 9.5v2M10 15.5h4"/></svg>',
     scene: '<svg viewBox="0 0 24 24"><path d="M11 3l1.7 4.6L17.3 9.3l-4.6 1.7L11 15.6 9.3 11 4.7 9.3l4.6-1.7z"/><path d="M18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8z"/></svg>',
     button: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4.5"/><circle cx="12" cy="12" r="3.2"/></svg>',
+    window_shutter: '<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M4 7h16M4 11h16M4 15h16"/></svg>',
     other: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>',
     sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
     moon: '<svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>',
@@ -135,12 +150,14 @@ const TYPE_NAME = {
     outlet: 'Outlet',
     scene: 'Scene',
     button: 'Button',
+    window_shutter: 'Window shutter',
 };
 
 // Sections in display order; each lists the device types it holds.
 const SECTIONS = [
     { key: 'lights', title: 'Lights', types: ['light', 'color_light', 'dimmable_light'], allOff: true },
     { key: 'outlets', title: 'Outlets', types: ['outlet'], allOff: true },
+    { key: 'shutters', title: 'Shutters', types: ['window_shutter'] },
     { key: 'scenes', title: 'Scenes', types: ['scene'] },
     { key: 'inputs', title: 'Buttons', types: ['button'] },
 ];
@@ -154,8 +171,9 @@ let lastErr = null;
 let structureKey = null;     // null until the first snapshot is rendered
 let variant = document.documentElement.getAttribute('data-variant') || VARIANTS[0];
 
-const intents = new Map();    // index → { power: intent|null, bri: intent|null }
-const SLOTS = ['power', 'bri'];
+const intents = new Map();    // index → { power, bri, sh: intent|null }
+const SLOTS = ['power', 'bri', 'sh'];
+const travel = new Map();     // shutter index → { key, deadline } for the run in progress
 const views = new Map();      // index → { root, hit, name, sub, chip, range, rangeVal }
 const sectionViews = [];      // { def, root, count, act }
 
@@ -171,6 +189,7 @@ let sheetSig = '';
 
 function kindOf(dev) {
     if (dev.type === 'scene') return 'scene';
+    if (dev.type === 'window_shutter' && dev.window_shutter) return 'shutter';
     if (dev.controllable) return 'power';
     return 'input';
 }
@@ -182,6 +201,7 @@ const PHASE_RANK = { sending: 4, dragging: 3, waiting: 2, unconfirmed: 1 };
 
 function viewOf(dev) {
     const kind = kindOf(dev);
+    if (kind === 'shutter') return shutterViewOf(dev);
     const pw = getIntent(dev.index, 'power');
     const br = getIntent(dev.index, 'bri');
     const offline = !dev.is_healthy;
@@ -261,7 +281,7 @@ function clearIntent(index, slot, it) {
     clearTimeout(cur.holdTimer);
     clearTimeout(cur.debounce);
     slots[slot] = null;
-    if (!slots.power && !slots.bri) intents.delete(index);
+    if (!slots.power && !slots.bri && !slots.sh) intents.delete(index);
 }
 
 // intentFor returns the slot's intent, creating it if needed. An existing
@@ -269,7 +289,7 @@ function clearIntent(index, slot, it) {
 // request already in flight, stay serialized behind one owner.
 function intentFor(dev, slot, kind) {
     let slots = intents.get(dev.index);
-    if (!slots) { slots = { power: null, bri: null }; intents.set(dev.index, slots); }
+    if (!slots) { slots = { power: null, bri: null, sh: null }; intents.set(dev.index, slots); }
     let it = slots[slot];
     if (it && it.kind !== kind && !it.inFlight) { clearIntent(dev.index, slot, it); it = null; }
     if (!it) {
@@ -328,6 +348,7 @@ function expire(index, it) {
 // What the device currently reports for the quantity this intent changes.
 function reportedText(dev, it) {
     if (it.kind === 'bri') return 'it still reports ' + (dev.brightness || 0) + '%';
+    if (it.kind === 'shutter') return 'it still reports ' + shutterStateText(dev.window_shutter).toLowerCase();
     if (it.kind === 'scene') return 'it still reports ' + (dev.scene_state || 'state ' + ((dev.scene_index || 0) + 1));
     if (dev.state_error) return "its state can't be read, so it's not known whether it switched";
     return 'it still reports ' + (dev.is_on ? 'on' : 'off');
@@ -351,6 +372,17 @@ function confirms(it, dev, pollStartedAt) {
             return !dev.state_error && !!dev.is_on === it.target;
         case 'bri':
             return Math.abs((dev.brightness || 0) - it.target) <= 1;
+        case 'shutter': {
+            // The ack carried the accepted command (it.accepted); a poll that
+            // started after it shows the server's state including that
+            // command. A Stop is only confirmed by a stopped report.
+            if (pollStartedAt < it.ackAt) return false;
+            const ws = dev.window_shutter;
+            if (!ws) return false;
+            const a = it.accepted;
+            if (a && a.motion === 'stopped' && !a.pending_start) return ws.motion === 'stopped' && !ws.pending_start;
+            return true;
+        }
         case 'scene':
             // The server answered the last toggle authoritatively (it.resolveAny),
             // so a poll that started after that answer settles the intent whatever
@@ -435,6 +467,11 @@ function sceneAcked(index, it, resp) {
 function tapDevice(dev) {
     const v = viewOf(dev);
     if (v.kind === 'input') { openSheet(dev.index); return; }
+    if (v.kind === 'shutter') {
+        if (v.sync === 'offline') { toast(dev.name + ' is offline.', 'warn'); return; }
+        shutterCommand(dev, 'toggle');
+        return;
+    }
     if (v.sync === 'offline') { toast(dev.name + ' is offline.', 'warn'); return; }
     if (v.kind === 'scene') { setPower(dev, null); return; }
     if (!v.onKnown) {
@@ -471,6 +508,144 @@ function setBrightness(dev, value, immediate) {
         it.debounce = setTimeout(enqueue, 160);
     }
     updateDevice(index);
+}
+
+// ---------- window shutters ----------
+
+function shutterStateText(ws) {
+    if (!ws) return 'Unknown';
+    const pct = ws.position_known ? ws.current_position + '%' : '';
+    if (ws.pending_start) return 'Starting…';
+    if (ws.motion === 'opening') return pct ? 'Opening · ' + pct : 'Opening';
+    if (ws.motion === 'closing') return pct ? 'Closing · ' + pct : 'Closing';
+    if (!ws.position_known) return 'Position unknown';
+    if (ws.current_position <= 0) return 'Closed';
+    if (ws.current_position >= 100) return 'Open';
+    return ws.current_position + '% open';
+}
+
+function shutterCmdText(it) {
+    const j = it.label || {};
+    switch (j.cmd) {
+        case 'open': return 'Opening…';
+        case 'close': return 'Closing…';
+        case 'stop': return 'Stopping…';
+        case 'toggle': return 'Toggling…';
+        case 'position': return 'Moving to ' + j.pct + '%…';
+    }
+    return 'Sending…';
+}
+
+// estimatedPos interpolates the server's estimate between polls (display
+// only; the server stays authoritative).
+function estimatedPos(ws) {
+    if (!ws || !ws.position_known) return null;
+    let p = ws.current_position;
+    if (ws.motion !== 'stopped' && !ws.pending_start) {
+        const dur = (ws.motion === 'opening' ? ws.open_duration_seconds : ws.close_duration_seconds) * 1000;
+        if (dur > 0) {
+            const moved = 100 * Math.min(Date.now() - snapshotAt, ws.remaining_travel_ms) / dur;
+            p += ws.motion === 'opening' ? moved : -moved;
+        }
+    }
+    return clamp(Math.round(p), 0, 100);
+}
+
+function shutterViewOf(dev) {
+    const it = getIntent(dev.index, 'sh');
+    const offline = !dev.is_healthy;
+    let ws = dev.window_shutter;
+    // While a command is unconfirmed, show what the server accepted.
+    if (live(it) && it.accepted) ws = Object.assign({}, ws, it.accepted);
+    const pos = estimatedPos(ws);
+    const moving = ws.motion !== 'stopped' || !!ws.pending_start;
+    const tr = travel.get(dev.index);
+    const overdue = !it && moving && tr && Date.now() > tr.deadline;
+    let sync = offline ? 'offline' : it ? it.phase : overdue ? 'unconfirmed' : 'ok';
+    const busy = sync === 'sending' || sync === 'waiting' || sync === 'dragging';
+    let sub;
+    if (offline) sub = 'Offline';
+    else if (sync === 'sending' || sync === 'dragging') sub = shutterCmdText(it);
+    else if (overdue) sub = 'Not stopped yet';
+    else if (sync === 'unconfirmed') sub = 'Unconfirmed';
+    else {
+        sub = shutterStateText(Object.assign({}, ws, { current_position: pos === null ? ws.current_position : pos }));
+        if (sync === 'waiting') sub += ' · confirming';
+    }
+    return {
+        kind: 'shutter', sync, sub, busy, cmdIt: it, pw: null, br: null,
+        on: ws.position_known && (pos || 0) > 0, onKnown: !!ws.position_known, unknown: !ws.position_known,
+        bri: 0, pos, posKnown: !!ws.position_known, motion: ws.motion, pending: !!ws.pending_start,
+        target: ws.target_position, moving, overdue,
+        fault: !!dev.is_faulty && !offline,
+    };
+}
+
+// shutterCommand queues one shutter command on the shutter's single stream.
+function shutterCommand(dev, cmd, pct) {
+    const index = dev.index;
+    if (!dev.is_healthy) { toast(dev.name + ' is offline.', 'warn'); return; }
+    const base = '/api/devices/' + index + '/';
+    const it = intentFor(dev, 'sh', 'shutter');
+    const job = {
+        cmd, pct,
+        path: base + (cmd === 'position' ? 'set_position' : cmd),
+        body: cmd === 'position' ? { value: pct } : undefined,
+        verb: (cmd === 'position' ? 'move ' + dev.name + ' to ' + pct + '%' : cmd + ' ' + dev.name),
+    };
+    job.onAck = resp => shutterAcked(index, it, resp);
+    if (cmd === 'stop') {
+        // Stop discards unsent movement, including a slider target still
+        // being debounced.
+        const sl = shutterSliders.get(index);
+        if (sl) { clearTimeout(sl.t); shutterSliders.delete(index); }
+        it.queue = [job];
+    } else if (cmd === 'toggle') {
+        it.queue.push(job);                // discrete: every tap counts
+    } else {
+        // Latest position/direction target wins; keep queued Stop/Toggle.
+        it.queue = it.queue.filter(j => j.cmd === 'stop' || j.cmd === 'toggle');
+        it.queue.push(job);
+    }
+    it.label = { cmd, pct };
+    it.accepted = null;
+    it.phase = 'sending';
+    haptic();
+    updateDevice(index);
+    pump(index, it);
+}
+
+function shutterAcked(index, it, resp) {
+    if (getIntent(index, it.slot) !== it) return;
+    it.accepted = resp && resp.window_shutter ? resp.window_shutter : null;
+    if (it.accepted && it.queue.length === 0) {
+        // Report what was actually accepted (e.g. a toggle that stopped).
+        it.label = { cmd: it.accepted.motion === 'stopped' ? 'stop' : it.accepted.motion === 'opening' ? 'open' : 'close' };
+    }
+}
+
+// Shutter slider: debounced, coalesced into the shutter's single stream.
+function setShutterPosition(dev, value, immediate) {
+    const index = dev.index;
+    const v = clamp(Math.round(value), 0, 100);
+    const st = shutterSliders.get(index) || {};
+    clearTimeout(st.t);
+    if (immediate) { shutterSliders.delete(index); shutterCommand(dev, 'position', v); return; }
+    st.t = setTimeout(() => { shutterSliders.delete(index); const d = devices.get(index); if (d) shutterCommand(d, 'position', v); }, 250);
+    shutterSliders.set(index, st);
+}
+const shutterSliders = new Map();
+
+// trackTravel keeps one completion deadline per run (motion + target), set
+// from remaining_travel_ms when the run is first seen and kept while the run
+// lasts, so a stuck run becomes overdue instead of sliding forever.
+function trackTravel(dev) {
+    const ws = dev.window_shutter;
+    if (!ws || (ws.motion === 'stopped' && !ws.pending_start)) { travel.delete(dev.index); return; }
+    const key = ws.motion + ':' + ws.target_position + ':' + (ws.pending_start ? 'p' : 'm');
+    const cur = travel.get(dev.index);
+    if (cur && cur.key === key) return;
+    travel.set(dev.index, { key, deadline: Date.now() + (ws.remaining_travel_ms || 0) + TRAVEL_GRACE_MS });
 }
 
 function allOff(def) {
@@ -540,6 +715,7 @@ function applySnapshot(list, startedAt) {
     }
 
     for (const d of list) {
+        if (d.type === 'window_shutter') trackTravel(d);
         for (const slot of SLOTS) {
             const it = getIntent(d.index, slot);
             if (it && confirms(it, d, startedAt)) {
@@ -658,7 +834,7 @@ function buildDevice(dev) {
     const icon = h('span', { class: 'dev-icon', 'aria-hidden': 'true', html: ICON[dev.type] || ICON.other },
         h('span', { class: 'dev-mark' }));
     const sw = h('span', { class: 'dev-switch', 'aria-hidden': 'true' });
-    let chip = null, bri = null, range = null, rangeVal = null;
+    let chip = null, bri = null, range = null, rangeVal = null, pos = null, shut = null;
 
     if (dev.has_brightness) {
         chip = h('button', { class: 'dev-chip', type: 'button', 'aria-label': 'Brightness of ' + dev.name });
@@ -677,11 +853,23 @@ function buildDevice(dev) {
         bri = h('div', { class: 'dev-bri' }, step(-10, 'Dimmer'), range, step(10, 'Brighter'), rangeVal);
     }
 
+    if (kind === 'shutter') {
+        chip = h('button', { class: 'dev-chip', type: 'button', 'aria-label': 'Position of ' + dev.name });
+        chip.addEventListener('click', e => { e.stopPropagation(); openSheet(dev.index); });
+        pos = h('span', { class: 'dev-pos', 'aria-hidden': 'true' }, h('span', { class: 'dev-pos-fill' }));
+        const btn = (cmd, label, glyph) => {
+            const b = h('button', { class: 'shut-btn', type: 'button', 'aria-label': label + ' ' + dev.name, 'data-cmd': cmd }, glyph);
+            b.addEventListener('click', e => { e.stopPropagation(); const d = devices.get(dev.index); if (d) shutterCommand(d, cmd); });
+            return b;
+        };
+        shut = h('div', { class: 'dev-shut' }, btn('open', 'Open', '▲'), btn('stop', 'Stop', '■'), btn('close', 'Close', '▼'));
+    }
+
     const root = h('div', { class: 'dev', 'data-type': dev.type, 'data-kind': kind, id: 'dev-' + dev.index },
-        hit, icon, h('span', { class: 'dev-text' }, name, sub), chip, sw, bri);
+        hit, icon, h('span', { class: 'dev-text' }, name, sub), chip, sw, bri, shut, pos);
 
     bindPress(hit, () => devices.get(dev.index));
-    views.set(dev.index, { root, hit, name, sub, chip, range, rangeVal });
+    views.set(dev.index, { root, hit, name, sub, chip, range, rangeVal, pos, shut });
     return root;
 }
 
@@ -748,7 +936,18 @@ function updateDevice(index) {
     if (v.name.textContent !== dev.name) v.name.textContent = dev.name;
     v.sub.textContent = s.sub;
 
-    if (s.kind === 'input') {
+    if (s.kind === 'shutter') {
+        r.dataset.motion = s.pending ? 'pending' : s.motion;
+        r.dataset.unknown = s.posKnown ? '0' : '1';
+        v.hit.setAttribute('aria-label', dev.name + ', window shutter, ' + s.sub + '. Tap to start or stop');
+        v.hit.removeAttribute('aria-pressed');
+        if (v.chip) v.chip.textContent = s.posKnown ? s.pos + '%' : '?';
+        if (v.pos) {
+            v.pos.hidden = !s.posKnown;
+            v.pos.firstChild.style.width = (s.posKnown ? s.pos : 0) + '%';
+        }
+        if (v.shut) v.shut.querySelectorAll('button').forEach(b => { b.disabled = s.sync === 'offline'; });
+    } else if (s.kind === 'input') {
         r.classList.toggle('recent', !!dev.last_event_type && eventAge(dev) < 3000);
         v.hit.setAttribute('aria-label', dev.name + ', button. ' + s.sub + '. Show details');
     } else {
@@ -758,7 +957,7 @@ function updateDevice(index) {
     }
     v.hit.setAttribute('aria-disabled', s.sync === 'offline' ? 'true' : 'false');
 
-    if (v.chip) {
+    if (v.chip && s.kind !== 'shutter') {
         v.chip.textContent = s.bri + '%';
     }
     if (v.range) {
@@ -778,6 +977,12 @@ function updateSections() {
     for (const sv of sectionViews) {
         const list = [...devices.values()].filter(d => sv.def.types.includes(d.type));
         const kind = list.length ? kindOf(list[0]) : 'input';
+        if (kind === 'shutter') {
+            const moving = list.filter(d => viewOf(d).moving).length;
+            if (moving) sv.count.replaceChildren(h('b', null, moving), ' of ' + list.length + ' moving');
+            else sv.count.textContent = list.length;
+            continue;
+        }
         if (kind === 'input') {
             sv.count.textContent = list.length;
             continue;
@@ -805,11 +1010,14 @@ function onAllOff(def, btn) {
     btn._t = setTimeout(() => { btn.classList.remove('armed'); btn.textContent = 'All off'; }, 3000);
 }
 
-// Relative times on button tiles keep ticking between polls.
+// Relative times on button tiles keep ticking between polls, and so do
+// moving shutters' interpolated positions and overdue checks.
 function tickInputs() {
     for (const [index, dev] of devices) {
-        if (kindOf(dev) === 'input') updateDevice(index);
+        const k = kindOf(dev);
+        if (k === 'input' || (k === 'shutter' && (travel.has(index) || getIntent(index, 'sh')))) updateDevice(index);
     }
+    updateSections();
 }
 
 // ---------- detail sheet ----------
@@ -841,11 +1049,18 @@ function statusText(dev, s) {
         case 'unknown': return { sync: 'unknown', title: 'State unknown', detail: h('span', null, 'The controller could not read this device. ', h('code', null, dev.state_error || '')) };
         case 'sending': return { sync: 'sending', title: 'Sending command…', detail: 'Waiting for the controller to accept it.' };
         case 'dragging': return { sync: 'sending', title: 'Adjusting…', detail: '' };
-        case 'waiting': return { sync: 'waiting', title: 'Waiting for the device to confirm', detail: 'The command was accepted ' + ago(Date.now() - it.ackAt) + '. The display updates once the device reports its new state.' };
+        case 'waiting':
+            if (s.kind === 'shutter') return { sync: 'waiting', title: 'Command accepted', detail: 'Accepted ' + ago(Date.now() - it.ackAt) + '. Confirming with the controller.' };
+            return { sync: 'waiting', title: 'Waiting for the device to confirm', detail: 'The command was accepted ' + ago(Date.now() - it.ackAt) + '. The display updates once the device reports its new state.' };
         case 'unconfirmed': {
             const r = reportedText(dev, it);
             return { sync: 'unconfirmed', title: 'Not confirmed', detail: r.charAt(0).toUpperCase() + r.slice(1) + '. The command may have been lost; try again.' };
         }
+    }
+    if (s.kind === 'shutter') {
+        if (s.overdue) return { sync: 'unconfirmed', title: 'Still moving', detail: 'The run should have finished by now. Stop it, or check the controller.' };
+        if (s.moving) return { sync: 'waiting', title: s.pending ? 'Waiting to reverse' : 'Moving', detail: 'Estimated ' + Math.ceil((dev.window_shutter.remaining_travel_ms || 0) / 1000) + ' s until the motor stops.' };
+        return { sync: 'ok', title: 'Stopped', detail: 'Updated ' + ago(Date.now() - lastOkAt) + '.' };
     }
     return { sync: 'ok', title: s.kind === 'input' ? 'Listening' : 'Confirmed by device', detail: 'Updated ' + ago(Date.now() - lastOkAt) + '.' };
 }
@@ -865,7 +1080,9 @@ function renderSheet(fresh) {
     // Rebuild the controls only when what they show changes, never on the
     // once-a-second tick: replacing a button mid-tap would swallow the tap.
     const body = document.getElementById('sheet-body');
+    const ws = dev.window_shutter || {};
     const sig = [dev.index, dev.name, s.on, s.onKnown, s.sync, s.bri, dev.scene_index, dev.scene_next, dev.scene_state, dev.last_event_type,
+        s.kind === 'shutter' ? [s.pos, s.motion, s.pending, s.target, Math.ceil((ws.remaining_travel_ms || 0) / 1000)].join(',') : '',
         s.kind === 'input' ? Math.floor(eventAge(dev) / 5000) : 0].join('|');
     const activeRange = body.querySelector('.range[data-active]');
     if (activeRange && !fresh) {
@@ -879,7 +1096,9 @@ function renderSheet(fresh) {
     const offline = s.sync === 'offline';
     const parts = [];
 
-    if (s.kind === 'power') {
+    if (s.kind === 'shutter') {
+        parts.push(...shutterSheetParts(dev, s, offline));
+    } else if (s.kind === 'power') {
         const known = s.onKnown;
         const onBtn = h('button', { class: 'pick', type: 'button', 'aria-pressed': known && s.on ? 'true' : 'false', disabled: offline }, 'On');
         const offBtn = h('button', { class: 'pick off', type: 'button', 'aria-pressed': known && !s.on ? 'true' : 'false', disabled: offline }, 'Off');
@@ -941,9 +1160,58 @@ function renderSheet(fresh) {
     }
 
     if (dev.is_faulty) {
-        parts.push(h('p', { class: 'sheet-type' }, 'HomeKit reports a fault on this device.'));
+        parts.push(h('p', { class: 'sheet-type' }, s.kind === 'shutter'
+            ? 'The controller reports an output fault on this shutter.'
+            : 'HomeKit reports a fault on this device.'));
     }
     body.replaceChildren(...parts);
+}
+
+function shutterSheetParts(dev, s, offline) {
+    const ws = dev.window_shutter;
+    const btn = (cmd, label, cls) => {
+        const b = h('button', { class: 'pick' + (cls ? ' ' + cls : ''), type: 'button', disabled: offline }, label);
+        b.addEventListener('click', () => shutterCommand(dev, cmd));
+        return b;
+    };
+    const parts = [h('div', null, h('div', { class: 'sheet-label' }, 'Move'),
+        h('div', { class: 'triple' }, btn('open', 'Open'), btn('stop', 'Stop', 'off'), btn('close', 'Close')))];
+
+    const known = s.posKnown;
+    const range = h('input', { class: 'range', type: 'range', min: 0, max: 100, step: 1, value: known ? s.pos : 50, disabled: offline || !known, 'aria-label': 'Position (% open)' });
+    range.style.setProperty('--pct', (known ? s.pos : 50) + '%');
+    const val = h('span', { class: 'val' }, known ? s.pos + '%' : '?');
+    range.addEventListener('input', () => {
+        range.dataset.active = '1';
+        range.style.setProperty('--pct', range.value + '%');
+        val.textContent = range.value + '%';
+        const d = devices.get(dev.index);
+        if (d) setShutterPosition(d, parseInt(range.value, 10), false);
+    });
+    range.addEventListener('change', () => {
+        delete range.dataset.active;
+        const d = devices.get(dev.index);
+        if (d) setShutterPosition(d, parseInt(range.value, 10), true);
+    });
+    const presets = [0, 25, 50, 75, 100].map(p => {
+        // Endpoints also calibrate an unknown position; intermediate targets need it.
+        const b = h('button', { class: 'chip-btn' + (known && s.pos === p && !s.moving ? ' cur' : ''), type: 'button', disabled: offline || (!known && p !== 0 && p !== 100) }, p === 0 ? 'Closed' : p === 100 ? 'Open' : p + '%');
+        b.addEventListener('click', () => shutterCommand(dev, 'position', p));
+        return b;
+    });
+    parts.push(h('div', null,
+        h('div', { class: 'sheet-label' }, 'Position (% open)'),
+        h('div', { class: 'bri-row' }, range, val),
+        h('div', { class: 'chips', style: 'margin-top:8px' }, presets),
+        known ? null : h('p', { class: 'sheet-type' }, 'Position unknown: run a full open or close once to calibrate.')));
+
+    const fmtPos = p => (p < 0 ? '—' : p + '%');
+    parts.push(h('dl', { class: 'kv' },
+        h('dt', null, 'Position'), h('dd', null, known ? s.pos + '% (estimated)' : 'Unknown'),
+        h('dt', null, 'Target'), h('dd', null, fmtPos(ws.target_position)),
+        h('dt', null, 'Motion'), h('dd', null, s.pending ? 'Waiting to reverse' : ws.motion.charAt(0).toUpperCase() + ws.motion.slice(1)),
+        h('dt', null, 'Travel time'), h('dd', null, 'Open ' + ws.open_duration_seconds + ' s · close ' + ws.close_duration_seconds + ' s')));
+    return parts;
 }
 
 // ---------- toasts ----------

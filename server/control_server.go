@@ -441,7 +441,13 @@ func (cs *ControlServer) handleDeviceAction(w http.ResponseWriter, r *http.Reque
 
 	if result.Error != nil {
 		cs.logger.Error("device control error", "index", index, "action", action, "err", result.Error)
-		http.Error(w, result.Error.Error(), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		if result.WindowShutter != nil {
+			// The shutter rejected the command in its current state (e.g.
+			// an intermediate position while the position is unknown).
+			status = http.StatusConflict
+		}
+		http.Error(w, result.Error.Error(), status)
 		return
 	}
 

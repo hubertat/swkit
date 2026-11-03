@@ -82,6 +82,7 @@
             case 'outlet': return '\u{1F50C}';
             case 'button': return '\u{1F446}';
             case 'scene': return '\u{1F3AC}';
+            case 'window_shutter': return '\u{1FA9F}';
             default: return '?';
         }
     }
@@ -125,6 +126,7 @@
                 '<div class="stat-row"><span class="label">\u{1F50C} Outlets</span><span class="value">' + s.outlets_count + '</span></div>' +
                 '<div class="stat-row"><span class="label">\u{1F446} Buttons</span><span class="value">' + s.buttons_count + '</span></div>' +
                 (s.scenes_count > 0 ? '<div class="stat-row"><span class="label">\u{1F3AC} Scenes</span><span class="value">' + s.scenes_count + '</span></div>' : '') +
+                (s.window_shutters_count > 0 ? '<div class="stat-row"><span class="label">\u{1FA9F} Window Shutters</span><span class="value">' + s.window_shutters_count + '</span></div>' : '') +
             '</div>' +
             '<div class="card">' +
                 '<div class="card-title">\u{1F34E} HomeKit</div>' +
@@ -323,6 +325,14 @@
                 const idx = d.scene_state_index || 0;
                 const label = names[idx] || ('state ' + idx);
                 statusBadge = badge(label, idx === 0 ? 'off' : 'on');
+            } else if (d.type === 'window_shutter' && d.window_shutter) {
+                // Shutters have motion + estimated position, not on/off.
+                const ws = d.window_shutter;
+                let label;
+                if (ws.pending_start) label = 'starting';
+                else if (ws.motion !== 'stopped') label = ws.motion + (ws.position_known ? ' ' + ws.current_position + '%' : '');
+                else label = ws.position_known ? ws.current_position + '% open' : 'position unknown';
+                statusBadge = badge(label, ws.motion !== 'stopped' || ws.pending_start ? 'on' : 'off');
             } else {
                 statusBadge = d.is_on ? badge('ON', 'on') : badge('OFF', 'off');
             }
@@ -352,6 +362,14 @@
             }
             if (d.event_input_id) {
                 details += '<div class="row"><dt>Input:</dt><dd>' + escHtml(d.event_input_id) + '</dd></div>';
+            }
+            if (d.window_shutter) {
+                const ws = d.window_shutter;
+                details += '<div class="row"><dt>Open output:</dt><dd>' + escHtml(ws.open_io_id) + '</dd></div>';
+                details += '<div class="row"><dt>Close output:</dt><dd>' + escHtml(ws.close_io_id) + '</dd></div>';
+                details += '<div class="row"><dt>Target:</dt><dd>' + (ws.target_position < 0 ? '-' : ws.target_position + '%') + '</dd></div>';
+                details += '<div class="row"><dt>Travel:</dt><dd>open ' + ws.open_duration_seconds + ' s, close ' + ws.close_duration_seconds + ' s' +
+                    (ws.remaining_travel_ms > 0 ? ' <span class="text-muted">(' + Math.ceil(ws.remaining_travel_ms / 1000) + ' s left)</span>' : '') + '</dd></div>';
             }
             if (d.type === 'scene' && d.scene_state_names && d.scene_state_names.length > 0) {
                 details += '<div class="row"><dt>States:</dt><dd>' + escHtml(d.scene_state_names.join(', ')) + '</dd></div>';
