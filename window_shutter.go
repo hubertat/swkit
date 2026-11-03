@@ -327,6 +327,11 @@ func (ws *WindowShutter) establishSafeOutputs() {
 		if err == nil && !on {
 			continue // known off: nothing to do (and no write at startup)
 		}
+		// The output was on or unreadable: a motor may have been running.
+		// That history must survive a failed switch-off too, so the
+		// reversal delay applies once the output is eventually off.
+		ws.energizedEver = true
+		ws.lastActiveDir = motionStopped // neither direction is "same direction"
 		if setErr := o.out.Set(false); setErr != nil {
 			o.st.stopFailed = true
 			ws.isFaulty = true
@@ -341,9 +346,7 @@ func (ws *WindowShutter) establishSafeOutputs() {
 		}
 	}
 	if deenergized {
-		ws.energizedEver = true
-		ws.lastActiveDir = motionStopped // neither direction is "same direction"
-		ws.lastDeenergized = ws.now()    // after the writes returned
+		ws.lastDeenergized = ws.now() // after the writes returned
 	}
 }
 
@@ -983,6 +986,9 @@ func (ws *WindowShutter) writeOutputLocked(st *outputState, out drivers.DigitalO
 			st.exp = prev // roll back only this write's expectation
 		}
 	} else {
+		if st.stopFailed && !value {
+			ws.energizedEver = true // a possibly running motor was just switched off
+		}
 		st.stopFailed = false // a successful write re-establishes the logical state
 		if st.exp.active && st.exp.gen == gen && !st.exp.confirmed {
 			// Extend to completion time + timeout, unless a synchronous
@@ -1256,15 +1262,29 @@ func (ws *WindowShutter) resolveObservationLocked(st *outputState, obs obsValue,
 		st.exp.active = false
 		st.on = obs.val
 		if !obs.val {
-			st.stopFailed = false // the driver confirms the relay is actually off
+			ws.clearStopFailedObservedLocked(st, now)
 		}
 		return obs.val, true
 	}
 	st.on = obs.val
 	if !obs.val {
-		st.stopFailed = false
+		ws.clearStopFailedObservedLocked(st, now)
 	}
 	return obs.val, true
+}
+
+// clearStopFailedObservedLocked clears stopFailed once the driver reports the
+// output off. When it went off is unknown, so the reversal delay is counted
+// from this observation (late, never early).
+func (ws *WindowShutter) clearStopFailedObservedLocked(st *outputState, now time.Time) {
+	if !st.stopFailed {
+		return
+	}
+	st.stopFailed = false
+	ws.energizedEver = true
+	if ws.lastDeenergized.Before(now) {
+		ws.lastDeenergized = now
+	}
 }
 
 // handleBothActiveLocked deals with the invalid IO state of both outputs

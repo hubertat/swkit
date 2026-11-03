@@ -1499,3 +1499,51 @@ func TestShutterReversalDelayCountsFromWriteCompletion(t *testing.T) {
 		t.Fatal("open must start after the delay")
 	}
 }
+
+func TestShutterReversalDelayAfterRecoveredStartupDeactivation(t *testing.T) {
+	fc := newShutterClock()
+	open := &fakeOut{name: "open"}
+	closeOut := &fakeOut{name: "close", on: true, setErr: fmt.Errorf("unreachable")}
+	ws := NewWindowShutter(shutterConfig(), open, closeOut, testLogger())
+	ws.now, ws.afterFunc, ws.dispatch = fc.Now, fc.AfterFunc, func(f func()) {}
+	closeOut.mu.Lock()
+	closeOut.setErr = nil // communication recovers
+	closeOut.mu.Unlock()
+	if err := ws.Stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if err := ws.Open(); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if open.isOn() {
+		t.Fatal("open right after the recovered switch-off must wait the reversal delay")
+	}
+	fc.Advance(500 * time.Millisecond)
+	if !open.isOn() || closeOut.isOn() {
+		t.Fatal("open must start after the delay, alone")
+	}
+}
+
+func TestShutterReversalDelayAfterObservedRecovery(t *testing.T) {
+	fc := newShutterClock()
+	open := &fakeOut{name: "open"}
+	closeOut := &fakeOut{name: "close", on: true, setErr: fmt.Errorf("unreachable")}
+	ws := NewWindowShutter(shutterConfig(), open, closeOut, testLogger())
+	ws.now, ws.afterFunc, ws.dispatch = fc.Now, fc.AfterFunc, func(f func()) {}
+	closeOut.mu.Lock()
+	closeOut.on, closeOut.setErr = false, nil // switched off elsewhere, reads off
+	closeOut.mu.Unlock()
+	if err := ws.Sync(true); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if err := ws.Open(); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if open.isOn() {
+		t.Fatal("the delay must count from the observation that the output is off")
+	}
+	fc.Advance(500 * time.Millisecond)
+	if !open.isOn() {
+		t.Fatal("open must start after the delay")
+	}
+}
