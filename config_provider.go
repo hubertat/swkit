@@ -78,16 +78,22 @@ func (p *SwKitConfigProvider) GetEditableConfig() app.EditableConfig {
 	for _, o := range p.sw.Outlets {
 		config.OutputDeviceNames = append(config.OutputDeviceNames, o.Name)
 	}
+	for _, ws := range p.sw.WindowShutters {
+		config.OutputDeviceNames = append(config.OutputDeviceNames, ws.Name)
+	}
 	// Scenes are Controllable too, so they are valid control targets.
 	for _, s := range p.sw.Scenes {
 		config.OutputDeviceNames = append(config.OutputDeviceNames, s.Name)
+	}
+	if owners := p.sw.ColorLightOutputOwners(); len(owners) > 0 {
+		config.ColorLightOutputOwners = owners
 	}
 
 	return config
 }
 
 // editableConfigLocked builds the persisted portion of the editable config -
-// the exact fields SaveConfig writes (Lights, DimmableLights, Outlets,
+// the exact fields SaveConfig writes (Lights, DimmableLights, Outlets, WindowShutters,
 // Buttons, Scenes) - without the derived OutputDeviceNames metadata. It
 // backs both GetEditableConfig (which adds OutputDeviceNames on top) and
 // Revision/SaveConfigIfRevision (which must not consider OutputDeviceNames,
@@ -122,6 +128,10 @@ func (p *SwKitConfigProvider) editableConfigLocked() app.EditableConfig {
 			DigitalOutName: o.DigitalOutName,
 			DisableHomekit: o.DisableHomekit,
 		})
+	}
+
+	for _, ws := range p.sw.WindowShutters {
+		config.WindowShutters = append(config.WindowShutters, windowShutterToEdit(ws))
 	}
 
 	for _, b := range p.sw.Buttons {
@@ -168,10 +178,13 @@ func (p *SwKitConfigProvider) Revision() string {
 }
 
 // computeRevision hashes the canonical JSON encoding of cfg. json.Marshal of
-// a struct (no maps involved anywhere in app.EditableConfig) always emits
-// fields in a fixed, struct-defined order, so this is deterministic/stable
-// for identical content.
+// a struct always emits fields in a fixed, struct-defined order (and sorts
+// map keys), so this is deterministic/stable for identical content. Derived
+// metadata (OutputDeviceNames, ColorLightOutputOwners) is cleared first so it
+// never gates save conflicts.
 func computeRevision(cfg app.EditableConfig) string {
+	cfg.OutputDeviceNames = nil
+	cfg.ColorLightOutputOwners = nil
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		// EditableConfig is plain strings/ints/bools/slices/structs - it
@@ -241,6 +254,15 @@ func (p *SwKitConfigProvider) saveConfigLocked(config app.EditableConfig) error 
 			DigitalOutName: o.DigitalOutName,
 			DisableHomekit: o.DisableHomekit,
 		}
+	}
+
+	if len(config.WindowShutters) > 0 {
+		p.sw.WindowShutters = make([]WindowShutterConfig, len(config.WindowShutters))
+		for i, ws := range config.WindowShutters {
+			p.sw.WindowShutters[i] = windowShutterFromEdit(ws)
+		}
+	} else {
+		p.sw.WindowShutters = nil
 	}
 
 	p.sw.Buttons = make([]ButtonConfig, len(config.Buttons))

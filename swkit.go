@@ -33,6 +33,7 @@ type SwKit struct {
 	Outlets        []OutletConfig
 	Buttons        []ButtonConfig
 	Scenes         []SceneConfig
+	WindowShutters []WindowShutterConfig `json:",omitempty"`
 
 	lights         []*Light
 	colorLights    []*ColorLight
@@ -40,6 +41,7 @@ type SwKit struct {
 	outlets        []*Outlet
 	buttons        []*Button
 	scenes         []*Scene
+	windowShutters []*WindowShutter
 	// Switches      []*Switch
 	// MotionSensors []*MotionSensor
 
@@ -60,7 +62,9 @@ type SwKit struct {
 	Shelly     *drivers.ShellyIO
 	Wago       *drivers.WagoIO
 
-	ioDrivers  map[string]drivers.IoDriver
+	ioDrivers map[string]drivers.IoDriver
+	// testDriver is an extra driver registered by Setup (tests only).
+	testDriver drivers.IoDriver
 	mqttClient *mqtt.MqttClient
 	ticker     *time.Ticker
 	timed      *timedController
@@ -166,6 +170,10 @@ func (sw *SwKit) getHkThings() (things []HkThing) {
 		things = append(things, th)
 	}
 
+	for _, th := range sw.windowShutters {
+		things = append(things, th)
+	}
+
 	for _, th := range sw.buttons {
 		things = append(things, th)
 	}
@@ -200,6 +208,10 @@ func (sw *SwKit) getDevices() (devices []Device) {
 		devices = append(devices, d)
 	}
 
+	for _, d := range sw.windowShutters {
+		devices = append(devices, d)
+	}
+
 	for _, d := range sw.buttons {
 		devices = append(devices, d)
 	}
@@ -231,6 +243,10 @@ func (sw *SwKit) getAllIoIds() []string {
 		allIds = append(allIds, d.DigitalOutName)
 	}
 
+	for _, ws := range sw.WindowShutters {
+		allIds = append(allIds, ws.OpenDigitalOutName, ws.CloseDigitalOutName)
+	}
+
 	for _, b := range sw.Buttons {
 		allIds = append(allIds, b.EventInputName)
 	}
@@ -258,6 +274,10 @@ func (sw *SwKit) getControllableDevices() []Controllable {
 		devices = append(devices, d)
 	}
 
+	for _, ws := range sw.windowShutters {
+		devices = append(devices, ws)
+	}
+
 	// Scenes are Controllable too, so buttons (and other scenes) can drive
 	// them. Listed last, after the physical devices they may reference.
 	for _, sc := range sw.scenes {
@@ -280,11 +300,25 @@ func (sw *SwKit) resolveControllable(name string) (Controllable, bool) {
 	return nil, false
 }
 
-func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
+// Setup wires the configured drivers and devices. On failure it rolls back
+// whatever it already initialized (shutters are stopped via Shutdown, then
+// the drivers that completed Setup are closed) and joins any cleanup errors
+// with the setup error, so callers never have to close a failed instance.
+func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) (retErr error) {
 	sw.logger = logger
 	sw.timed = newTimedController(logger)
 	sw.ioDrivers = make(map[string]drivers.IoDriver)
 	ioSlice := map[string][]string{}
+	var setupDrivers []drivers.IoDriver
+	defer func() {
+		if retErr != nil {
+			retErr = errors.Join(retErr, sw.rollbackSetup(setupDrivers))
+		}
+	}()
+
+	if err := sw.validateWindowShutterConfigs(); err != nil {
+		return err
+	}
 
 	if sw.Gpio != nil {
 		sw.ioDrivers[sw.Gpio.String()] = sw.Gpio
@@ -308,6 +342,10 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 
 	if sw.Wago != nil {
 		sw.ioDrivers[sw.Wago.String()] = sw.Wago
+	}
+
+	if sw.testDriver != nil {
+		sw.ioDrivers[sw.testDriver.String()] = sw.testDriver
 	}
 
 	for _, driver := range sw.ioDrivers {
@@ -337,6 +375,7 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		if err != nil {
 			return errors.Join(err, fmt.Errorf("failed to setup %s driver", driver.String()))
 		}
+		setupDrivers = append(setupDrivers, driver)
 	}
 
 	for _, light := range sw.Lights {
@@ -419,6 +458,21 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 		sw.dimmableLights = append(sw.dimmableLights, NewDimmableLight(dimLight, dOut, aOut, logger))
 	}
 
+	// Window shutters are built before scenes and buttons, which may target
+	// them. A shutter is appended as soon as it exists, so a later failure
+	// rolls it back (Shutdown) together with the rest.
+	for _, wsConf := range sw.WindowShutters {
+		openOut, err := sw.resolveDigitalOutput(wsConf.OpenDigitalOutName)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to get open output for window shutter %s", wsConf.Name))
+		}
+		closeOut, err := sw.resolveDigitalOutput(wsConf.CloseDigitalOutName)
+		if err != nil {
+			return errors.Join(err, fmt.Errorf("failed to get close output for window shutter %s", wsConf.Name))
+		}
+		sw.windowShutters = append(sw.windowShutters, NewWindowShutter(wsConf, openOut, closeOut, logger))
+	}
+
 	// Scenes are built after all physical devices exist, since they reference
 	// devices (and earlier scenes) by name. They appear in
 	// getControllableDevices(), so the button loop below can target them.
@@ -452,6 +506,9 @@ func (sw *SwKit) Setup(ctx context.Context, logger *log.Logger) error {
 			ctrlDevFound := false
 			for _, ctrlDev := range sw.getControllableDevices() {
 				if ctrlDev.Name() == act.Device {
+					if err := shutterVerbError(act.Verb, ctrlDev); err != nil {
+						return fmt.Errorf("button %s: control %q: %w", button.Name, ctrlDevId, err)
+					}
 					ctrlDevs = append(ctrlDevs, ControlDevice{
 						dev:   ctrlDev,
 						e:     e,
@@ -516,8 +573,8 @@ func (sw *SwKit) StartTicker(ctx context.Context, interval time.Duration, forceE
 
 // SetDeviceValueFor sets a controllable device to state for the given duration,
 // then reverts to its prior state. See timedController.SetValueFor.
-func (sw *SwKit) SetDeviceValueFor(dev Controllable, state bool, d time.Duration) {
-	sw.timed.SetValueFor(dev, state, d)
+func (sw *SwKit) SetDeviceValueFor(dev Controllable, state bool, d time.Duration) error {
+	return sw.timed.SetValueFor(dev, state, d)
 }
 
 func (sw *SwKit) Close() (err error) {
@@ -527,6 +584,10 @@ func (sw *SwKit) Close() (err error) {
 	for _, scene := range sw.scenes {
 		scene.Close()
 	}
+	// Stop shutter motors before their drivers close. A reload therefore
+	// always stops moving shutters; the replacement instance starts with
+	// unknown positions and never resumes movement.
+	err = errors.Join(err, sw.shutdownWindowShutters())
 
 	for _, driver := range sw.ioDrivers {
 		if driver != nil {

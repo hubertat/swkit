@@ -117,9 +117,16 @@ func (ce *ConfigEditor) addSceneDevice(scene *app.SceneEditConfig, name string) 
 	if len(scene.States) == 0 {
 		scene.States = []app.SceneStateEditConfig{{Name: "Off"}}
 	}
-	scene.States[0].Actions = append(scene.States[0].Actions, app.Action{Verb: "off", Device: name}.String())
+	// Window shutters get Stop in state 0 (and Open in a new scene's On);
+	// a new scene activation never stops motion by itself, so Off needs an
+	// explicit Stop. Other devices get off/on.
+	offVerb, onVerb := "off", "on"
+	if ce.targetTypeOf(name) == app.TargetTypeWindowShutter {
+		offVerb, onVerb = "stop", "open"
+	}
+	scene.States[0].Actions = append(scene.States[0].Actions, app.Action{Verb: offVerb, Device: name}.String())
 	if ce.sceneDevicesNewScene && len(scene.States) > 1 {
-		scene.States[1].Actions = append(scene.States[1].Actions, app.Action{Verb: "on", Device: name}.String())
+		scene.States[1].Actions = append(scene.States[1].Actions, app.Action{Verb: onVerb, Device: name}.String())
 	}
 	ce.markDirty()
 }
@@ -347,7 +354,7 @@ func (ce *ConfigEditor) updateEditSceneState(msg tea.Msg) tea.Cmd {
 			ce.statusMsg = "Choose the scene's devices first (Devices row on the scene screen)"
 			return nil
 		}
-		state.Actions = append(state.Actions, app.Action{Verb: "on", Device: target}.String())
+		state.Actions = append(state.Actions, app.Action{Verb: ce.verbsForTarget(target)[0], Device: target}.String())
 		ce.dirty = true
 		ce.fieldCursor = len(state.Actions) // last action row
 	case "d", "delete":
@@ -431,7 +438,7 @@ func (ce *ConfigEditor) adjustSceneActionLevel(state *app.SceneStateEditConfig, 
 	if err != nil {
 		return
 	}
-	if app.IsBrightnessVerb(act.Verb) {
+	if app.HasLevel(act.Verb) {
 		act.Level = adjustBrightnessLevel(act.Level, direction)
 		state.Actions[actIdx] = act.String()
 	}
@@ -446,18 +453,20 @@ func (ce *ConfigEditor) cycleSceneActionField(scene *app.SceneEditConfig, state 
 	act, err := app.ParseSceneStep(state.Actions[actIdx])
 	if err != nil {
 		// Unparseable (e.g. hand-edited) — reset to a sane default.
-		act = app.SceneStep{Action: app.Action{Verb: "on", Device: ce.firstSceneTarget(scene)}}
+		first := ce.firstSceneTarget(scene)
+		act = app.SceneStep{Action: app.Action{Verb: ce.verbsForTarget(first)[0], Device: first}}
 	}
 
 	switch ce.sceneActionField {
-	case 0: // action verb
-		act.Verb = cycleOption(app.AllActionVerbs(), act.Verb, direction)
+	case 0: // action verb: only the verbs the step's target accepts
+		act.Verb = cycleOption(ce.verbsForTarget(act.Device), act.Verb, direction)
 	case 1: // device
 		if opts := ce.sceneTargetOptions(scene); len(opts) > 0 {
 			act.Device = cycleOption(opts, act.Device, direction)
+			act.Verb = ce.coerceVerbForTarget(act.Verb, act.Device)
 		}
 	case 2: // brightness level/step (only meaningful for brightness-family verbs)
-		if app.IsBrightnessVerb(act.Verb) {
+		if app.HasLevel(act.Verb) {
 			act.Level = adjustBrightnessLevel(act.Level, direction)
 		}
 	}
@@ -634,7 +643,7 @@ func (ce *ConfigEditor) renderSceneAction(theme Theme, actionStr string, fieldId
 		devStr = theme.Muted.Render("[none]")
 	}
 	line := prefix + "  " + theme.On.Render(act.Verb) + " " + theme.Muted.Render("→") + " " + devStr
-	if app.IsBrightnessVerb(act.Verb) {
+	if app.HasLevel(act.Verb) {
 		line += theme.Secondary.Render(" " + brightnessLevelLabel(act.Verb, act.Level))
 	}
 	if act.Delay > 0 {
@@ -700,7 +709,7 @@ func (ce *ConfigEditor) renderSceneActionEditor(theme Theme, actionStr string) s
 		levelPrefix = "  ▶ "
 	}
 	var levelVal string
-	if app.IsBrightnessVerb(act.Verb) {
+	if app.HasLevel(act.Verb) {
 		levelVal = theme.Primary.Render(brightnessLevelLabel(act.Verb, act.Level))
 	} else {
 		levelVal = theme.Muted.Render("(brightness only)")

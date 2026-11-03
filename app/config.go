@@ -42,8 +42,17 @@ type EditableConfig struct {
 	Outlets        []OutletEditConfig
 	Buttons        []ButtonEditConfig
 	Scenes         []SceneEditConfig
+	// WindowShutters are maintained two-output roller shutters. omitempty
+	// keeps the revision of configs without shutters unchanged.
+	WindowShutters []WindowShutterEditConfig `json:",omitempty"`
 	// OutputDeviceNames provides available target device names for button control relations
 	OutputDeviceNames []string
+	// ColorLightOutputOwners is read-only derived metadata: config io id ->
+	// color light name, for every output owned by a color light (color
+	// lights are not editable here). Save validation uses it to keep other
+	// devices off those outputs. It is never persisted and never part of the
+	// revision; servers recompute it instead of trusting a posted value.
+	ColorLightOutputOwners map[string]string `json:",omitempty"`
 }
 
 // Clone returns a deep copy of c: no slice in the result aliases c, so the
@@ -66,7 +75,14 @@ func (c EditableConfig) Clone() EditableConfig {
 			out.Scenes[i].States[j].Actions = slices.Clone(out.Scenes[i].States[j].Actions)
 		}
 	}
+	out.WindowShutters = slices.Clone(c.WindowShutters)
 	out.OutputDeviceNames = slices.Clone(c.OutputDeviceNames)
+	if c.ColorLightOutputOwners != nil {
+		out.ColorLightOutputOwners = make(map[string]string, len(c.ColorLightOutputOwners))
+		for k, v := range c.ColorLightOutputOwners {
+			out.ColorLightOutputOwners[k] = v
+		}
+	}
 	return out
 }
 
@@ -136,8 +152,8 @@ type SceneStateEditConfig struct {
 // ControlDeviceEdit represents a parsed control device mapping
 type ControlDeviceEdit struct {
 	EventType  string // "single_press", "double_press", "triple_press", "long_press"
-	Action     string // action verb, see AllActionVerbs()
-	Level      int    // brightness level/step; only used by brightness-family verbs
+	Action     string // action verb, see AllActionVerbs() / ActionVerbsForTargetType()
+	Level      int    // brightness level/step or shutter position; only used by level verbs (HasLevel)
 	DeviceName string // name of target output device
 }
 

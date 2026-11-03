@@ -572,25 +572,30 @@ func TestShutterSetPositionUnknownIntermediate(t *testing.T) {
 func TestShutterToggleCycle(t *testing.T) {
 	h := newShutterHarness(t, shutterConfig())
 	h.calibrateOpen(t) // known 100, last direction opening; delay settled
-	// First toggle reverses: closing (the reversal delay already elapsed
-	// during calibration, so it starts at once).
+	// Reaching the endpoint left it stopped: toggle moves away (closing).
 	if err := h.ws.ToggleMovement(); err != nil {
 		t.Fatalf("toggle: %v", err)
 	}
 	if s := h.snap(); s.Motion != "closing" {
 		t.Fatalf("toggle start: %+v", s)
 	}
-	// Second toggle stops mid-close (5s of the 20s full close: at 75) and
-	// schedules the reversal to opening.
+	// Toggle while moving stops (5s of the 20s full close: at 75).
 	h.fc.Advance(5 * time.Second)
 	if err := h.ws.ToggleMovement(); err != nil {
 		t.Fatalf("toggle: %v", err)
 	}
-	if s := h.snap(); s.Motion != "stopped" || s.CurrentPosition != 75 || !s.PositionKnown {
+	if s := h.snap(); s.Motion != "stopped" || s.PendingReversal || s.CurrentPosition != 75 || !s.PositionKnown {
 		t.Fatalf("toggle stop: %+v", s)
 	}
-	if s := h.snap(); !s.PendingReversal {
-		t.Fatalf("toggle stop schedules the reversal: %+v", s)
+	// Toggle while stopped reverses: opening, after the reversal delay.
+	if err := h.ws.ToggleMovement(); err != nil {
+		t.Fatalf("toggle: %v", err)
+	}
+	if s := h.snap(); !s.PendingReversal || s.Motion != "stopped" {
+		t.Fatalf("reversal must wait: %+v", s)
+	}
+	if s := h.snap(); s.RemainingTravelMilliseconds != 500+5000+2000 {
+		t.Fatalf("remaining travel includes the reversal wait and overrun: %+v", s)
 	}
 	h.fc.Advance(300 * time.Millisecond)
 	if h.open.isOn() {
@@ -600,44 +605,55 @@ func TestShutterToggleCycle(t *testing.T) {
 	if s := h.snap(); s.Motion != "opening" {
 		t.Fatalf("reversal start: %+v", s)
 	}
-	// Third toggle stops mid-open (no time passed: still at 75).
+	// Toggle stops again (no time passed: still at 75).
 	if err := h.ws.ToggleMovement(); err != nil {
 		t.Fatalf("toggle: %v", err)
 	}
 	if s := h.snap(); s.Motion != "stopped" || s.CurrentPosition != 75 {
 		t.Fatalf("toggle stop mid-open: %+v", s)
 	}
+	// Repeat: the next toggle closes.
+	if err := h.ws.ToggleMovement(); err != nil {
+		t.Fatalf("toggle: %v", err)
+	}
+	h.fc.Advance(500 * time.Millisecond)
+	if s := h.snap(); s.Motion != "closing" {
+		t.Fatalf("cycle repeats: %+v", s)
+	}
 }
 
 func TestShutterToggleCancelsPendingStart(t *testing.T) {
 	h := newShutterHarness(t, shutterConfig())
 	h.calibrateOpen(t)
-	// First toggle closes (the reversal delay settled during calibration).
-	if err := h.ws.ToggleMovement(); err != nil {
+	if err := h.ws.ToggleMovement(); err != nil { // closing
 		t.Fatalf("toggle: %v", err)
 	}
-	h.fc.Advance(5 * time.Second) // at 75
-	// Second toggle stops and schedules the reversal to opening.
-	if err := h.ws.ToggleMovement(); err != nil {
+	h.fc.Advance(5 * time.Second)                 // at 75
+	if err := h.ws.ToggleMovement(); err != nil { // stop
+		t.Fatalf("toggle: %v", err)
+	}
+	if err := h.ws.ToggleMovement(); err != nil { // pending opening
 		t.Fatalf("toggle: %v", err)
 	}
 	if s := h.snap(); s.Motion != "stopped" || !s.PendingReversal {
 		t.Fatalf("pending start expected: %+v", s)
 	}
-	// A third toggle during the pending start cancels it and leaves the
-	// shutter stopped.
+	// A toggle during the pending start cancels it and leaves it stopped.
 	if err := h.ws.ToggleMovement(); err != nil {
 		t.Fatalf("toggle cancel: %v", err)
 	}
-	if s := h.snap(); s.Motion != "stopped" || s.PendingReversal {
+	if s := h.snap(); s.Motion != "stopped" || s.PendingReversal || s.RemainingTravelMilliseconds != 0 {
 		t.Fatalf("cancel: %+v", s)
 	}
-	// Remembered direction is still "closing" (the only direction that
-	// moved), so the next toggle starts the canceled direction: opening.
+	h.fc.Advance(time.Second)
+	if h.open.isOn() {
+		t.Fatal("canceled start must never energize")
+	}
+	// The remembered direction is still closing (the last that moved), so
+	// the next toggle starts the canceled direction: opening.
 	if err := h.ws.ToggleMovement(); err != nil {
 		t.Fatalf("toggle: %v", err)
 	}
-	h.fc.Advance(500 * time.Millisecond)
 	if s := h.snap(); s.Motion != "opening" {
 		t.Fatalf("next toggle must start the canceled direction: %+v", s)
 	}
@@ -652,14 +668,48 @@ func TestShutterToggleDefaultOpenWhenNeverMoved(t *testing.T) {
 	if s := h.snap(); s.Motion != "opening" {
 		t.Fatalf("first toggle must open: %+v", s)
 	}
-	if err := h.ws.ToggleMovement(); err != nil {
+	if err := h.ws.ToggleMovement(); err != nil { // stop (position stays unknown)
 		t.Fatalf("toggle stop: %v", err)
 	}
-	// The remembered direction (opening) makes the reversal close, even
-	// though the stop left the position unknown.
+	if s := h.snap(); s.Motion != "stopped" {
+		t.Fatalf("toggle while moving stops: %+v", s)
+	}
+	// The remembered direction (opening) makes the next toggle close, even
+	// though the position is unknown.
+	if err := h.ws.ToggleMovement(); err != nil {
+		t.Fatalf("toggle: %v", err)
+	}
 	h.fc.Advance(500 * time.Millisecond)
 	if s := h.snap(); s.Motion != "closing" {
 		t.Fatalf("direction must come from the remembered movement: %+v", s)
+	}
+}
+
+func TestShutterCancelFirstPendingStartKeepsOpenDefault(t *testing.T) {
+	h := newShutterHarness(t, shutterConfig())
+	// Force a pending first start: a recent (adopted) deenergization of the
+	// close output makes the very first Open wait for the reversal delay,
+	// without any commanded movement having happened.
+	h.ws.mu.Lock()
+	h.ws.energizedEver = true
+	h.ws.lastActiveDir = motionClosing
+	h.ws.lastDeenergized = h.fc.Now()
+	h.ws.mu.Unlock()
+	if err := h.ws.ToggleMovement(); err != nil {
+		t.Fatalf("toggle: %v", err)
+	}
+	if s := h.snap(); !s.PendingReversal {
+		t.Fatalf("expected pending start: %+v", s)
+	}
+	if err := h.ws.ToggleMovement(); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	h.fc.Advance(time.Second)
+	if err := h.ws.ToggleMovement(); err != nil {
+		t.Fatalf("toggle: %v", err)
+	}
+	if s := h.snap(); s.Motion != "opening" {
+		t.Fatalf("canceling a first pending start keeps the Open default: %+v", s)
 	}
 }
 
@@ -1114,14 +1164,14 @@ func TestShutterHkCharacteristics(t *testing.T) {
 	// Remote target write routes through SetPosition with a nonzero status
 	// on failure and succeeds for endpoints.
 	hk := h.ws.hk
-	if _, code := hk.WindowCovering.TargetPosition.C.SetValueRequestFunc(100, &http.Request{}); code != 0 {
+	if _, code := hk.WindowCovering.TargetPosition.C.SetValueRequest(100, &http.Request{}); code != 0 {
 		t.Fatalf("target write: code %d", code)
 	}
 	if s := h.snap(); s.Motion != "opening" {
 		t.Fatalf("target write must dispatch: %+v", s)
 	}
 	// Intermediate target from unknown must fail with a nonzero code.
-	if _, code := hk.WindowCovering.TargetPosition.C.SetValueRequestFunc(40, &http.Request{}); code == 0 {
+	if _, code := hk.WindowCovering.TargetPosition.C.SetValueRequest(40, &http.Request{}); code == 0 {
 		t.Fatal("intermediate from unknown must be rejected")
 	}
 	// Unknown position publishes the placeholder.
@@ -1150,7 +1200,7 @@ func TestShutterHkCharacteristics(t *testing.T) {
 	if s := h.snap(); s.Motion != "closing" {
 		t.Fatalf("hold position prerequisite: %+v", s)
 	}
-	if _, code := h.ws.hold.C.SetValueRequestFunc(true, &http.Request{}); code != 0 {
+	if _, code := h.ws.hold.C.SetValueRequest(true, &http.Request{}); code != 0 {
 		t.Fatalf("hold position: code %d", code)
 	}
 	if s := h.snap(); s.Motion != "stopped" {
@@ -1176,7 +1226,7 @@ func TestShutterStopPublishesPositionAsTarget(t *testing.T) {
 	// A later request for the abandoned endpoint is a changed value and
 	// restarts movement (via the remote-write callback, honoring the
 	// reversal delay).
-	if _, code := h.ws.hk.WindowCovering.TargetPosition.C.SetValueRequestFunc(100, &http.Request{}); code != 0 {
+	if _, code := h.ws.hk.WindowCovering.TargetPosition.C.SetValueRequest(100, &http.Request{}); code != 0 {
 		t.Fatalf("target write: code %d", code)
 	}
 	h.fc.Advance(600 * time.Millisecond)
@@ -1228,3 +1278,59 @@ func TestShutterConcurrentCommands(t *testing.T) {
 }
 
 var _ drivers.DigitalOutput = (*fakeOut)(nil)
+
+func TestShutterHkSameValueAndRejection(t *testing.T) {
+	h := newShutterHarness(t, shutterConfig())
+	h.ws.InitHk()
+	tp := h.ws.hk.WindowCovering.TargetPosition
+	// Rejected intermediate target from unknown: nonzero status and the
+	// value is not stored (placeholder stays).
+	if _, code := tp.C.SetValueRequest(40, &http.Request{}); code == 0 {
+		t.Fatal("intermediate target from unknown must be rejected")
+	}
+	if v := tp.Value(); v != hkUnknownPositionPercent {
+		t.Fatalf("rejected value must not be stored: %d", v)
+	}
+	if _, code := tp.C.SetValueRequest(100, &http.Request{}); code != 0 {
+		t.Fatalf("endpoint target: %d", code)
+	}
+	writes := h.open.setCount()
+	remaining := h.snap().RemainingTravelMilliseconds
+	h.fc.Advance(time.Second)
+	// Same value: HAP ignores it before the callback; the run is unchanged.
+	if _, code := tp.C.SetValueRequest(100, &http.Request{}); code != 0 {
+		t.Fatalf("same value: %d", code)
+	}
+	if h.open.setCount() != writes || h.snap().RemainingTravelMilliseconds != remaining-1000 {
+		t.Fatal("same-value write must not restart movement")
+	}
+}
+
+func TestShutterFaultOnlyForIoErrors(t *testing.T) {
+	h := newShutterHarness(t, shutterConfig())
+	h.ws.InitHk()
+	if err := h.ws.Sync(true); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if v := h.ws.fault.Value(); v != characteristic.StatusFaultNoFault {
+		t.Fatal("unknown position alone must not set StatusFault")
+	}
+	h.open.mu.Lock()
+	h.open.getErr = fmt.Errorf("stale")
+	h.open.mu.Unlock()
+	if err := h.ws.Sync(true); err == nil {
+		t.Fatal("unreadable output must report an error")
+	}
+	if v := h.ws.fault.Value(); v != characteristic.StatusFaultGeneralFault {
+		t.Fatal("IO error must set StatusFault")
+	}
+	h.open.mu.Lock()
+	h.open.getErr = nil
+	h.open.mu.Unlock()
+	if err := h.ws.Sync(true); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if v := h.ws.fault.Value(); v != characteristic.StatusFaultNoFault {
+		t.Fatal("fault must clear once outputs are readable")
+	}
+}

@@ -1,6 +1,7 @@
 package swkit
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -43,7 +44,13 @@ func newTimedController(logger *log.Logger) *timedController {
 // otherwise the logical opposite of state. Re-triggering before expiry resets
 // the timer while preserving the originally captured revert target, so a chain
 // of overrides still restores the true prior state.
-func (tc *timedController) SetValueFor(dev Controllable, state bool, d time.Duration) {
+//
+// Window shutters are rejected before any write or timer: they have no
+// on/off state to restore, and a "revert" would start a full opposite run.
+func (tc *timedController) SetValueFor(dev Controllable, state bool, d time.Duration) error {
+	if _, isShutter := dev.(Shutter); isShutter {
+		return fmt.Errorf("timed on/off is not supported by window shutter %q", dev.Name())
+	}
 	name := dev.Name()
 
 	tc.mu.Lock()
@@ -73,6 +80,7 @@ func (tc *timedController) SetValueFor(dev Controllable, state bool, d time.Dura
 	tc.pending[name] = &pendingRevert{cancel: cancel, revertTo: revertTo}
 
 	tc.logger.Debug("timed control scheduled", "device", name, "state", state, "duration", d, "revertTo", revertTo)
+	return nil
 }
 
 // Close cancels all pending reverts without firing them.

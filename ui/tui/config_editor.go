@@ -1225,12 +1225,12 @@ func (ce *ConfigEditor) updateCtrlDeviceEdit(msg tea.KeyMsg, button *app.ButtonE
 		ce.cycleCtrlField(ctrl, 1)
 		ce.markDirty()
 	case "+", "=":
-		if app.IsBrightnessVerb(ctrl.Action) {
+		if app.HasLevel(ctrl.Action) {
 			ctrl.Level = adjustBrightnessLevel(ctrl.Level, 1)
 			ce.markDirty()
 		}
 	case "-", "_":
-		if app.IsBrightnessVerb(ctrl.Action) {
+		if app.HasLevel(ctrl.Action) {
 			ctrl.Level = adjustBrightnessLevel(ctrl.Level, -1)
 			ce.markDirty()
 		}
@@ -1242,20 +1242,74 @@ func (ce *ConfigEditor) updateCtrlDeviceEdit(msg tea.KeyMsg, button *app.ButtonE
 }
 
 // cycleCtrlField cycles through options for the current control device field
+// targetTypeOf returns the target type of a control/scene target name (see
+// app.ActionVerbsForTargetType). Color lights are recognised through the
+// read-only ColorLightOutputOwners metadata.
+func (ce *ConfigEditor) targetTypeOf(name string) string {
+	for _, d := range ce.config.DimmableLights {
+		if d.Name == name {
+			return app.TargetTypeDimmableLight
+		}
+	}
+	for _, w := range ce.config.WindowShutters {
+		if w.Name == name {
+			return app.TargetTypeWindowShutter
+		}
+	}
+	for _, l := range ce.config.Lights {
+		if l.Name == name {
+			return app.TargetTypeLight
+		}
+	}
+	for _, o := range ce.config.Outlets {
+		if o.Name == name {
+			return app.TargetTypeOutlet
+		}
+	}
+	for _, sc := range ce.config.Scenes {
+		if sc.Name == name {
+			return app.TargetTypeScene
+		}
+	}
+	for _, owner := range ce.config.ColorLightOutputOwners {
+		if owner == name {
+			return app.TargetTypeColorLight
+		}
+	}
+	return app.TargetTypeLight
+}
+
+// verbsForTarget lists the verbs the named target accepts.
+func (ce *ConfigEditor) verbsForTarget(name string) []string {
+	return app.ActionVerbsForTargetType(ce.targetTypeOf(name))
+}
+
+// coerceVerbForTarget keeps verb if the target accepts it, else falls back
+// to toggle (accepted by every target type).
+func (ce *ConfigEditor) coerceVerbForTarget(verb, name string) string {
+	if app.VerbSupportedByTargetType(verb, ce.targetTypeOf(name)) {
+		return verb
+	}
+	return "toggle"
+}
+
 func (ce *ConfigEditor) cycleCtrlField(ctrl *app.ControlDeviceEdit, direction int) {
 	switch ce.ctrlFieldCursor {
 	case 0: // EventType
 		events := app.AllEventTypes()
 		ctrl.EventType = cycleOption(events, ctrl.EventType, direction)
-	case 1: // Action
-		ctrl.Action = cycleOption(app.AllActionVerbs(), ctrl.Action, direction)
+	case 1: // Action: only the verbs the current target accepts
+		ctrl.Action = cycleOption(ce.verbsForTarget(ctrl.DeviceName), ctrl.Action, direction)
 	case 2: // DeviceName
 		devices := ce.config.OutputDeviceNames
 		if len(devices) > 0 {
 			ctrl.DeviceName = cycleOption(devices, ctrl.DeviceName, direction)
+			// A target change revalidates the verb (e.g. on/off are not
+			// valid for a shutter, open/close not for a light).
+			ctrl.Action = ce.coerceVerbForTarget(ctrl.Action, ctrl.DeviceName)
 		}
-	case 3: // Level/step (only meaningful for brightness-family verbs)
-		if app.IsBrightnessVerb(ctrl.Action) {
+	case 3: // Level/step (only meaningful for level verbs)
+		if app.HasLevel(ctrl.Action) {
 			ctrl.Level = adjustBrightnessLevel(ctrl.Level, direction)
 		}
 	}
@@ -1439,6 +1493,7 @@ func (ce *ConfigEditor) updateCtrlWizardDevice(msg tea.KeyMsg) tea.Cmd {
 	case "enter":
 		if ce.wizardDeviceCursor < len(devices) {
 			ce.wizardTargetDeviceName = devices[ce.wizardDeviceCursor].Name
+			ce.wizardTargetAction = ce.coerceVerbForTarget(ce.wizardTargetAction, ce.wizardTargetDeviceName)
 			ce.wizardEventCursor = 0
 			ce.mode = ConfigModeCtrlWizardEvent
 		}
@@ -1461,15 +1516,15 @@ func (ce *ConfigEditor) updateCtrlWizardEvent(msg tea.KeyMsg) tea.Cmd {
 			ce.wizardEventCursor++
 		}
 	case "left", "h":
-		ce.wizardTargetAction = cycleOption(app.AllActionVerbs(), ce.wizardTargetAction, -1)
+		ce.wizardTargetAction = cycleOption(ce.verbsForTarget(ce.wizardTargetDeviceName), ce.wizardTargetAction, -1)
 	case "right", "l":
-		ce.wizardTargetAction = cycleOption(app.AllActionVerbs(), ce.wizardTargetAction, 1)
+		ce.wizardTargetAction = cycleOption(ce.verbsForTarget(ce.wizardTargetDeviceName), ce.wizardTargetAction, 1)
 	case "+", "=":
-		if app.IsBrightnessVerb(ce.wizardTargetAction) {
+		if app.HasLevel(ce.wizardTargetAction) {
 			ce.wizardTargetLevel = adjustBrightnessLevel(ce.wizardTargetLevel, 1)
 		}
 	case "-", "_":
-		if app.IsBrightnessVerb(ce.wizardTargetAction) {
+		if app.HasLevel(ce.wizardTargetAction) {
 			ce.wizardTargetLevel = adjustBrightnessLevel(ce.wizardTargetLevel, -1)
 		}
 	case "enter":
@@ -2056,7 +2111,7 @@ func (ce *ConfigEditor) renderControlDevice(theme Theme, cd app.ControlDeviceEdi
 	line := prefix + "  " + eventStr + " " + lipgloss.NewStyle().Foreground(ColorMuted).Render("→") +
 		" " + actionStr + " " + lipgloss.NewStyle().Foreground(ColorMuted).Render("→") +
 		" " + deviceStr
-	if app.IsBrightnessVerb(cd.Action) {
+	if app.HasLevel(cd.Action) {
 		line += theme.Secondary.Render(" " + brightnessLevelLabel(cd.Action, cd.Level))
 	}
 	return line
@@ -2099,7 +2154,7 @@ func (ce *ConfigEditor) renderControlDeviceEditor(theme Theme, cd app.ControlDev
 		levelPrefix = "  ▶ "
 	}
 	var levelVal string
-	if app.IsBrightnessVerb(cd.Action) {
+	if app.HasLevel(cd.Action) {
 		levelVal = theme.Primary.Render(brightnessLevelLabel(cd.Action, cd.Level))
 	} else {
 		levelVal = theme.Muted.Render("(brightness only)")
@@ -2275,7 +2330,7 @@ func (ce *ConfigEditor) viewCtrlWizardDevice(theme Theme) string {
 // wizardActionLabel describes the wizard's target action, including the
 // brightness step for brightness verbs (e.g. "brightness_up +10%").
 func (ce *ConfigEditor) wizardActionLabel() string {
-	if app.IsBrightnessVerb(ce.wizardTargetAction) {
+	if app.HasLevel(ce.wizardTargetAction) {
 		return ce.wizardTargetAction + " " + brightnessLevelLabel(ce.wizardTargetAction, ce.wizardTargetLevel)
 	}
 	return ce.wizardTargetAction
@@ -2338,7 +2393,7 @@ func (ce *ConfigEditor) viewCtrlWizardEvent(theme Theme) string {
 	}
 
 	stepHelp := ""
-	if app.IsBrightnessVerb(ce.wizardTargetAction) {
+	if app.HasLevel(ce.wizardTargetAction) {
 		stepHelp = theme.HelpKey.Render("+/-") + " " + theme.HelpDesc.Render("step") + "  "
 	}
 
@@ -2544,7 +2599,7 @@ func (ce *ConfigEditor) ConfigHelpKeys(theme Theme) string {
 			theme.HelpKey.Render("esc") + " " + theme.HelpDesc.Render("cancel")
 	case ConfigModeCtrlWizardEvent:
 		stepHelp := ""
-		if app.IsBrightnessVerb(ce.wizardTargetAction) {
+		if app.HasLevel(ce.wizardTargetAction) {
 			stepHelp = theme.HelpKey.Render("+/-") + " " + theme.HelpDesc.Render("step") + "  "
 		}
 		return theme.HelpKey.Render("↑↓") + " " + theme.HelpDesc.Render("select") + "  " +

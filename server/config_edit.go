@@ -102,6 +102,9 @@ func (ws *WebServer) handleConfigEditPost(w http.ResponseWriter, r *http.Request
 	// writes exactly what was validated) always agree - see
 	// app.NormalizeEditableConfig.
 	app.NormalizeEditableConfig(&body.Config)
+	// Color light output ownership is derived server-side metadata: never
+	// trust a posted value (it could hide a conflict). Recompute it.
+	body.Config.ColorLightOutputOwners = ws.opts.ConfigProvider.GetEditableConfig().ColorLightOutputOwners
 
 	state := ws.provider.GetState()
 	errs := app.ValidateEditableConfig(body.Config, state)
@@ -183,9 +186,20 @@ func buildConfigEditMeta(cfg app.EditableConfig, state app.AppState) apiConfigEd
 	meta := apiConfigEditMeta{
 		EventTypes:        app.AllEventTypes(),
 		ActionVerbs:       app.AllActionVerbs(),
+		ActionVerbsByType: app.ActionVerbsByTargetType(),
+		TargetTypes:       targetTypesFor(cfg, state),
 		OutputDeviceNames: append([]string{}, cfg.OutputDeviceNames...),
-		Drivers:           make([]string, 0, len(state.Drivers)),
-		IoSuggestions:     make(map[string][]apiIoSuggestion),
+		ShutterLimits: apiShutterLimits{
+			MinDurationSeconds:      app.MinShutterDurationSeconds,
+			MaxDurationSeconds:      app.MaxShutterDurationSeconds,
+			MaxReverseDelayMs:       app.MaxShutterReverseDelayMilliseconds,
+			DefaultReverseDelayMs:   app.DefaultShutterReverseDelayMilliseconds,
+			ReverseDelayHelp:        app.ShutterReverseDelayHelp,
+			EndpointOverrunPercent:  10,
+			ReloadStopsMovementNote: "Saving the configuration reloads it: moving shutters stop and every shutter's position becomes unknown until its next full open or close.",
+		},
+		Drivers:       make([]string, 0, len(state.Drivers)),
+		IoSuggestions: make(map[string][]apiIoSuggestion),
 	}
 
 	for _, d := range state.Drivers {
@@ -220,6 +234,34 @@ func buildConfigEditMeta(cfg app.EditableConfig, state app.AppState) apiConfigEd
 	return meta
 }
 
+// targetTypesFor maps every control/scene target name to its target type
+// (see app.ActionVerbsForTargetType), so editors can offer only the verbs a
+// target accepts. Color lights come from state (they are not editable).
+func targetTypesFor(cfg app.EditableConfig, state app.AppState) map[string]string {
+	types := make(map[string]string)
+	for _, l := range cfg.Lights {
+		types[l.Name] = app.TargetTypeLight
+	}
+	for _, d := range cfg.DimmableLights {
+		types[d.Name] = app.TargetTypeDimmableLight
+	}
+	for _, o := range cfg.Outlets {
+		types[o.Name] = app.TargetTypeOutlet
+	}
+	for _, w := range cfg.WindowShutters {
+		types[w.Name] = app.TargetTypeWindowShutter
+	}
+	for _, sc := range cfg.Scenes {
+		types[sc.Name] = app.TargetTypeScene
+	}
+	for _, d := range state.Devices {
+		if d.Type == app.DeviceTypeColorLight {
+			types[d.Name] = app.TargetTypeColorLight
+		}
+	}
+	return types
+}
+
 // ---- API request/response types ----
 
 type apiConfigEditPostBody struct {
@@ -240,14 +282,30 @@ type apiConfigEditResponse struct {
 }
 
 type apiConfigEditMeta struct {
-	EventTypes        []string                     `json:"event_types"`
-	ActionVerbs       []string                     `json:"action_verbs"`
+	EventTypes  []string `json:"event_types"`
+	ActionVerbs []string `json:"action_verbs"`
+	// ActionVerbsByType lists the verbs each target type accepts; editors
+	// must offer only these (ActionVerbs is just the grammar vocabulary).
+	ActionVerbsByType map[string][]string `json:"action_verbs_by_type"`
+	// TargetTypes maps each target name to its target type.
+	TargetTypes       map[string]string            `json:"target_types"`
+	ShutterLimits     apiShutterLimits             `json:"shutter_limits"`
 	OutputDeviceNames []string                     `json:"output_device_names"`
 	Drivers           []string                     `json:"drivers"`
 	IoSuggestions     map[string][]apiIoSuggestion `json:"io_suggestions"`
 	// SceneRun reports whether POST /api/scenes/run is available, so the
 	// Scene Studio only offers "Run" when it can actually do it.
 	SceneRun bool `json:"scene_run"`
+}
+
+type apiShutterLimits struct {
+	MinDurationSeconds      int    `json:"min_duration_seconds"`
+	MaxDurationSeconds      int    `json:"max_duration_seconds"`
+	MaxReverseDelayMs       int    `json:"max_reverse_delay_ms"`
+	DefaultReverseDelayMs   int    `json:"default_reverse_delay_ms"`
+	ReverseDelayHelp        string `json:"reverse_delay_help"`
+	EndpointOverrunPercent  int    `json:"endpoint_overrun_percent"`
+	ReloadStopsMovementNote string `json:"reload_note"`
 }
 
 type apiIoSuggestion struct {

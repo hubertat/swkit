@@ -56,7 +56,7 @@ func TestParseActionErrors(t *testing.T) {
 }
 
 func TestAllActionVerbs(t *testing.T) {
-	want := []string{"on", "off", "toggle", "brightness", "brightness_up", "brightness_down"}
+	want := []string{"on", "off", "toggle", "brightness", "brightness_up", "brightness_down", "open", "close", "stop", "position"}
 	if got := AllActionVerbs(); !reflect.DeepEqual(got, want) {
 		t.Errorf("AllActionVerbs() = %v, want %v", got, want)
 	}

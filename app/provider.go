@@ -41,3 +41,14 @@ type IoOutputController interface {
 type IoAnalogOutputController interface {
 	SetIoAnalogOutput(driverName string, outputIndex int, value int) error
 }
+
+// WindowShutterController is an optional DeviceController extension for
+// window shutter commands. Each command returns the shutter state right after
+// the accepted command (ControlResult.WindowShutter). Movement is only
+// started, never awaited: completion is observed through later state polls.
+type WindowShutterController interface {
+	OpenDevice(index int) ControlResult
+	CloseDevice(index int) ControlResult
+	StopDevice(index int) ControlResult
+	SetDevicePosition(index int, pct int) ControlResult
+}

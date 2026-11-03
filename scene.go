@@ -164,6 +164,9 @@ func NewScene(config SceneConfig, resolve func(name string) (Controllable, bool)
 			if !ok {
 				return nil, fmt.Errorf("scene %s: action %q references unknown device %q", config.Name, actStr, act.Device)
 			}
+			if err := shutterVerbError(act.Verb, dev); err != nil {
+				return nil, fmt.Errorf("scene %s: action %q: %w", config.Name, actStr, err)
+			}
 			st.actions = append(st.actions, sceneAction{dev: dev, verb: act.Verb, level: act.Level, delay: act.Delay})
 		}
 		sc.states = append(sc.states, st)

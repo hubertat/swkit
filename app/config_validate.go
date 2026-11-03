@@ -36,6 +36,11 @@ func NormalizeEditableConfig(cfg *EditableConfig) {
 		cfg.DimmableLights[i].DigitalOutName = strings.TrimSpace(cfg.DimmableLights[i].DigitalOutName)
 		cfg.DimmableLights[i].AnalogOutName = strings.TrimSpace(cfg.DimmableLights[i].AnalogOutName)
 	}
+	for i := range cfg.WindowShutters {
+		cfg.WindowShutters[i].Name = strings.TrimSpace(cfg.WindowShutters[i].Name)
+		cfg.WindowShutters[i].OpenDigitalOutName = strings.TrimSpace(cfg.WindowShutters[i].OpenDigitalOutName)
+		cfg.WindowShutters[i].CloseDigitalOutName = strings.TrimSpace(cfg.WindowShutters[i].CloseDigitalOutName)
+	}
 	for i := range cfg.Buttons {
 		cfg.Buttons[i].Name = strings.TrimSpace(cfg.Buttons[i].Name)
 		cfg.Buttons[i].EventInputName = strings.TrimSpace(cfg.Buttons[i].EventInputName)
@@ -109,6 +114,10 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 		validTargets[o.Name] = true
 		targetType[o.Name] = "outlet"
 	}
+	for _, ws := range cfg.WindowShutters {
+		validTargets[ws.Name] = true
+		targetType[ws.Name] = TargetTypeWindowShutter
+	}
 	for _, s := range cfg.Scenes {
 		validTargets[s.Name] = true
 		targetType[s.Name] = "scene"
@@ -131,11 +140,11 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 		sceneIndex[s.Name] = i
 	}
 
-	// dimmableTargetTypes are the target types that implement Dimmable at
-	// runtime (see swkit.go: DimmableLight is the only one - ColorLight and
-	// Scene do not implement SetBrightness). Brightness-family actions
-	// targeting anything else fail at Setup/apply time, so reject them here.
-	dimmableTargetTypes := map[string]bool{"dimmable_light": true}
+	// Which verbs a target accepts is decided per target type by
+	// ActionVerbsForTargetType (brightness only on dimmable lights; shutters
+	// take only open/close/stop/position/toggle and reject on/off).
+	// AllActionVerbs is only the grammar vocabulary.
+	verbSet := setOf(AllActionVerbs())
 
 	// ---- Names: non-empty, unique within each list, unique globally ----
 	nameCount := make(map[string]int)
@@ -174,6 +183,7 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 	outletNames := namesOf(cfg.Outlets, func(o OutletEditConfig) string { return o.Name })
 	buttonNames := namesOf(cfg.Buttons, func(b ButtonEditConfig) string { return b.Name })
 	sceneNames := namesOf(cfg.Scenes, func(s SceneEditConfig) string { return s.Name })
+	shutterNames := namesOf(cfg.WindowShutters, func(w WindowShutterEditConfig) string { return w.Name })
 
 	for _, n := range lightNames {
 		addName("light", n)
@@ -190,15 +200,19 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 	for _, n := range sceneNames {
 		addName("scene", n)
 	}
+	for _, n := range shutterNames {
+		addName("window shutter", n)
+	}
 	within("light", lightNames)
 	within("dimmable light", dimNames)
 	within("outlet", outletNames)
 	within("button", buttonNames)
 	within("scene", sceneNames)
+	within("window shutter", shutterNames)
 
 	for name, count := range nameCount {
 		if count > 1 {
-			errs = append(errs, fmt.Sprintf("device name %q is used more than once (names must be unique across lights, dimmable lights, outlets, buttons and scenes)", name))
+			errs = append(errs, fmt.Sprintf("device name %q is used more than once (names must be unique across lights, dimmable lights, outlets, window shutters, buttons and scenes)", name))
 		}
 	}
 
@@ -269,6 +283,26 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 			errs = append(errs, fmt.Sprintf("%s: DefaultSetpoint %d out of range (0-100)", label, dl.DefaultSetpoint))
 		}
 	}
+	for _, ws := range cfg.WindowShutters {
+		label := deviceLabel("window shutter", ws.Name)
+		for _, msg := range ValidateWindowShutterFields(ws, func(name string) bool { return configuredDrivers[name] }) {
+			errs = append(errs, fmt.Sprintf("%s: %s", label, msg))
+		}
+		for _, f := range []struct{ field, id string }{
+			{"OpenDigitalOutName", ws.OpenDigitalOutName},
+			{"CloseDigitalOutName", ws.CloseDigitalOutName},
+		} {
+			if strings.TrimSpace(f.id) == "" {
+				continue
+			}
+			if strings.TrimSpace(ws.OpenDigitalOutName) != strings.TrimSpace(ws.CloseDigitalOutName) || f.field == "OpenDigitalOutName" {
+				digitalOutUses = append(digitalOutUses, ioUse{f.field, label, f.id})
+			}
+			if owner, ok := cfg.ColorLightOutputOwners[f.id]; ok {
+				errs = append(errs, fmt.Sprintf("%s: %s %q is already used by color light %q", label, f.field, f.id, owner))
+			}
+		}
+	}
 	for _, b := range cfg.Buttons {
 		label := deviceLabel("button", b.Name)
 		checkIoField(label, "EventInputName", b.EventInputName,
@@ -295,7 +329,6 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 
 	// ---- Button control relations ----
 	eventTypeSet := setOf(AllEventTypes())
-	verbSet := setOf(AllActionVerbs())
 	for _, b := range cfg.Buttons {
 		label := deviceLabel("button", b.Name)
 		for i, cd := range b.ControlDevices {
@@ -306,15 +339,15 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 			if !verbSet[cd.Action] {
 				errs = append(errs, fmt.Sprintf("%s: unknown action verb %q", relLabel, cd.Action))
 			}
-			if IsBrightnessVerb(cd.Action) && (cd.Level < 0 || cd.Level > 100) {
-				errs = append(errs, fmt.Sprintf("%s: level %d out of range (0-100) for brightness action", relLabel, cd.Level))
+			if HasLevel(cd.Action) && (cd.Level < 0 || cd.Level > 100) {
+				errs = append(errs, fmt.Sprintf("%s: level %d out of range (0-100) for %s action", relLabel, cd.Level, levelKind(cd.Action)))
 			}
 			if strings.TrimSpace(cd.DeviceName) == "" {
 				errs = append(errs, fmt.Sprintf("%s: target device name must not be empty", relLabel))
 			} else if !validTargets[cd.DeviceName] {
 				errs = append(errs, fmt.Sprintf("%s: target device %q does not exist", relLabel, cd.DeviceName))
-			} else if IsBrightnessVerb(cd.Action) && !dimmableTargetTypes[targetType[cd.DeviceName]] {
-				errs = append(errs, fmt.Sprintf("%s: brightness action target %q does not support brightness (target type: %s)", relLabel, cd.DeviceName, targetType[cd.DeviceName]))
+			} else if verbSet[cd.Action] && !VerbSupportedByTargetType(cd.Action, targetType[cd.DeviceName]) {
+				errs = append(errs, fmt.Sprintf("%s: %v", relLabel, UnsupportedVerbError(cd.Action, cd.DeviceName, targetType[cd.DeviceName])))
 			}
 		}
 	}
@@ -366,8 +399,8 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 					errs = append(errs, fmt.Sprintf("%s: %v", actLabel, err))
 					continue
 				}
-				if IsBrightnessVerb(act.Verb) && (act.Level < 0 || act.Level > 100) {
-					errs = append(errs, fmt.Sprintf("%s: level %d out of range (0-100) for brightness action", actLabel, act.Level))
+				if HasLevel(act.Verb) && (act.Level < 0 || act.Level > 100) {
+					errs = append(errs, fmt.Sprintf("%s: level %d out of range (0-100) for %s action", actLabel, act.Level, levelKind(act.Verb)))
 				}
 				if err := sceneTargetError(i, act.Device); err != nil {
 					errs = append(errs, fmt.Sprintf("%s: %v", actLabel, err))
@@ -375,14 +408,22 @@ func ValidateEditableConfig(cfg EditableConfig, state AppState) []string {
 						continue
 					}
 				}
-				if IsBrightnessVerb(act.Verb) && !dimmableTargetTypes[targetType[act.Device]] {
-					errs = append(errs, fmt.Sprintf("%s: brightness action target %q does not support brightness (target type: %s)", actLabel, act.Device, targetType[act.Device]))
+				if !VerbSupportedByTargetType(act.Verb, targetType[act.Device]) {
+					errs = append(errs, fmt.Sprintf("%s: %v", actLabel, UnsupportedVerbError(act.Verb, act.Device, targetType[act.Device])))
 				}
 			}
 		}
 	}
 
 	return errs
+}
+
+// levelKind names what a level verb's number means, for error messages.
+func levelKind(verb string) string {
+	if verb == "position" {
+		return "position"
+	}
+	return "brightness"
 }
 
 // deviceLabel formats a human-readable identifier for error messages: the

@@ -254,6 +254,12 @@ func (p *SwKitProvider) GetState() app.AppState {
 		state.Devices = append(state.Devices, ds)
 	}
 
+	// Window shutters are listed last, so adding them never shifts the
+	// indexes of existing device types (see getControllableByIndex).
+	for _, ws := range sw.windowShutters {
+		state.Devices = append(state.Devices, p.buildWindowShutterState(ws))
+	}
+
 	// Collect IO debug data from drivers that support it (typed fields for stable order)
 	collectIoDebug := func(driverName string, provider drivers.IoDebugProvider) {
 		snapshot := provider.GetIoDebugSnapshot()
@@ -303,8 +309,18 @@ func (p *SwKitProvider) GetState() app.AppState {
 			ioDeviceMap[ds.EventInputId] = ds.Name
 		}
 	}
+	// Shutter outputs are matched by their config io id, derived from each
+	// point through app.IoPointToId (driver-specific name translation), so
+	// Shelly switch/light and Wago global-index outputs are recognised.
+	shutterOwners := shutterOutputOwners(sw)
 	// Annotate each IO point with the device that uses it (if any)
 	for i, pt := range state.IoDebug {
+		if pt.Type == "output" {
+			if owner, ok := shutterOwners[app.IoPointToId(pt)]; ok {
+				state.IoDebug[i].ConfiguredAs = owner
+				continue
+			}
+		}
 		ioTypeStr := "d_in"
 		switch pt.Type {
 		case "output":
@@ -602,6 +618,52 @@ func (p *SwKitProvider) buildSceneState(scene *Scene) app.DeviceState {
 	}
 }
 
+func (p *SwKitProvider) buildWindowShutterState(ws *WindowShutter) app.DeviceState {
+	snap := ws.Snapshot()
+	healthy := isOutputHealthy(ws.openDout) && isOutputHealthy(ws.closeDout)
+	return app.DeviceState{
+		Name:           ws.name,
+		Type:           app.DeviceTypeWindowShutter,
+		IsOn:           snap.PositionKnown && snap.CurrentPosition > 0,
+		IsHealthy:      healthy,
+		IsFaulty:       snap.Faulty,
+		HomeKitEnabled: !ws.disableHomekit,
+		WindowShutter:  shutterStateFromSnapshot(snap),
+	}
+}
+
+// shutterStateFromSnapshot converts a controller snapshot to the API state.
+func shutterStateFromSnapshot(snap WindowShutterSnapshot) *app.WindowShutterState {
+	cur := snap.CurrentPosition
+	if !snap.PositionKnown {
+		cur = 0
+	}
+	return &app.WindowShutterState{
+		Motion:                      snap.Motion,
+		TargetPosition:              snap.TargetPosition,
+		CurrentPosition:             cur,
+		PositionKnown:               snap.PositionKnown,
+		PendingStart:                snap.PendingReversal,
+		OpenIoId:                    snap.OpenIoId,
+		CloseIoId:                   snap.CloseIoId,
+		OpenDurationSeconds:         snap.OpenDurationSeconds,
+		CloseDurationSeconds:        snap.CloseDurationSeconds,
+		RemainingTravelMilliseconds: snap.RemainingTravelMilliseconds,
+	}
+}
+
+// shutterOutputOwners maps each shutter output's config io id to a label
+// ("<shutter> (open)" / "<shutter> (close)").
+func shutterOutputOwners(sw *SwKit) map[string]string {
+	owners := make(map[string]string, 2*len(sw.windowShutters))
+	for _, ws := range sw.windowShutters {
+		openId, closeId := ws.OutputIoIds()
+		owners[openId] = ws.name + " (open)"
+		owners[closeId] = ws.name + " (close)"
+	}
+	return owners
+}
+
 func isOutputHealthy(output drivers.DigitalOutput) bool {
 	if output == nil {
 		return false
@@ -658,6 +720,10 @@ func (p *SwKitProvider) ToggleDevice(index int) app.ControlResult {
 		}
 	}
 
+	if sh, ok := device.(*WindowShutter); ok {
+		return shutterCommandResult(sh, ShutterCommandToggle, 0, "toggle")
+	}
+
 	device.Toggle()
 
 	// Get new state by reading from the device
@@ -687,6 +753,14 @@ func (p *SwKitProvider) SetDevice(index int, state bool) app.ControlResult {
 		}
 	}
 
+	// Generic set on a shutter: true opens, false closes (compatibility).
+	if sh, ok := device.(*WindowShutter); ok {
+		if state {
+			return shutterCommandResult(sh, ShutterCommandOpen, 0, "open")
+		}
+		return shutterCommandResult(sh, ShutterCommandClose, 0, "close")
+	}
+
 	device.SetValue(state)
 
 	return app.ControlResult{
@@ -695,6 +769,79 @@ func (p *SwKitProvider) SetDevice(index int, state bool) app.ControlResult {
 		NewState:   state,
 	}
 }
+
+// shutterCommandResult runs a shutter command and reports the snapshot taken
+// atomically with it (see WindowShutter.Command), never a later re-read.
+func shutterCommandResult(sh *WindowShutter, cmd ShutterCommand, pct int, action string) app.ControlResult {
+	snap, err := sh.Command(cmd, pct)
+	return app.ControlResult{
+		DeviceName:    sh.Name(),
+		Action:        action,
+		NewState:      snap.PositionKnown && snap.CurrentPosition > 0,
+		Error:         err,
+		WindowShutter: shutterStateFromSnapshot(snap),
+	}
+}
+
+// shutterByIndex resolves the device at index as a window shutter.
+func (p *SwKitProvider) shutterByIndex(index int, action string) (*WindowShutter, app.ControlResult, bool) {
+	p.mu.RLock()
+	device, deviceName, _, err := p.getControllableByIndex(index)
+	p.mu.RUnlock()
+	if err != nil {
+		return nil, app.ControlResult{Action: action, Error: err}, false
+	}
+	sh, ok := device.(*WindowShutter)
+	if !ok {
+		return nil, app.ControlResult{
+			DeviceName: deviceName,
+			Action:     action,
+			Error:      fmt.Errorf("device %q is not a window shutter", deviceName),
+		}, false
+	}
+	return sh, app.ControlResult{}, true
+}
+
+// OpenDevice starts opening the window shutter at index.
+func (p *SwKitProvider) OpenDevice(index int) app.ControlResult {
+	sh, res, ok := p.shutterByIndex(index, "open")
+	if !ok {
+		return res
+	}
+	return shutterCommandResult(sh, ShutterCommandOpen, 0, "open")
+}
+
+// CloseDevice starts closing the window shutter at index.
+func (p *SwKitProvider) CloseDevice(index int) app.ControlResult {
+	sh, res, ok := p.shutterByIndex(index, "close")
+	if !ok {
+		return res
+	}
+	return shutterCommandResult(sh, ShutterCommandClose, 0, "close")
+}
+
+// StopDevice stops the window shutter at index.
+func (p *SwKitProvider) StopDevice(index int) app.ControlResult {
+	sh, res, ok := p.shutterByIndex(index, "stop")
+	if !ok {
+		return res
+	}
+	return shutterCommandResult(sh, ShutterCommandStop, 0, "stop")
+}
+
+// SetDevicePosition moves the window shutter at index to pct percent open.
+func (p *SwKitProvider) SetDevicePosition(index int, pct int) app.ControlResult {
+	sh, res, ok := p.shutterByIndex(index, "position")
+	if !ok {
+		return res
+	}
+	if pct < 0 || pct > 100 {
+		return app.ControlResult{DeviceName: sh.Name(), Action: "position", Error: fmt.Errorf("position %d out of range (0-100)", pct)}
+	}
+	return shutterCommandResult(sh, ShutterCommandPosition, pct, "position")
+}
+
+var _ app.WindowShutterController = (*SwKitProvider)(nil)
 
 // SetDeviceBrightness sets the brightness (0-100) of the dimmable device at the
 // given index. Only dimmable lights support brightness.
@@ -815,6 +962,13 @@ func (p *SwKitProvider) SetDeviceValueFor(index int, state bool, seconds int) ap
 			Error:      fmt.Errorf("buttons cannot be controlled"),
 		}
 	}
+	if _, isShutter := device.(*WindowShutter); isShutter {
+		return app.ControlResult{
+			DeviceName: device.Name(),
+			Action:     actionName(state),
+			Error:      fmt.Errorf("timed on/off is not supported by window shutter %q", device.Name()),
+		}
+	}
 	if seconds <= 0 {
 		return app.ControlResult{
 			DeviceName: device.Name(),
@@ -823,7 +977,9 @@ func (p *SwKitProvider) SetDeviceValueFor(index int, state bool, seconds int) ap
 		}
 	}
 
-	sw.SetDeviceValueFor(device, state, time.Duration(seconds)*time.Second)
+	if err := sw.SetDeviceValueFor(device, state, time.Duration(seconds)*time.Second); err != nil {
+		return app.ControlResult{DeviceName: device.Name(), Action: actionName(state), Error: err}
+	}
 
 	return app.ControlResult{
 		DeviceName: device.Name(),
@@ -833,7 +989,7 @@ func (p *SwKitProvider) SetDeviceValueFor(index int, state bool, seconds int) ap
 }
 
 // getControllableByIndex returns the Controllable device at the given index
-// Device order matches GetState(): lights -> colorLights -> dimmableLights -> outlets -> buttons -> scenes
+// Device order matches GetState(): lights -> colorLights -> dimmableLights -> outlets -> buttons -> scenes -> windowShutters
 // Returns nil Controllable for buttons since they don't implement the interface
 func (p *SwKitProvider) getControllableByIndex(index int) (Controllable, string, app.DeviceType, error) {
 	lightsCount := len(p.sw.lights)
@@ -842,8 +998,9 @@ func (p *SwKitProvider) getControllableByIndex(index int) (Controllable, string,
 	outletsCount := len(p.sw.outlets)
 	buttonsCount := len(p.sw.buttons)
 	scenesCount := len(p.sw.scenes)
+	shuttersCount := len(p.sw.windowShutters)
 
-	if index < 0 || index >= lightsCount+colorLightsCount+dimmableLightsCount+outletsCount+buttonsCount+scenesCount {
+	if index < 0 || index >= lightsCount+colorLightsCount+dimmableLightsCount+outletsCount+buttonsCount+scenesCount+shuttersCount {
 		return nil, "", "", fmt.Errorf("device index %d out of range", index)
 	}
 
@@ -881,6 +1038,12 @@ func (p *SwKitProvider) getControllableByIndex(index int) (Controllable, string,
 	if index < scenesCount {
 		return p.sw.scenes[index], p.sw.scenes[index].name, app.DeviceTypeScene, nil
 	}
+	index -= scenesCount
+
+	// Window shutters
+	if index < shuttersCount {
+		return p.sw.windowShutters[index], p.sw.windowShutters[index].name, app.DeviceTypeWindowShutter, nil
+	}
 
 	return nil, "", "", fmt.Errorf("device index %d out of range", index)
 }
@@ -913,6 +1076,9 @@ func (p *SwKitProvider) getDeviceState(device Controllable) bool {
 		}
 	case *Scene:
 		return d.CurrentState() != 0
+	case *WindowShutter:
+		snap := d.Snapshot()
+		return snap.PositionKnown && snap.CurrentPosition > 0
 	}
 	return false
 }
@@ -929,9 +1095,13 @@ func (p *SwKitProvider) ToggleIoOutput(driverName string, outputIndex int) error
 	// See ToggleDevice for why p.mu is released before the driver call below.
 	p.mu.RLock()
 	driver, ok := p.sw.ioDrivers[driverName]
+	owners := shutterOutputOwners(p.sw)
 	p.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("driver %q not found", driverName)
+	}
+	if err := checkRawOutputOwnership(driverName, driver, outputIndex, owners); err != nil {
+		return err
 	}
 	toggler, ok := driver.(drivers.IoOutputToggler)
 	if !ok {
@@ -954,4 +1124,42 @@ func (p *SwKitProvider) SetIoAnalogOutput(driverName string, outputIndex int, va
 		return fmt.Errorf("driver %q does not support analog output setting", driverName)
 	}
 	return setter.SetAnalogOutput(outputIndex, value)
+}
+
+// checkRawOutputOwnership rejects a raw digital output write that would
+// bypass window shutter sequencing (and could energize both directions). The
+// raw index is resolved through the driver's debug snapshot (index and
+// IoTypeDigitalOutput) and app.IoPointToId, the same mapping used for the IO
+// annotations, so Shelly switches/lights and Wago global indexes translate
+// correctly. If shutters use this driver and the index cannot be mapped,
+// ownership cannot be established and the write is rejected.
+func checkRawOutputOwnership(driverName string, driver drivers.IoDriver, index int, owners map[string]string) error {
+	if len(owners) == 0 {
+		return nil
+	}
+	driverOwns := false
+	for id := range owners {
+		if dn, _, _, err := drivers.ResolveIoIdString(id); err == nil && dn == driverName {
+			driverOwns = true
+			break
+		}
+	}
+	if !driverOwns {
+		return nil
+	}
+	provider, ok := driver.(drivers.IoDebugProvider)
+	if !ok {
+		return fmt.Errorf("output %d of driver %q cannot be mapped to a config io id; raw writes are disabled while window shutters use this driver", index, driverName)
+	}
+	for _, pt := range provider.GetIoDebugSnapshot().Points {
+		if pt.Index != index || pt.Type != drivers.IoTypeDigitalOutput {
+			continue
+		}
+		id := app.IoPointToId(app.IoPointDebugState{DriverName: driverName, Index: pt.Index, Name: pt.Name, Type: "output"})
+		if owner, owned := owners[id]; owned {
+			return fmt.Errorf("output %s is controlled by window shutter %s; use the shutter controls", id, owner)
+		}
+		return nil
+	}
+	return fmt.Errorf("output %d of driver %q not found; raw writes are disabled while window shutters use this driver", index, driverName)
 }

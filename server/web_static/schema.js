@@ -2004,6 +2004,12 @@
         return verb === 'brightness' || verb === 'brightness_up' || verb === 'brightness_down';
     }
 
+    // isLevelVerb mirrors app.HasLevel: verbs written <verb>:<level>:<device>
+    // (the brightness family and the shutter "position" verb).
+    function isLevelVerb(verb) {
+        return isBrightnessVerb(verb) || verb === 'position';
+    }
+
     // parseActionString / formatActionString mirror app.ParseSceneStep /
     // SceneStep.String (scene_step.go): "<verb>:<device>" for on/off/toggle,
     // "<verb>:<level>:<device>" for the brightness family, optionally prefixed
@@ -2027,14 +2033,15 @@
 
     function parseBareAction(parts) {
         const verb = (parts[0] || '').toLowerCase();
-        if (verb === 'on' || verb === 'off' || verb === 'toggle') {
+        if (verb === 'on' || verb === 'off' || verb === 'toggle' || verb === 'open' || verb === 'close' || verb === 'stop') {
             if (parts.length !== 2) return null;
             return { verb: verb, level: 0, device: parts[1] };
         }
-        if (isBrightnessVerb(verb)) {
+        if (isLevelVerb(verb)) {
             if (parts.length !== 3) return null;
             const level = parseInt(parts[1], 10);
             if (isNaN(level)) return null;
+            if (verb === 'position' && (level < 0 || level > 100)) return null;
             return { verb: verb, level: level, device: parts[2] };
         }
         return null;
@@ -2042,7 +2049,7 @@
 
     function formatActionString(a) {
         const prefix = a.delay ? 'after:' + a.delay + ':' : '';
-        if (isBrightnessVerb(a.verb)) return prefix + a.verb + ':' + a.level + ':' + a.device;
+        if (isLevelVerb(a.verb)) return prefix + a.verb + ':' + a.level + ':' + a.device;
         return prefix + a.verb + ':' + a.device;
     }
 
@@ -2411,20 +2418,49 @@
         });
     }
 
-    // verbOptionsForTarget filters the verb vocabulary down to the
-    // non-brightness subset (on/off/toggle) unless `name` resolves to a
-    // dimmable light - mirrors dimmableTargetTypes in config_edit.go
-    // (DimmableLight is the only runtime type that implements app.Dimmable;
-    // ColorLight and Scene do not implement SetBrightness). Used for both
-    // button control-relation rows and scene action rows, since the server
-    // enforces the same rule for both (see app.ValidateEditableConfig's two call
-    // sites of dimmableTargetTypes).
+    // targetTypeOf resolves a control/scene target name to its target type
+    // (light, color_light, dimmable_light, outlet, scene, window_shutter):
+    // the working copy first (so unsaved additions/renames count), then the
+    // server's meta.target_types (covers color lights, which are not
+    // editable here).
+    function targetTypeOf(name) {
+        const w = S.working || {};
+        const has = function(list) { return (list || []).some(function(d) { return d.Name === name; }); };
+        if (has(w.DimmableLights)) return 'dimmable_light';
+        if (has(w.WindowShutters)) return 'window_shutter';
+        if (has(w.Lights)) return 'light';
+        if (has(w.Outlets)) return 'outlet';
+        if (has(w.Scenes)) return 'scene';
+        const meta = (S.editData && S.editData.meta) || {};
+        return (meta.target_types && meta.target_types[name]) || 'light';
+    }
+
+    // verbOptionsForTarget returns the verbs the target accepts, mirroring
+    // app.ActionVerbsForTargetType (published as meta.action_verbs_by_type):
+    // on/off/toggle for lights, color lights, outlets and scenes, plus the
+    // brightness verbs for dimmable lights, and only open/close/stop/
+    // position/toggle for window shutters. Used for both button control
+    // relations and scene action rows, since the server enforces the same
+    // rule for both. Older servers without the per-type list fall back to
+    // the legacy vocabulary filtered per type; a grammar-wide list must
+    // never leak shutter verbs onto other targets (or on/off onto shutters).
     function verbOptionsForTarget(name) {
         const meta = (S.editData && S.editData.meta) || {};
-        const allVerbs = meta.action_verbs || ['on', 'off', 'toggle', 'brightness', 'brightness_up', 'brightness_down'];
-        const isDimmable = (S.working.DimmableLights || []).some(function(d) { return d.Name === name; });
-        if (isDimmable) return allVerbs;
+        const type = targetTypeOf(name);
+        if (meta.action_verbs_by_type && meta.action_verbs_by_type[type]) {
+            return meta.action_verbs_by_type[type].slice();
+        }
+        if (type === 'window_shutter') return ['open', 'close', 'stop', 'position', 'toggle'];
+        const legacy = ['on', 'off', 'toggle', 'brightness', 'brightness_up', 'brightness_down'];
+        const allVerbs = (meta.action_verbs || legacy).filter(function(v) { return legacy.indexOf(v) !== -1; });
+        if (type === 'dimmable_light') return allVerbs;
         return allVerbs.filter(function(v) { return !isBrightnessVerb(v); });
+    }
+
+    // coerceVerbForTarget keeps a verb valid after its target changed: an
+    // unsupported verb becomes toggle (accepted by every target type).
+    function coerceVerbForTarget(verb, name) {
+        return verbOptionsForTarget(name).indexOf(verb) === -1 ? 'toggle' : verb;
     }
 
     // buildNameField builds its own input (rather than reusing textInputEl)
@@ -2558,7 +2594,7 @@
         const row = mkEl('div', { class: 'edit-relation-row' });
         row.appendChild(selectFieldEl(eventTypes, cd.EventType, function(v) { cd.EventType = v; markDirty(); redrawEdit(); }));
         row.appendChild(selectFieldEl(verbOptionsForTarget(cd.DeviceName), cd.Action, function(v) { cd.Action = v; markDirty(); redrawEdit(); }));
-        if (isBrightnessVerb(cd.Action)) {
+        if (isLevelVerb(cd.Action)) {
             row.appendChild(numberInputEl(cd.Level, 0, 100, function(v) { cd.Level = Math.max(0, Math.min(100, v)); markDirty(); scheduleRedrawEdit(); }));
         }
         row.appendChild(selectFieldEl(targetNameOptions(), cd.DeviceName, function(v) {
@@ -2567,9 +2603,7 @@
             // verb illegal (brightness requires a dimmable target) - coerce
             // to toggle rather than leave an invalid verb/target combination
             // staged in the working copy.
-            if (isBrightnessVerb(cd.Action) && verbOptionsForTarget(v).indexOf(cd.Action) === -1) {
-                cd.Action = 'toggle';
-            }
+            cd.Action = coerceVerbForTarget(cd.Action, v);
             markDirty();
             redrawEdit();
         }));
@@ -2782,7 +2816,7 @@
                 input.addEventListener('keydown', function(e) { if (e.key === 'Enter') input.blur(); });
                 wrap.appendChild(input);
                 wrap.appendChild(mkEl('div', { class: 'edit-field-error' },
-                    'Not a recognised action (expected on/off/toggle:<device> or brightness[_up|_down]:<level>:<device>)'));
+                    'Not a recognised action (expected on/off/toggle/open/close/stop:<device>, brightness[_up|_down]:<level>:<device> or position:<pct>:<device>)'));
                 nodes.push(wrap);
             } else {
                 const targets = sceneTargetNameOptions(scene);
@@ -2792,7 +2826,7 @@
                     markDirty();
                     redrawEdit();
                 }));
-                if (isBrightnessVerb(parsed.verb)) {
+                if (isLevelVerb(parsed.verb)) {
                     nodes.push(numberInputEl(parsed.level, 0, 100, function(v) {
                         parsed.level = Math.max(0, Math.min(100, v));
                         st.Actions[idx] = formatActionString(parsed);
@@ -2806,9 +2840,7 @@
                     // verb illegal (brightness requires a dimmable target) -
                     // coerce to toggle rather than leave an invalid combination
                     // staged in the working copy.
-                    if (isBrightnessVerb(parsed.verb) && verbOptionsForTarget(v).indexOf(parsed.verb) === -1) {
-                        parsed.verb = 'toggle';
-                    }
+                    parsed.verb = coerceVerbForTarget(parsed.verb, v);
                     st.Actions[idx] = formatActionString(parsed);
                     markDirty();
                     redrawEdit();

@@ -195,6 +195,10 @@ type WindowShutter struct {
 	disableHomekit bool
 	isFaulty       bool
 
+	// openIoId/closeIoId are the configured io ids (canonical for every
+	// driver, unlike the outputs' String()), used for ownership and display.
+	openIoId  string
+	closeIoId string
 	openDout  drivers.DigitalOutput
 	closeDout drivers.DigitalOutput
 
@@ -265,6 +269,8 @@ func NewWindowShutter(config WindowShutterConfig, openOut, closeOut drivers.Digi
 
 	ws := &WindowShutter{
 		name:           config.Name,
+		openIoId:       configIoIdOr(config.OpenDigitalOutName, openOut),
+		closeIoId:      configIoIdOr(config.CloseDigitalOutName, closeOut),
 		disableHomekit: config.DisableHomekit,
 		openDout:       openOut,
 		closeDout:      closeOut,
@@ -299,6 +305,21 @@ func NewWindowShutter(config WindowShutterConfig, openOut, closeOut drivers.Digi
 	return ws
 }
 
+func configIoIdOr(configId string, out drivers.DigitalOutput) string {
+	if configId != "" {
+		return configId
+	}
+	if out != nil {
+		return out.String()
+	}
+	return ""
+}
+
+// OutputIoIds returns the configured io ids of the open and close outputs.
+func (ws *WindowShutter) OutputIoIds() (open, close string) {
+	return ws.openIoId, ws.closeIoId
+}
+
 func (ws *WindowShutter) Name() string {
 	return ws.name
 }
@@ -329,25 +350,109 @@ func (ws *WindowShutter) endpointOf(m motion) int {
 
 // ---- Commands ----
 
+// ShutterCommand identifies a shutter command for Command.
+type ShutterCommand int
+
+const (
+	ShutterCommandOpen ShutterCommand = iota
+	ShutterCommandClose
+	ShutterCommandStop
+	ShutterCommandToggle
+	ShutterCommandPosition
+)
+
+func (c ShutterCommand) String() string {
+	switch c {
+	case ShutterCommandOpen:
+		return "open"
+	case ShutterCommandClose:
+		return "close"
+	case ShutterCommandStop:
+		return "stop"
+	case ShutterCommandToggle:
+		return "toggle"
+	case ShutterCommandPosition:
+		return "position"
+	default:
+		return "unknown"
+	}
+}
+
+// Command runs one command and returns the snapshot taken right after it,
+// under the same command serialization, so the snapshot describes this
+// command's outcome even when other callers command the shutter
+// concurrently. pct is used by ShutterCommandPosition only.
+func (ws *WindowShutter) Command(cmd ShutterCommand, pct int) (WindowShutterSnapshot, error) {
+	if cmd == ShutterCommandPosition && (pct < 0 || pct > 100) {
+		return ws.Snapshot(), fmt.Errorf("window shutter %s: position %d out of range (0-100)", ws.name, pct)
+	}
+	ws.cmdMu.Lock()
+	defer ws.cmdMu.Unlock()
+	var err error
+	switch cmd {
+	case ShutterCommandOpen:
+		err = ws.openCloseLocked(motionOpening)
+	case ShutterCommandClose:
+		err = ws.openCloseLocked(motionClosing)
+	case ShutterCommandStop:
+		err = ws.stopLocked()
+	case ShutterCommandToggle:
+		err = ws.toggleLocked()
+	case ShutterCommandPosition:
+		err = ws.setPositionLocked(pct)
+	default:
+		err = fmt.Errorf("window shutter %s: unknown command %d", ws.name, cmd)
+	}
+	return ws.Snapshot(), err
+}
+
 // Open starts opening the shutter. Repeating an active Open while already
 // opening toward 100 does not restart anything; an Open during travel toward
 // another target retargets to the endpoint. When idle at a known open
 // endpoint, Open runs just the endpoint-overrun interval to recalibrate.
 func (ws *WindowShutter) Open() error {
-	ws.cmdMu.Lock()
-	defer ws.cmdMu.Unlock()
-	return ws.dispatchOpenClose(motionOpening)
+	_, err := ws.Command(ShutterCommandOpen, 0)
+	return err
 }
 
 // Close starts closing the shutter (movement command; see Shutdown for the
 // lifecycle counterpart). Same repeat/retarget/recalibrate rules as Open.
 func (ws *WindowShutter) Close() error {
-	ws.cmdMu.Lock()
-	defer ws.cmdMu.Unlock()
-	return ws.dispatchOpenClose(motionClosing)
+	_, err := ws.Command(ShutterCommandClose, 0)
+	return err
 }
 
-func (ws *WindowShutter) dispatchOpenClose(dir motion) error {
+// Stop deenergizes both outputs, cancels a pending start, and accounts for
+// the motion already elapsed. It does not reverse or clear the remembered
+// movement direction. A failed deactivation returns the error and marks the
+// position unknown.
+func (ws *WindowShutter) Stop() error {
+	_, err := ws.Command(ShutterCommandStop, 0)
+	return err
+}
+
+// SetPosition commands a target percent open (0-100). Intermediate targets
+// require a known position; endpoint targets (0/100) also work from an
+// unknown position and calibrate it. Repeating the accepted target while
+// moving, or requesting the current position while idle, is a no-op.
+func (ws *WindowShutter) SetPosition(p int) error {
+	_, err := ws.Command(ShutterCommandPosition, p)
+	return err
+}
+
+// ToggleMovement is the discrete toggle: start -> stop -> reverse direction
+// and start -> stop -> repeat. Reaching an endpoint also leaves the shutter
+// stopped, so the next toggle moves away from it. A first toggle with no
+// remembered direction starts opening. A toggle during a pending start
+// cancels it and leaves the shutter stopped; the remembered direction stays
+// the last direction that actually moved, so the next toggle starts the
+// canceled direction.
+func (ws *WindowShutter) ToggleMovement() error {
+	_, err := ws.Command(ShutterCommandToggle, 0)
+	return err
+}
+
+func (ws *WindowShutter) openCloseLocked(dir motion) error {
 	if err := ws.checkCommandLocked(); err != nil {
 		return err
 	}
@@ -380,18 +485,13 @@ func (ws *WindowShutter) dispatchOpenClose(dir motion) error {
 	return ws.commandStartLocked(dir, target, true)
 }
 
-// Stop deenergizes both outputs, cancels a pending start, and accounts for
-// the motion already elapsed. It does not reverse or clear the remembered
-// movement direction. A failed deactivation returns the error and marks the
-// position unknown.
-func (ws *WindowShutter) Stop() error {
-	ws.cmdMu.Lock()
-	defer ws.cmdMu.Unlock()
+func (ws *WindowShutter) stopLocked() error {
 	if err := ws.checkCommandLocked(); err != nil {
 		return err
 	}
 	if ws.pendingStartLocked() != nil {
 		ws.cancelPendingStartLocked()
+		ws.publishHk()
 		return nil
 	}
 	err := ws.stopCurrentLocked()
@@ -399,16 +499,7 @@ func (ws *WindowShutter) Stop() error {
 	return err
 }
 
-// SetPosition commands a target percent open (0-100). Intermediate targets
-// require a known position; endpoint targets (0/100) also work from an
-// unknown position and calibrate it. Repeating the accepted target while
-// moving, or requesting the current position while idle, is a no-op.
-func (ws *WindowShutter) SetPosition(p int) error {
-	if p < 0 || p > 100 {
-		return fmt.Errorf("window shutter %s: position %d out of range (0-100)", ws.name, p)
-	}
-	ws.cmdMu.Lock()
-	defer ws.cmdMu.Unlock()
+func (ws *WindowShutter) setPositionLocked(p int) error {
 	if err := ws.checkCommandLocked(); err != nil {
 		return err
 	}
@@ -425,28 +516,26 @@ func (ws *WindowShutter) SetPosition(p int) error {
 	pos, known := ws.posAtLocked(ws.now())
 	ws.mu.Unlock()
 	endpoint := p == 0 || p == 100
+	if !known && !endpoint {
+		return fmt.Errorf("window shutter %s: position is unknown; run a full open or close first", ws.name)
+	}
 
 	if curMotion != motionStopped {
 		if curTarget == p {
 			return nil // repeat of the accepted target
 		}
 		// Direction toward the target from the current estimate. With an
-		// unknown position only endpoints are decidable (runs from unknown
-		// always target endpoints).
+		// unknown position only endpoints are accepted (checked above).
 		var toward motion
-		if known {
-			if float64(p) >= pos {
-				toward = motionOpening
-			} else {
-				toward = motionClosing
-			}
-		} else if p == 100 {
+		switch {
+		case known && float64(p) >= pos:
 			toward = motionOpening
-		} else {
+		case known:
 			toward = motionClosing
-		}
-		if !known && !endpoint {
-			return fmt.Errorf("window shutter %s: position is unknown; run a full open or close first", ws.name)
+		case p == 100:
+			toward = motionOpening
+		default:
+			toward = motionClosing
 		}
 		if toward == curMotion {
 			return ws.retargetLocked(curMotion, p, endpoint)
@@ -457,53 +546,44 @@ func (ws *WindowShutter) SetPosition(p int) error {
 		return ws.commandStartLocked(toward, p, endpoint)
 	}
 
-	if endpoint {
-		if known && int(math.Round(pos)) == p {
-			return nil // numeric no-op at the endpoint (Open/Close would recalibrate)
-		}
-	} else {
-		if !known {
-			return fmt.Errorf("window shutter %s: position is unknown; run a full open or close first", ws.name)
-		}
-		if int(math.Round(pos)) == p {
-			return nil
-		}
+	if known && int(math.Round(pos)) == p {
+		return nil // numeric no-op (Open/Close at an endpoint would recalibrate)
 	}
-	dir := motionOpening
-	if p < int(math.Round(pos)) {
+	var dir motion
+	switch {
+	case !known && p == 100:
+		dir = motionOpening
+	case !known:
 		dir = motionClosing
-	} else if !known && p == 0 {
+	case float64(p) > pos:
+		dir = motionOpening
+	default:
 		dir = motionClosing
 	}
 	return ws.commandStartLocked(dir, p, endpoint)
 }
 
-// ToggleMovement is the discrete toggle: start -> stop -> reverse direction
-// and start -> stop -> repeat. A first toggle with unknown position starts
-// opening. A toggle during a pending start cancels it and leaves the shutter
-// stopped; the remembered direction stays the last direction that actually
-// moved, so the next toggle starts the canceled direction.
-func (ws *WindowShutter) ToggleMovement() error {
-	ws.cmdMu.Lock()
-	defer ws.cmdMu.Unlock()
+func (ws *WindowShutter) toggleLocked() error {
 	if err := ws.checkCommandLocked(); err != nil {
 		return err
 	}
 	if ws.pendingStartLocked() != nil {
 		ws.cancelPendingStartLocked()
+		ws.publishHk()
 		return nil
 	}
-	if ws.motion != motionStopped {
-		if err := ws.stopCurrentLocked(); err != nil {
-			return err
-		}
-	}
-	nextDir := motionOpening
 	ws.mu.Lock()
+	moving := ws.motion != motionStopped
+	nextDir := motionOpening
 	if ws.lastDirKnown && ws.lastDir == motionOpening {
 		nextDir = motionClosing
 	}
 	ws.mu.Unlock()
+	if moving {
+		err := ws.stopCurrentLocked()
+		ws.publishHk()
+		return err
+	}
 	return ws.commandStartLocked(nextDir, ws.endpointOf(nextDir), true)
 }
 
@@ -1258,8 +1338,8 @@ func (ws *WindowShutter) Snapshot() WindowShutterSnapshot {
 		CurrentPosition:      int(math.Round(pos)),
 		PositionKnown:        known,
 		Faulty:               ws.isFaulty,
-		OpenIoId:             ws.openDout.String(),
-		CloseIoId:            ws.closeDout.String(),
+		OpenIoId:             ws.openIoId,
+		CloseIoId:            ws.closeIoId,
 		OpenDurationSeconds:  int(ws.openDuration / time.Second),
 		CloseDurationSeconds: int(ws.closeDuration / time.Second),
 		PendingReversal:      ws.pendingStart != nil,

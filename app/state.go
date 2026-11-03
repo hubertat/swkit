@@ -68,6 +68,7 @@ const (
 	DeviceTypeOutlet        DeviceType = "outlet"
 	DeviceTypeButton        DeviceType = "button"
 	DeviceTypeScene         DeviceType = "scene"
+	DeviceTypeWindowShutter DeviceType = "window_shutter"
 )
 
 // DeviceState represents the status of a device
@@ -102,6 +103,38 @@ type DeviceState struct {
 	// timeout has expired. Read in one snapshot with SceneStateIndex. A
 	// prediction for clients; the toggle itself decides authoritatively.
 	SceneNextIndex int
+
+	// WindowShutter is set for window shutters only (nil otherwise). IsOn is
+	// then only a legacy compatibility value (known position > 0); shutter
+	// UIs use this nested state.
+	WindowShutter *WindowShutterState
+}
+
+// WindowShutterState is the movement/position state of a window shutter.
+// Position is estimated from elapsed movement time, never measured.
+type WindowShutterState struct {
+	Motion string // "stopped", "opening", "closing"
+	// TargetPosition is the accepted target, percent open; -1 when there is
+	// none (idle with unknown position).
+	TargetPosition int
+	// CurrentPosition is the estimated percent open (0 closed, 100 open).
+	// Meaningful only when PositionKnown.
+	CurrentPosition int
+	// PositionKnown is false until a full open/close run calibrates the
+	// estimate. An unknown position is not a fault.
+	PositionKnown bool
+	// PendingStart is true while the outputs are stopped but a start is
+	// scheduled (reversal delay): the command is not complete yet.
+	PendingStart bool
+	OpenIoId     string
+	CloseIoId    string
+	// Effective durations (CloseDurationSeconds after the opening fallback).
+	OpenDurationSeconds  int
+	CloseDurationSeconds int
+	// RemainingTravelMilliseconds is the server-calculated time until the
+	// planned output stop, including a pending reversal delay and the
+	// endpoint overrun; 0 when idle with no pending start.
+	RemainingTravelMilliseconds int64
 }
 
 // ButtonControlRelation describes a button's control mapping
@@ -145,6 +178,8 @@ func (s *AppState) Summary() StateSummary {
 			summary.ButtonsCount++
 		case DeviceTypeScene:
 			summary.ScenesCount++
+		case DeviceTypeWindowShutter:
+			summary.WindowShuttersCount++
 		}
 	}
 
@@ -164,6 +199,7 @@ type StateSummary struct {
 	OutletsCount        int
 	ButtonsCount        int
 	ScenesCount         int
+	WindowShuttersCount int
 	HomeKitEnabled      bool
 	HomeKitDevices      int
 }
@@ -177,4 +213,9 @@ type ControlResult struct {
 	// SceneIndex is set by a scene toggle: the state the scene actually
 	// selected (authoritative). nil for every other action and device.
 	SceneIndex *int
+	// WindowShutter is set by commands to a window shutter: the shutter state
+	// right after the accepted command, captured under the shutter's command
+	// serialization (so it describes this command, not a later one). nil for
+	// every other device.
+	WindowShutter *WindowShutterState
 }

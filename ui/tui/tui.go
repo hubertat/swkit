@@ -1527,7 +1527,7 @@ func (m Model) renderDeviceDetail() string {
 		lines = append(lines, "", m.theme.BoxTitle.Render("Controls"))
 		for _, rel := range device.ControlRelations {
 			action := rel.Action
-			if app.IsBrightnessVerb(rel.Action) {
+			if app.HasLevel(rel.Action) {
 				action += " " + brightnessLevelLabel(rel.Action, rel.Level)
 			}
 			lines = append(lines, m.theme.Secondary.Render(rel.EventType)+" "+
