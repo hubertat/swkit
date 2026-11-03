@@ -2,7 +2,7 @@
 
 Add maintained two-output roller shutter control using the existing `WindowShutterConfig` and `WindowShutter` objects in `window_shutter.go`. Integrate the device everywhere existing devices can be configured, observed, or controlled, including HomeKit, buttons, scenes, APIs, web interfaces, TUI, agent tools, and Presto.
 
-Status: implementation plan; runtime changes are not included.
+Status: implemented in stages 1-9 (see git history). Hardware verification (polarity, travel times, end limits, reversal delay, Home app behaviour) is still to be done on the real installation.
 
 ## Confirmed behavior
 

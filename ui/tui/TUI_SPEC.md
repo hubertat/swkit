@@ -25,6 +25,14 @@ This document describes the current TUI implementation, its scope, abstraction l
 - Split view: left list of devices, right detail panel for selected device.
 - Shows type, HomeKit status, health, and IO config bindings.
 - Control: toggle selected device with `enter`.
+- Window shutters show motion and the estimated position (or "position ?"
+  until calibrated). With a shutter selected: `o` open, `c` close, `s` stop,
+  `p` prompt for a position (0-100), `+`/`-` move 5 percentage points
+  (rejected while the position is unknown), `enter` the movement toggle.
+  These keys are scoped to a selected shutter on the Devices tab (`c` stays
+  "clear" on the Logs tab). `f` (timed on/off) is refused for shutters.
+- Device-control errors are shown under the device panel until the next
+  command.
 
 ### Config Editor
 - Edit lights and buttons (name, IO binding, disable HomeKit).
@@ -34,6 +42,18 @@ This document describes the current TUI implementation, its scope, abstraction l
 - If an IO point has a custom in-session name from IO Debug, the picker shows `custom_name [hardware_name]`.
 - Selecting an IO point from the picker writes the raw IO ID string into config.
 - Button control mappings editable inline (event/action/device cycling).
+  Only the verbs the target accepts are offered (`app.ActionVerbsForTargetType`):
+  on/off/toggle for lights, outlets and scenes, plus brightness verbs for
+  dimmable lights, and open/close/stop/position/toggle for window shutters.
+  Changing the target revalidates the verb (falls back to toggle).
+- Window shutters (`a` → Window Shutter): name, open and close outputs (`p`
+  opens the IO picker), opening time (1-600 s), closing time (0 = opening
+  time, else 1-600 s), reversal delay (0 = 500 ms, else 1-5000 ms), HomeKit
+  flag. Out-of-range input is rejected with a status message. Renaming a
+  shutter updates button relations and scene steps; deleting it (or "Window
+  shutters only" in clear) removes them. Shutters are listed after scenes.
+- Scenes: adding a window shutter to a scene appends `stop` to state 0; in a
+  new scene it gets `stop` in "Off" and `open` in "On".
 - `ctrl+r` saves via `ConfigProvider` (works over SSH; `ctrl+s` is also supported locally but may be intercepted by SSH terminals as XON/XOFF). When clean, the same key refreshes the editor snapshot and requests an application config reload.
 - Saves are revision-checked; a stale save is refused and prompts before discarding local edits (see Data Flow below).
 - Saves are validated first with the same rules as the web config editor (`app.NormalizeEditableConfig` + `app.ValidateEditableConfig` against fresh `GetState()`); an invalid config is not written and no reload is triggered, the editor stays dirty, and the problems are listed under the status line (first 5, then "… and N more") until the next save attempt or reload.
@@ -46,6 +66,8 @@ This document describes the current TUI implementation, its scope, abstraction l
 - All mode shows inputs and outputs side-by-side.
 - Per-point indicators: state, health, activity timer.
 - Name IO points in-session and export names to `io_names.json`.
+- Window shutter outputs are annotated "<shutter> (open|close)" and cannot be
+  toggled raw (the provider rejects it as well): use the shutter controls.
 
 ### Chat
 - Optional chat panel if agent is configured.

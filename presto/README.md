@@ -28,14 +28,15 @@ It has the same scope and the same honesty rules as the web control UI
 
 | Web control UI | Presto panel |
 |---|---|
-| Sections: Lights, Outlets, Scenes, Buttons | One section per tab; swipe left/right to change section. Six tiles per screen; longer sections get a rail of big ▲ / ▼ arrows on the right (the tiles narrow to make room) and also page with a swipe up/down. |
+| Sections: Lights, Outlets, Shutters, Scenes, Buttons | One section per tab; swipe left/right to change section. Six tiles per screen; longer sections get a rail of big ▲ / ▼ arrows on the right (the tiles narrow to make room) and also page with a swipe up/down. |
 | Tap to toggle; idempotent `set`, `toggle` only when the state is unknown | Same |
 | Requested state shown hatched until a poll *started after* the acknowledgement confirms it; amber "Unconfirmed" after 6 s | Same; the state machine is a direct port (`src/model.py`) |
 | Power and brightness as independent, serialized request slots | Same |
 | `state_error` shown as unknown, never as off | Same ("?" icon, "State unknown") |
 | Page greys out with a banner when polls stop | The header turns red with the age of the data and a Retry button; "on" tiles are muted |
 | Long-press: detail sheet with On/Off, brightness, presets, "on/off for" timers, scene stepping, plain-language sync status | Same sheet, sized for fingers |
-| Two-tap "All off" per section | Same |
+| Two-tap "All off" per section | Same (not for shutters) |
+| Window shutters: tap = start / stop / reverse; Open / Stop / Close, position slider and presets; one serialized command stream per shutter (Stop wins over queued moves); acceptance from the reply's `window_shutter` payload; completion deadline from `remaining_travel_ms` | Same (`shutter_*` in `src/model.py`); the sheet greys out 25/50/75% until the position is known |
 | Button tiles show the last press and when it happened | Same; a fresh press lights the tile blue for 3 s, and optionally flashes the LEDs on the back |
 | Display styles (tiles/list/compact), light/dark theme | Not applicable: one layout tuned for the 480×480 panel, dark theme |
 
@@ -66,6 +67,11 @@ Panel-only features:
   `src/app.py`).
 - **On-screen guidance** for every failure: missing `secrets.py`, wrong
   Wi-Fi password, no controller found, controller unreachable.
+
+Older panel versions (before shutter support) talking to a newer swkit show
+shutters as plain on/off tiles in an extra section: taps send open/close or
+toggle, with no position or Stop control, and the tile can misreport motion.
+Update the panel for full shutter control.
 
 ## Why MicroPython, not C++
 
@@ -207,6 +213,13 @@ Note that this erases all files.
 - **Long-press** a tile for details: explicit On/Off, brightness slider with
   − / + and presets, "on for 5 min" style timers, scene stepping, and the
   sync status in words.
+- **Shutters**: a tap starts the shutter (opposite of its last direction),
+  stops it if it moves, and so on. The sheet has Open / Stop / Close, a
+  position slider and Closed/25/50/75/Open presets. The position is an
+  estimate from travel time; after swkit starts or reloads its config it is
+  unknown until one full open or close, and until then only Open, Close and
+  the Closed/Open presets work. A tile lights up blue while its shutter
+  moves; the bar along the bottom is the position.
 - **Swipe** sideways or use the tabs to change section. Tab badges count
   what's on. Tapping the active tab goes back to its first screen.
 - **The ▲ / ▼ rail** on the right pages through sections with more than
@@ -225,6 +238,7 @@ Note that this erases all files.
 | "?" icon, "State unknown" | swkit couldn't read the device; a tap sends a toggle |
 | Dimmed, "Offline" | swkit can't reach the device; taps are ignored |
 | Blue (Buttons page) | Pressed in the last 3 seconds |
+| Blue (Shutters page), arrow icon | The shutter is moving; "Not stopped yet" in amber means the run took longer than swkit predicted |
 | White outline flash | Just confirmed |
 
 On the Presto, *Settings* holds the controller, *Light order*, screen
